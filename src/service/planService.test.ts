@@ -360,6 +360,85 @@ describe('PlanService: cache', () => {
     expect(await service.getSnapshot('demo')).toBe(b);
   });
 
+  it('revalidates manual GitHub refreshes and shares reads across views without hiding changes', async () => {
+    const config = demoConfig(3600);
+    config.sources[0] = {
+      ...config.sources[0]!,
+      kind: 'github',
+      token: 'test-token',
+      baseUrl: 'https://api.github.com',
+      webUrl: 'https://github.com',
+      path: null,
+    };
+    const view = { ...config.views[0]!, repos: [{ owner: 'acme', repo: 'api' }] };
+    config.views = [view, { ...view, id: 'other' }];
+    let reopened = false;
+    let calls = 0;
+    let paidReads = 0;
+    const service = new PlanService(config, {
+      providerFor: (source) =>
+        createProvider(source, {
+          fetch: async (input, init) => {
+            calls++;
+            const url = new URL(String(input));
+            const external = url.pathname === '/repos/acme/shared/issues/20';
+            const page2 = url.searchParams.get('page') === '2';
+            const etag = `"${url.pathname}:${page2}:${external && reopened}"`;
+            if (new Headers(init?.headers).get('if-none-match') === etag) {
+              return new Response(null, { status: 304 });
+            }
+            paidReads++;
+            const issue = (number: number, state = 'open') => ({
+              number,
+              title: `Issue ${number}`,
+              state,
+              issue_dependencies_summary: { total_blocked_by: number === 10 ? 1 : 0 },
+              repository_url: 'https://api.github.com/repos/acme/shared',
+            });
+            if (external)
+              return Response.json(issue(20, reopened ? 'open' : 'closed'), {
+                headers: { etag },
+              });
+            if (url.pathname.endsWith('/dependencies/blocked_by')) {
+              return Response.json([issue(20)], { headers: { etag } });
+            }
+            return Response.json([issue(page2 ? 11 : 10)], {
+              headers: page2
+                ? { etag }
+                : {
+                    etag,
+                    link: '<https://api.github.com/repos/acme/api/issues?state=open&per_page=100&page=2>; rel="next"',
+                  },
+            });
+          },
+        }),
+    });
+    const initial = await service.getSnapshot('demo');
+    expect(initial.plan.stats.total).toBe(2);
+    expect(paidReads).toBe(4);
+    expect(await service.getSnapshot('demo')).toBe(initial);
+    expect(calls).toBe(4);
+    const refreshed = await service.getSnapshot('demo', { refresh: true });
+    expect(refreshed.contentHash).toBe(initial.contentHash);
+    expect(calls).toBe(8);
+    expect(paidReads).toBe(4);
+    await Promise.all([
+      service.getSnapshot('demo', { refresh: true }),
+      service.getSnapshot('other', { refresh: true }),
+    ]);
+    expect(calls).toBe(12);
+    expect(paidReads).toBe(4);
+    reopened = true;
+    const changed = await service.getSnapshot('demo', { refresh: true });
+    expect(changed.plan.nodes.map((n) => n.key)).toContain('acme/shared#20');
+    expect(changed.plan.stats.total).toBe(3);
+    expect(changed.contentHash).not.toBe(initial.contentHash);
+    expect(paidReads).toBe(5);
+    reopened = false;
+    expect((await service.getSnapshot('demo', { refresh: true })).plan.stats.total).toBe(2);
+    expect(paidReads).toBe(6);
+  });
+
   it('viewsForRepo lists the matching view ids, sorted, ignoring case', () => {
     const config = demoConfig();
     const demo = config.views[0]!;

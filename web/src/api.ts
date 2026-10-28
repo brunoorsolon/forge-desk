@@ -103,7 +103,9 @@ export function fetchSnapshot(viewId: string): Promise<Snapshot> {
   return request<Snapshot>(`${API}/views/${encodeURIComponent(viewId)}/snapshot`);
 }
 
-export function refreshSnapshot(viewId: string): Promise<Snapshot> {
+/** Automatic polls reuse the shared snapshot; an explicit refresh revalidates tracker data. */
+export function refreshSnapshot(viewId: string, force = true): Promise<Snapshot> {
+  if (!force) return fetchSnapshot(viewId);
   return request<Snapshot>(`${API}/views/${encodeURIComponent(viewId)}/refresh`, {
     method: 'POST',
   });

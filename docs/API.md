@@ -62,7 +62,7 @@ Returns the settings the web UI reads at startup:
 { "refreshMinutes": 5, "version": "2.0.1" }
 ```
 
-`refreshMinutes` is `ui.refreshMinutes` (or `FD_REFRESH_MINUTES`): the UI calls `POST /api/views/:id/refresh` for the view it shows at that interval. `0` means no automatic refresh.
+`refreshMinutes` is `ui.refreshMinutes` (or `FD_REFRESH_MINUTES`): the UI calls `GET /api/views/:id/snapshot` for the view it shows at that interval, respecting the shared snapshot cache. Only an explicit click on Refresh uses `POST /api/views/:id/refresh`. `0` means no automatic refresh.
 
 `version` is the running server's version. The theme menu shows it at the bottom.
 
@@ -78,7 +78,7 @@ Response headers: `ETag: "<contentHash>"`, `Content-Type: application/json; char
 
 ### `POST /api/views/:id/refresh`
 
-Same response as the snapshot endpoint (always `200` with a body, `ETag` header), after forcing a refetch. Send no body.
+Same response as the snapshot endpoint (always `200` with a body, `ETag` header), after forcing a tracker revalidation. Send no body. GitHub reads reuse stored responses only after the tracker confirms they are unchanged; this does not bypass the shared rate-limit cooldown.
 
 ### `GET /api/views/:id/export.:format`
 
