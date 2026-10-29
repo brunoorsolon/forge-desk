@@ -740,10 +740,9 @@ Resolution (`resolve.ts`), deterministic:
    Prerequisites that are not in scope are marked external.
 6. `buildPlan`, then `computeLayout`, then `contentHash({ plan, layout })`, then `Snapshot`.
 
-Caching: an in-memory map per view with a TTL of `cache.ttlSeconds`.
-Concurrent `getSnapshot` calls for the same view share one in-flight promise.
-`refresh: true` bypasses the TTL and still shares in-flight work. A failed
-fetch is not cached.
+Caching: an in-memory map per view with a TTL of `cache.ttlSeconds`. Automatic browser polls respect this cache. Concurrent `getSnapshot` calls for the same view share one in-flight promise. An explicit `refresh: true` bypasses the snapshot TTL and still shares in-flight work. A failed rebuild is not cached; a partial snapshot can contain fetch-error warnings.
+
+The GitHub provider also retains up to 1,000 GET responses with ETag or Last-Modified validators per source. Rebuilds revalidate each full URL and reuse the payload and pagination headers only on `304`. Identical in-flight reads share work across views of that source. The HTTP client tracks a source-local cooldown from rate-limit responses and rejects queued or new reads locally until the cooldown expires; already-sent reads can finish.
 
 ## 14. HTTP API (`src/server/*`)
 

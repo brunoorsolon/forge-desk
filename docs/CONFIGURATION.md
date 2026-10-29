@@ -50,9 +50,9 @@ The schema is **strict**: an unknown key is an error, and all errors are reporte
 
 ### `ui`
 
-| Key                 | Type            | Default | Description                                                                                                                                                                                                                                                   |
-| ------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ui.refreshMinutes` | integer, 0-1440 | `5`     | How often the web UI refreshes the view it shows, like a click on Refresh. Switching back to a view already shown in the tab displays it as it was, without a fetch. `0` turns the timer off: only Refresh fetches again. Overridden by `FD_REFRESH_MINUTES`. |
+| Key                 | Type            | Default | Description                                                                                                                                                                                                                                                        |
+| ------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ui.refreshMinutes` | integer, 0-1440 | `5`     | How often the web UI polls the view it shows, respecting `cache.ttlSeconds`. The Refresh button bypasses that snapshot cache. Switching back to an already shown view uses the tab's snapshot. `0` disables automatic polling. Overridden by `FD_REFRESH_MINUTES`. |
 
 ### `webhooks`
 

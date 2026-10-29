@@ -25,7 +25,7 @@ cache:
   ttlSeconds: 300 # default: 300. 0 disables caching.
 
 ui:
-  refreshMinutes: 5 # default: 5. How often the web UI refreshes the open view; 0 = only the Refresh button.
+  refreshMinutes: 5 # default: 5. Poll the open view using the shared cache; 0 = only the Refresh button.
 
 # Optional webhooks: GitHub/Gitea/Forgejo issue events invalidate the cached views of the repository
 # (POST /api/webhooks/github and /api/webhooks/gitea). Disabled without a secret. One of:

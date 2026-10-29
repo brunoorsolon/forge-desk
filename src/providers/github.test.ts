@@ -51,11 +51,14 @@ function ghIssue(number: number, extra: Record<string, unknown> = {}) {
 function provider(route: Route, extra: { token?: string | null; concurrency?: number } = {}) {
   const { fetch, calls } = makeFetch(route);
   const sleeps: number[] = [];
+  let time = Date.now();
   const p = createGitHubProvider({
     token: 'token' in extra ? (extra.token ?? null) : TOKEN,
     fetch,
+    now: () => time,
     sleep: async (ms) => {
       sleeps.push(ms);
+      time += ms;
     },
     ...(extra.concurrency ? { concurrency: extra.concurrency } : {}),
   });
