@@ -38,7 +38,12 @@ function errorOf(fn: () => unknown): ConfigError {
 describe('parseConfig defaults', () => {
   it('applies every default', () => {
     const cfg = parseConfig(MIN, {});
-    expect(cfg.server).toEqual({ host: '0.0.0.0', port: 8080, basicAuth: null });
+    expect(cfg.server).toEqual({
+      host: '0.0.0.0',
+      port: 8080,
+      publicOrigin: null,
+      basicAuth: null,
+    });
     expect(cfg.cache).toEqual({ ttlSeconds: 300 });
     expect(cfg.ui).toEqual({ refreshMinutes: 5 });
     expect(cfg.webhooks).toBeNull();
@@ -641,7 +646,12 @@ views:
         dependencies: { native: true, body: true, subIssues: false },
         ordering: { priorityLabels: [], mode: 'priority' },
       });
-      expect(cfg.server).toEqual({ host: '0.0.0.0', port: 8080, basicAuth: null });
+      expect(cfg.server).toEqual({
+        host: '0.0.0.0',
+        port: 8080,
+        publicOrigin: null,
+        basicAuth: null,
+      });
     });
 
     it('FD_TOKEN wins over GITHUB_TOKEN', () => {
@@ -1025,5 +1035,221 @@ describe('release configuration', () => {
     expect(
       releaseError((r) => (r['repositories'][0].tagger.email = 'bot\u0000@example.com')).message,
     ).toContain('control characters');
+  });
+});
+
+describe('project-browsing configuration through loadConfig', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fd-browsing-config-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  function file(extra = '', env: Record<string, string> = {}) {
+    writeFileSync(join(dir, 'config.yaml'), MIN + extra);
+    return loadConfig({ cwd: dir, env });
+  }
+
+  it('adds inert defaults without changing the existing configuration', () => {
+    const cfg = file();
+    expect(cfg.server.publicOrigin).toBeNull();
+    expect(cfg.refresh).toEqual({ sweepHours: 0, requestsPerMinute: 60, concurrency: 4 });
+    expect(cfg.preferences).toEqual({ dir: null });
+    expect(cfg.releases).toEqual({ enabled: false });
+    expect(cfg.warnings).toEqual([]);
+    expect(file('server: {}\nrefresh: {}\npreferences: {}\n')).toEqual(cfg);
+  });
+
+  it.each([
+    ['https://EXAMPLE.com:443/', 'https://example.com'],
+    ['https://example.com:8443', 'https://example.com:8443'],
+    ['http://localhost:8080', 'http://localhost:8080'],
+    ['http://127.0.0.2:8080', 'http://127.0.0.2:8080'],
+    ['http://[::1]:8080', 'http://[::1]:8080'],
+  ])('accepts and normalizes origin %s', (input, expected) => {
+    expect(file(`server: { publicOrigin: ${JSON.stringify(input)} }\n`).server.publicOrigin).toBe(
+      expected,
+    );
+  });
+
+  const badOrigins = [
+    '',
+    'not-a-url',
+    'ftp://localhost',
+    'http://example.com',
+    'http://127.evil.com',
+    'https://user:pass@example.com',
+    'https://example.com/path',
+    'https://example.com/?a=1',
+    'https://example.com/#fragment',
+    'https://example.com/\n',
+    'https://exam ple.com',
+  ];
+  it.each(badOrigins)('rejects unsafe origin %j in YAML', (value) => {
+    expect(() => file(`server: { publicOrigin: ${JSON.stringify(value)} }\n`)).toThrow(
+      /server.publicOrigin/,
+    );
+  });
+
+  const badPaths = [
+    '',
+    'relative/path',
+    '/',
+    '/tmp/',
+    '/tmp//prefs',
+    '/tmp/./prefs',
+    '/tmp/../prefs',
+    '/tmp/\nprefs',
+  ];
+  it.each(badPaths)('rejects non-normalized directory %j', (value) => {
+    expect(() => file(`preferences: { dir: ${JSON.stringify(value)} }\n`)).toThrow(
+      /preferences.dir/,
+    );
+  });
+
+  it('accepts a nonexistent absolute directory without accessing or creating it', () => {
+    const path = join(dir, 'missing', 'preferences');
+    expect(file(`preferences: { dir: ${JSON.stringify(path)} }\n`).preferences.dir).toBe(path);
+    expect(() => readFileSync(path)).toThrow(/ENOENT/);
+  });
+
+  it.each([0, 1, 168])('accepts sweepHours %i', (value) => {
+    expect(file(`refresh: { sweepHours: ${value} }\n`).refresh.sweepHours).toBe(value);
+  });
+  it.each(['sweepHours', 'requestsPerMinute', 'concurrency'] as const)(
+    'rejects invalid %s values',
+    (key) => {
+      const invalid = [-1, 0.5, '1', null, true, ...(key === 'sweepHours' ? [169] : [0])];
+      for (const value of invalid) {
+        expect(() => file(`refresh: { ${key}: ${JSON.stringify(value)} }\n`)).toThrow(
+          `refresh.${key}`,
+        );
+      }
+    },
+  );
+  it('accepts positive pacing integers and retains unspecified defaults', () => {
+    expect(file('refresh: { requestsPerMinute: 1, concurrency: 1 }\n').refresh).toEqual({
+      sweepHours: 0,
+      requestsPerMinute: 1,
+      concurrency: 1,
+    });
+    expect(file('refresh: { requestsPerMinute: 120, concurrency: 8 }\n').refresh).toEqual({
+      sweepHours: 0,
+      requestsPerMinute: 120,
+      concurrency: 8,
+    });
+  });
+
+  it.each(['refresh', 'preferences'])('rejects unknown keys under %s', (key) => {
+    expect(() => file(`${key}: { typo: 1 }\n`)).toThrow(/Unrecognized key/);
+  });
+
+  describe.each(['file', 'env-only'])('%s overrides', (mode) => {
+    function load(env: Record<string, string>) {
+      if (mode === 'file') {
+        return file(
+          'server: { publicOrigin: "https://file.example" }\npreferences: { dir: /file/preferences }\nrefresh: { sweepHours: 24 }\n',
+          env,
+        );
+      }
+      return loadConfig({ cwd: dir, env: { FD_PROVIDER: 'github', FD_REPOS: 'a/b', ...env } });
+    }
+
+    it('applies all three FD overrides and normalizes the origin', () => {
+      const cfg = load({
+        FD_PUBLIC_ORIGIN: ' https://ENV.example:443/ ',
+        FD_PREFERENCES_DIR: ' /env/preferences ',
+        FD_SWEEP_HOURS: ' 168 ',
+        FD_BASIC_AUTH: 'user:password',
+      });
+      expect(cfg.server.publicOrigin).toBe('https://env.example');
+      expect(cfg.preferences.dir).toBe('/env/preferences');
+      expect(cfg.refresh).toEqual({ sweepHours: 168, requestsPerMinute: 60, concurrency: 4 });
+      expect(cfg.warnings).toEqual([]);
+      expect(load({ FD_SWEEP_HOURS: '0' }).refresh.sweepHours).toBe(0);
+    });
+
+    it('ignores blank overrides and does not support EV aliases', () => {
+      const base = load({});
+      expect(
+        load({
+          FD_PUBLIC_ORIGIN: ' ',
+          FD_PREFERENCES_DIR: '',
+          FD_SWEEP_HOURS: ' ',
+          EV_PUBLIC_ORIGIN: 'https://legacy.example',
+          EV_PREFERENCES_DIR: '/legacy',
+          EV_SWEEP_HOURS: '12',
+        }),
+      ).toEqual(base);
+      const fd = {
+        FD_PUBLIC_ORIGIN: 'https://new.example',
+        FD_PREFERENCES_DIR: '/new',
+        FD_SWEEP_HOURS: '4',
+      };
+      expect(
+        load({
+          ...fd,
+          EV_PUBLIC_ORIGIN: 'invalid',
+          EV_PREFERENCES_DIR: 'invalid',
+          EV_SWEEP_HOURS: 'invalid',
+        }),
+      ).toEqual(load(fd));
+    });
+
+    it.each(badOrigins.filter((value) => value.trim() !== '' && value.trim() === value))(
+      'validates FD_PUBLIC_ORIGIN %j',
+      (value) => {
+        expect(() => load({ FD_PUBLIC_ORIGIN: value })).toThrow(
+          /FD_PUBLIC_ORIGIN: invalid publicOrigin/,
+        );
+      },
+    );
+    it.each(badPaths.filter((value) => value !== ''))(
+      'validates FD_PREFERENCES_DIR %j',
+      (value) => {
+        expect(() => load({ FD_PREFERENCES_DIR: value })).toThrow(
+          /FD_PREFERENCES_DIR: invalid path/,
+        );
+      },
+    );
+    it.each(['-1', '169', '1.5', 'abc', '1e2', 'Infinity'])(
+      'validates FD_SWEEP_HOURS %j',
+      (value) => {
+        expect(() => load({ FD_SWEEP_HOURS: value })).toThrow(/FD_SWEEP_HOURS:.*integer/);
+      },
+    );
+
+    it('warns without failing when preferences lack login and zero TTL disables a sweep', () => {
+      const cfg = load({
+        FD_PREFERENCES_DIR: '/preferences',
+        FD_CACHE_TTL: '0',
+        FD_SWEEP_HOURS: '1',
+      });
+      expect(cfg.preferences.dir).toBe('/preferences');
+      expect(cfg.refresh.sweepHours).toBe(1);
+      expect(cfg.warnings).toEqual([
+        expect.stringMatching(/preferences.dir:.*login.*unavailable/),
+        expect.stringMatching(/refresh.sweepHours:.*cache.ttlSeconds.*0.*sweep will not run/),
+      ]);
+    });
+
+    it('has no warnings with login and positive TTL, or a disabled sweep', () => {
+      expect(load({ FD_BASIC_AUTH: 'user:password' }).warnings).toEqual([]);
+      expect(
+        load({ FD_BASIC_AUTH: 'user:password', FD_CACHE_TTL: '0', FD_SWEEP_HOURS: '0' }).warnings,
+      ).toEqual([]);
+    });
+  });
+
+  it('evaluates warnings from YAML settings as well as overrides', () => {
+    const cfg = file(
+      'preferences: { dir: /preferences }\nrefresh: { sweepHours: 1 }\ncache: { ttlSeconds: 0 }\n',
+    );
+    expect(cfg.warnings).toHaveLength(2);
+    expect(
+      file(
+        'preferences: { dir: /preferences }\nserver: { basicAuth: { username: user, password: pass } }\n',
+      ).warnings,
+    ).toEqual([]);
   });
 });
