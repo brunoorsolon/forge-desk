@@ -677,6 +677,29 @@ describe('getIssue: relation coverage', () => {
 });
 
 describe('listOpenIssues: relation coverage', () => {
+  it.each([200, 404])(
+    'counts unique candidate issues across overlapping pages (last relation status %i)',
+    async (lastStatus) => {
+      const { p } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues') {
+          if (url.searchParams.get('page') === '2') return json([ghIssue(3), ghIssue(2)]);
+          return json([ghIssue(4), ghIssue(3)], {
+            headers: { link: `<${API}/repos/acme/api/issues?page=2>; rel="next"` },
+          });
+        }
+        if (url.pathname.startsWith('/repos/acme/api/issues/4/'))
+          return lastStatus === 404 ? status(404) : json([]);
+        return json([]);
+      });
+      const result = await p.listOpenIssues(REPO, BOTH);
+      const coverage = lastStatus === 404 ? 'unsupported' : 'complete';
+      expect(result.relationCoverage).toEqual({ native: coverage, subIssues: coverage });
+      expect(result.warnings).toEqual([]);
+      expect(result.issues.map((issue) => issue.number)).toEqual([2, 3, 3, 4]);
+      expect(result.issues.every((issue) => issue.nativeRelations.length === 0)).toBe(true);
+    },
+  );
+
   it.each(RELATION_KINDS)(
     'reports an isolated later $kind 404 as unsupported without changing issues or warnings',
     async ({ kind, endpoint, source }) => {

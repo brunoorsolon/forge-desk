@@ -268,7 +268,9 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
       const found = await fetchRelated(repo, candidates, 'dependencies/blocked_by');
       // Later 404s skip individual issues without a warning, but leave coverage incomplete.
       relationCoverage.native =
-        found !== null && found.size === candidates.length ? 'complete' : 'unsupported';
+        found !== null && found.size === new Set(candidates.map((issue) => issue.number)).size
+          ? 'complete'
+          : 'unsupported';
       if (found === null) {
         warnings.push({
           code: 'native-unsupported',
@@ -287,7 +289,9 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
       );
       const found = await fetchRelated(repo, candidates, 'sub_issues');
       relationCoverage.subIssues =
-        found !== null && found.size === candidates.length ? 'complete' : 'unsupported';
+        found !== null && found.size === new Set(candidates.map((issue) => issue.number)).size
+          ? 'complete'
+          : 'unsupported';
       if (found === null) {
         warnings.push({
           code: 'native-unsupported',
