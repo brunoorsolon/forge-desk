@@ -944,6 +944,19 @@ describe('parseClosingIssues', () => {
     expect(parseClosingIssues(body, HOSTS)).toEqual(['#2'].map(issueRef));
   });
 
+  it('does not pair unmatched backticks across paragraph or block boundaries', () => {
+    const body = [
+      'Note with `unmatched opener',
+      '',
+      'Blocked by: [#1]',
+      'Closes #1',
+      '',
+      'Another paragraph with `unmatched opener',
+    ].join('\n');
+    expect(parseBodyRelations(body, { strict: true })).toEqual(['b:#1'].map(rel));
+    expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
+  });
+
   it('recognizes issue URLs on subpath-hosted forges for both bare hosts and configured prefixes', () => {
     expect(
       parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {

@@ -142,10 +142,20 @@ function isFenceOpenLine(raw: string): { char: string; length: number } | null {
   return { char: marker[0]!, length: marker.length };
 }
 
+function isInlineBlockBoundary(raw: string): boolean {
+  return (
+    /^\s*$/.test(raw) ||
+    isFenceOpenLine(raw) !== null ||
+    /^\s*>/.test(raw) ||
+    HEADING_RE.test(raw) ||
+    LIST_MARKER_RE.test(raw)
+  );
+}
+
 /**
  * Removes HTML comments (replaced by a space) and inline code spans (replaced by a
  * placeholder) from one line. Comment and multiline inline code-span state carry over
- * to following lines.
+ * to following lines within the same paragraph/block.
  */
 function cleanLine(lines: readonly string[], lineIndex: number, state: LineState): string {
   const line = lines[lineIndex]!;
@@ -183,13 +193,15 @@ function cleanLine(lines: readonly string[], lineIndex: number, state: LineState
         i = sameLineClose;
       } else {
         let multilineClose: { line: number; col: number } | null = null;
-        for (let k = lineIndex + 1; k < lines.length; k++) {
-          const nextLine = lines[k]!;
-          if (isFenceOpenLine(nextLine) !== null || /^\s*>/.test(nextLine)) break;
-          const col = findBacktickClose(nextLine, 0, n);
-          if (col >= 0) {
-            multilineClose = { line: k, col };
-            break;
+        if (!HEADING_RE.test(line)) {
+          for (let k = lineIndex + 1; k < lines.length; k++) {
+            const nextLine = lines[k]!;
+            if (isInlineBlockBoundary(nextLine)) break;
+            const col = findBacktickClose(nextLine, 0, n);
+            if (col >= 0) {
+              multilineClose = { line: k, col };
+              break;
+            }
           }
         }
         if (multilineClose !== null) {
