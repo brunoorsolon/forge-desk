@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { z } from 'zod';
 import type { OrderingMode, ProviderKind } from '../core/types.js';
+import type { CatalogSource } from '../core/scope.js';
 import {
   DEFAULT_KEYWORDS,
   MAX_REFRESH_MINUTES,
@@ -14,6 +15,8 @@ import {
   type RawConfig,
   type RawSource,
   type RawView,
+  type RawPlanningPolicy,
+  type ResolvedPlanningPolicy,
   type ReleaseTokenSelector,
   type ResolvedReleaseRepository,
   type ResolvedReleases,
@@ -30,6 +33,7 @@ export type {
   ResolvedReleases,
   ResolvedSource,
   ResolvedView,
+  ResolvedPlanningPolicy,
 } from './schema.js';
 
 type Env = Record<string, string | undefined>;
@@ -212,21 +216,13 @@ function resolveSource(
     webUrl: deriveWebUrl(raw.kind, baseUrl, raw.webUrl),
     token,
     path: raw.kind === 'fixture' && raw.path !== undefined ? resolve(baseDir, raw.path) : null,
+    planning: raw.planning === undefined ? null : resolvePlanningPolicy(raw.planning),
   };
 }
 
-function resolveView(raw: RawView): ResolvedView {
-  const repoSet = new Set(raw.repos.map((r) => r.toLowerCase()));
-  const repos = [...repoSet].sort(compareStrings).map((full) => {
-    const slash = full.indexOf('/');
-    return { owner: full.slice(0, slash), repo: full.slice(slash + 1) };
-  });
+function resolvePlanningPolicy(raw: RawPlanningPolicy): ResolvedPlanningPolicy {
   const deps = raw.dependencies;
   return {
-    id: raw.id,
-    title: raw.title ?? raw.id,
-    source: raw.source,
-    repos,
     dependencies: {
       native: deps?.native ?? true,
       body: deps?.body ?? true,
@@ -236,16 +232,104 @@ function resolveView(raw: RawView): ResolvedView {
         blocks: [...(deps?.keywords?.blocks ?? DEFAULT_KEYWORDS.blocks)],
       },
     },
-    scope: {
-      labels: [...(raw.scope?.labels ?? [])],
-      excludeLabels: [...(raw.scope?.excludeLabels ?? [])],
-      milestones: [...(raw.scope?.milestones ?? [])],
-    },
     ordering: {
       priorityLabels: [...(raw.ordering?.priorityLabels ?? [])],
       mode: raw.ordering?.mode ?? 'priority',
     },
   };
+}
+
+function resolveView(raw: RawView): ResolvedView {
+  const repoSet = new Set(raw.repos.map((r) => r.toLowerCase()));
+  const repos = [...repoSet].sort(compareStrings).map((full) => {
+    const slash = full.indexOf('/');
+    return { owner: full.slice(0, slash), repo: full.slice(slash + 1) };
+  });
+  return {
+    id: raw.id,
+    title: raw.title ?? raw.id,
+    source: raw.source,
+    repos,
+    ...resolvePlanningPolicy(raw),
+    scope: {
+      labels: [...(raw.scope?.labels ?? [])],
+      excludeLabels: [...(raw.scope?.excludeLabels ?? [])],
+      milestones: [...(raw.scope?.milestones ?? [])],
+    },
+  };
+}
+
+/** Comparison only: keep the named views' original keyword spelling and array order intact. */
+function policySettings(policy: ResolvedPlanningPolicy): Record<string, unknown> {
+  const keywords = (values: string[]) =>
+    [...new Set(values.map((v) => v.toLowerCase()))].sort(compareStrings);
+  return {
+    'dependencies.native': policy.dependencies.native,
+    'dependencies.body': policy.dependencies.body,
+    'dependencies.subIssues': policy.dependencies.subIssues,
+    'dependencies.keywords.blockedBy': keywords(policy.dependencies.keywords.blockedBy),
+    'dependencies.keywords.blocks': keywords(policy.dependencies.keywords.blocks),
+    'ordering.priorityLabels': policy.ordering.priorityLabels,
+    'ordering.mode': policy.ordering.mode,
+  };
+}
+
+/** Resolve the catalog and infer a source policy without affecting any named view. */
+function resolveCatalogSource(
+  source: ResolvedSource,
+  views: ResolvedView[],
+  warnings: string[],
+): CatalogSource {
+  const sourceViews = views.filter((view) => view.source === source.id);
+  const projects = [
+    ...new Set(sourceViews.flatMap((view) => view.repos.map((r) => `${r.owner}/${r.repo}`))),
+  ]
+    .sort(compareStrings)
+    .map((repo) => ({ source: source.id, repo }));
+  const catalog: CatalogSource = {
+    id: source.id,
+    kind: source.kind,
+    projects,
+    policy: { status: 'usable' },
+  };
+  // Explicit planning always wins. An unused source has no policy to infer and no conflict.
+  if (source.planning !== null || sourceViews.length === 0) return catalog;
+
+  const settings = sourceViews.map(policySettings);
+  const differingSettings: string[] = [];
+  const differences: string[] = [];
+  for (const setting of Object.keys(settings[0]!)) {
+    const groups = new Map<string, string[]>();
+    sourceViews.forEach((view, index) => {
+      const value = JSON.stringify(settings[index]![setting]);
+      const group = groups.get(value) ?? [];
+      group.push(`"${view.id}"`);
+      groups.set(value, group);
+    });
+    if (groups.size > 1) {
+      differingSettings.push(setting);
+      differences.push(
+        `${setting} differs between views ${[...groups.values()].map((ids) => ids.join(', ')).join(' and ')}`,
+      );
+    }
+  }
+  if (differingSettings.length > 0) {
+    const explanation = `source "${source.id}": planning policy conflict; ${differences.join('; ')}. Set sources[].planning for source "${source.id}" or align these view settings.`;
+    catalog.policy = {
+      status: 'conflict',
+      conflict: {
+        source: source.id,
+        differingSettings,
+        views: sourceViews.map((view) => view.id),
+        explanation,
+      },
+    };
+    warnings.push(explanation);
+  } else {
+    // Copy the resolved policy so consumers cannot mutate named views through it.
+    source.planning = resolvePlanningPolicy(sourceViews[0]!);
+  }
+  return catalog;
 }
 
 function resolveBasicAuth(
@@ -407,6 +491,9 @@ function resolveConfig(input: unknown, env: Env, baseDir: string): AppConfig {
   const warnings: string[] = legacySettingWarnings(env);
   const sources = raw.sources.map((s) => resolveSource(s, env, baseDir, warnings));
   const views = raw.views.map(resolveView);
+  const catalog = {
+    sources: sources.map((source) => resolveCatalogSource(source, views, warnings)),
+  };
   for (const v of views) {
     if (v.dependencies.subIssues && kindById.get(v.source) !== 'github') {
       warnings.push(`view "${v.id}": subIssues is only supported by github sources; it is ignored`);
@@ -478,6 +565,7 @@ function resolveConfig(input: unknown, env: Env, baseDir: string): AppConfig {
     cache: { ttlSeconds },
     ui: { refreshMinutes },
     webhooks: resolveWebhooks(raw.webhooks, env, warnings),
+    catalog,
     sources,
     views,
     releases,

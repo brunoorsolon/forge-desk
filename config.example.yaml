@@ -67,6 +67,24 @@ sources:
     tokenEnv: GITHUB_TOKEN # name of the env var holding the token (recommended)
     # token: ghp_xxx # inline token (discouraged). tokenEnv wins when its variable is set.
     # A missing token variable is not an error: access is anonymous (public repos only).
+    # Optional source-wide policy for project and All projects browsing; named views are unchanged.
+    # planning wins whenever present, even if views agree. It accepts the same dependencies
+    # (including keywords) and ordering keys/defaults as a view, and rejects unknown keys.
+    # Without it, all views of this source must agree on resolved dependencies and ordering:
+    # omitted/explicit defaults are equal, keywords are case-insensitive sets, priority labels
+    # are compared in rank order, and scope is ignored. Disagreement warns on load/check;
+    # set planning here or align the differing view settings to resolve the conflict.
+    # planning:
+    #   dependencies:
+    #     native: true
+    #     body: true
+    #     subIssues: false
+    #     keywords:
+    #       blockedBy: [depends on, blocked by, requires, dependencies]
+    #       blocks: [blocks, blocking, required by]
+    #   ordering:
+    #     priorityLabels: [P0, P1, P2]
+    #     mode: priority
 
   # GitHub Enterprise Server (uncomment and adapt)
   # - id: ghes
@@ -86,6 +104,9 @@ sources:
     kind: fixture
     path: ./test/fixtures/demo.json # required; relative to this file's directory
 
+# Each source's project catalog is the lowercase, distinct, sorted union of its views' repos,
+# including repos with no open issues. Release-only/dependency-only repos are not projects.
+# Sources with no views have an empty catalog and need no policy.
 # Views: a set of repositories of one source, planned together.
 views:
   - id: platform # unique; ^[a-z0-9][a-z0-9-_]*$
