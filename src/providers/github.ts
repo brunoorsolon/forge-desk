@@ -363,5 +363,5 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     return issue;
   }
 
-  return { kind: 'github', listOpenIssues, getIssue };
+  return { kind: 'github', listOpenIssues, getIssue, cooldownUntil: () => client.cooldownUntil() };
 }

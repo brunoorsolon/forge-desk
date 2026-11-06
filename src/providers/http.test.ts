@@ -427,6 +427,95 @@ describe('shared rate-limit cooldown', () => {
   });
 });
 
+describe('cooldownUntil', () => {
+  it('reports null before any rate-limit signal without making a request', async () => {
+    const { client, urls, sleeps } = setup(() => json('ok'));
+    expect(client.cooldownUntil()).toBeNull();
+    expect(urls).toEqual([]);
+    await client.getJson('/ok');
+    expect(client.cooldownUntil()).toBeNull();
+    expect(urls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it.each<{ status: number; headers: Record<string, string>; duration: number }>([
+    { status: 429, headers: { 'retry-after': '3600' }, duration: 3_600_000 },
+    {
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700003600' },
+      duration: 3_601_000,
+    },
+    {
+      status: 200,
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700003600' },
+      duration: 3_601_000,
+    },
+    {
+      status: 429,
+      headers: { 'retry-after': 'Tue, 14 Nov 2023 23:13:20 GMT' },
+      duration: 3_600_000,
+    },
+  ])(
+    'reports the $status cooldown until the injected clock reaches its end ($headers)',
+    async ({ status, headers, duration }) => {
+      const start = 1_700_000_000_000;
+      let time = start;
+      let calls = 0;
+      const client = createHttpClient({
+        baseUrl: BASE,
+        headers: {},
+        now: () => time,
+        maxRetries: 0,
+        fetch: async () => {
+          calls++;
+          return json([], { status, headers });
+        },
+      });
+      const request = client.getJson('/first');
+      if (status === 200) await expect(request).resolves.toMatchObject({ data: [] });
+      else await expect(request).rejects.toThrow(/rate limit exceeded/);
+      expect(client.cooldownUntil()).toBe(start + duration);
+      time += duration - 1;
+      expect(client.cooldownUntil()).toBe(start + duration);
+      await expect(client.getJson('/queued')).rejects.toThrow(/rate limit exceeded/);
+      time++;
+      expect(client.cooldownUntil()).toBeNull();
+      time++;
+      expect(client.cooldownUntil()).toBeNull();
+      expect(calls).toBe(1);
+    },
+  );
+
+  it('extends the end on a later in-flight signal and never shortens it', async () => {
+    const start = 1_700_000_000_000;
+    let time = start;
+    const pending: Array<(response: Response) => void> = [];
+    const client = createHttpClient({
+      baseUrl: BASE,
+      headers: {},
+      now: () => time,
+      maxRetries: 0,
+      fetch: () => new Promise<Response>((resolve) => pending.push(resolve)),
+    });
+    // All requests start before the first response establishes the source cooldown.
+    const requests = ['/first', '/later', '/earlier'].map((path) => client.getJson(path));
+    expect(client.cooldownUntil()).toBeNull();
+    pending[0]!(new Response(null, { status: 429, headers: { 'retry-after': '3600' } }));
+    await expect(requests[0]).rejects.toThrow(/rate limit exceeded/);
+    expect(client.cooldownUntil()).toBe(start + 3_600_000);
+    time += 1000;
+    pending[1]!(new Response(null, { status: 429, headers: { 'retry-after': '7200' } }));
+    await expect(requests[1]).rejects.toThrow(/rate limit exceeded/);
+    expect(client.cooldownUntil()).toBe(start + 7_201_000);
+    pending[2]!(new Response(null, { status: 429, headers: { 'retry-after': '1200' } }));
+    await expect(requests[2]).rejects.toThrow(/rate limit exceeded/);
+    expect(client.cooldownUntil()).toBe(start + 7_201_000);
+    time = start + 7_201_000;
+    expect(client.cooldownUntil()).toBeNull();
+    expect(pending).toHaveLength(3);
+  });
+});
+
 describe('createLimiter', () => {
   it('never runs more than N calls at once and preserves results', async () => {
     const limit = createLimiter(3);

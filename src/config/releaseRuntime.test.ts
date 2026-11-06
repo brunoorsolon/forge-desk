@@ -86,6 +86,7 @@ function planningSource(token: string | null): ResolvedSource {
     webUrl: 'https://gitea.example.com',
     token,
     path: null,
+    planning: null,
   };
 }
 
