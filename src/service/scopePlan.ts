@@ -121,8 +121,9 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       if (record) usedOutside.set(key, record);
       // Stored results require no lookup and must not starve new dependencies.
       if (result?.status === 'found') {
-        lookups.set(key, result);
-        if (result.issue.state === 'open') known.set(key, result.issue);
+        const issue = result.issue.key === key ? result.issue : { ...result.issue, key };
+        lookups.set(key, { ...result, issue });
+        if (issue.state === 'open') known.set(key, issue);
         continue;
       }
       if (budget > 0) {
@@ -184,18 +185,21 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
         issues: contributing.map((i) => i.key).sort(compareKeys),
       });
   };
+  const contributingChecks: (string | null)[] = [];
   for (const repo of [...usedRepositories].sort()) {
     const record = records.get(repo)!;
     const issues = record.observation.issues ?? [];
-    if (scopeRepos.includes(repo) || issues.some((i) => included.has(i.key)))
+    if (scopeRepos.includes(repo) || issues.some((i) => included.has(i.key))) {
       inspect(record, issues, `${scope.source}/${repo}`);
+      contributingChecks.push(record.observation.lastCheckedAt);
+    }
   }
   for (const [key, record] of [...usedOutside].sort(([a], [b]) => compareKeys(a, b))) {
     const result = record.observation.result;
     // A closed lookup contributes by satisfying a relation even though it is not a node.
     if (!included.has(key) && !(result?.status === 'found' && result.issue.state === 'closed'))
       continue;
-    inspect(record, result?.status === 'found' ? [result.issue] : [], key);
+    inspect(record, result?.status === 'found' ? [{ ...result.issue, key }] : [], key);
     if (record.observation.lastAttempt?.outcome === 'failed') provisional.add(key);
   }
   // A provisional prerequisite also makes its dependents provisional.
@@ -218,7 +222,7 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
     });
   const plan = buildPlan(resolved);
   const layout = computeLayout(plan);
-  const checks = scopeRepos.map((r) => records.get(r)!.observation.lastCheckedAt);
+  const checks = contributingChecks;
   if (checks.some((check) => check === null))
     return {
       snapshot: null,

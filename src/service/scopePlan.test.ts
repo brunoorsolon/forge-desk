@@ -254,6 +254,28 @@ describe('scope plan derivation', () => {
       deriveScopePlan({ ...o, repositories: [...o.repositories].reverse() }).snapshot!.contentHash,
     ).toBe(a.snapshot!.contentHash);
   });
+  it('dates project plans by every contributing catalog listing, but not unused listings', () => {
+    const o = input();
+    o.repositories[1]!.observation.lastCheckedAt = '2026-11-06T03:00:00.000Z';
+    o.cache.ttlSeconds = 86400;
+    expect(deriveScopePlan(o).snapshot!.fetchedAt).toBe(checked);
+    o.repositories[0]!.observation.issues = [issue(1, 'Blocked by a/other#2')];
+    expect(deriveScopePlan(o).snapshot!.fetchedAt).toBe('2026-11-06T03:00:00.000Z');
+    expect(warnings(o, 'stale-data')).toEqual([]);
+  });
+  it('rekeys outside issues before coverage inspection without mutating the stored result', () => {
+    const o = input();
+    o.repositories[0]!.observation.issues = [issue(1, 'Blocked by #2')];
+    const returned = {
+      ...issue(5),
+      relationCoverage: { native: 'failed', subIssues: 'complete' },
+    } as Issue;
+    o.outsideIssues = [outside('a/r#2', { status: 'found', issue: returned })];
+    const before = structuredClone(o);
+    expect(nodes(o).map((n) => n.key)).toEqual(['a/r#1', 'a/r#2']);
+    expect(warnings(o, 'dependency-provisional')[0]!.issues).toEqual(['a/r#1', 'a/r#2']);
+    expect(o).toEqual(before);
+  });
   it('does not invent partial snapshots or accept foreign/conflicted scopes', () => {
     const o = input();
     o.repositories[0]!.observation.issues = null;
