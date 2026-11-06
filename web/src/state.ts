@@ -199,7 +199,10 @@ export function reducer(state: AppState, action: Action): AppState {
       if (currentScope !== nextScope) {
         return {
           ...state,
-          route: { ...action.route, q: '', tab: state.route.tab, sort: state.route.sort },
+          route:
+            nextScope === null
+              ? action.route
+              : { ...action.route, q: '', tab: state.route.tab, sort: state.route.sort },
           selected: null,
           loadedScopeId: nextScope,
           loadedViewId: null,
@@ -237,6 +240,8 @@ export function reducer(state: AppState, action: Action): AppState {
         snapshot: response.snapshot,
         freshness: response.freshness,
         job: response.job,
+        refreshError: null,
+        refreshing: false,
         status: response.snapshot !== null ? 'ready' : active ? 'loading' : 'unavailable',
         error:
           response.snapshot !== null || active
@@ -250,6 +255,27 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case 'scope-failed':
       if (scopeId(action.scope) !== routeScopeId(state.route)) return state;
+      // A transport/refresh failure does not invalidate last-good data or the
+      // active job. Only authoritative catalog/policy responses replace it.
+      if (state.snapshot !== null && action.status !== 404 && action.status !== 409) {
+        return {
+          ...state,
+          status: 'ready',
+          refreshing: false,
+          refreshError: action.error,
+          freshness:
+            state.freshness === null
+              ? null
+              : {
+                  ...state.freshness,
+                  repositories: state.freshness.repositories.map((repository) =>
+                    repository.lastCheckedAt === null
+                      ? repository
+                      : { ...repository, state: 'stale' },
+                  ),
+                },
+        };
+      }
       return {
         ...state,
         loadedScopeId: scopeId(action.scope),
@@ -265,6 +291,8 @@ export function reducer(state: AppState, action: Action): AppState {
               ? 'conflict'
               : 'unavailable',
         error: action.error,
+        refreshError: null,
+        refreshing: false,
       };
     case 'load-start': {
       if (state.route.scope !== undefined) return state;

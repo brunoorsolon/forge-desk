@@ -274,7 +274,7 @@ describe('project/source scope state', () => {
     expect(effectiveViewId({ ...state, views })).toBeNull();
   });
 
-  it.each(['#/project/s/o/other', '#/source/s', '#/source/other', '#/view/a'])(
+  it.each(['#/project/s/o/other', '#/source/s', '#/source/other'])(
     'switches to %s without stale selection/filter or snapshot',
     (hash) => {
       const state: AppState = {
@@ -290,6 +290,23 @@ describe('project/source scope state', () => {
       const back = reducer(next, { type: 'route', route });
       expect(back.route.q).toBe('');
       expect(back.selected).toBeNull();
+    },
+  );
+
+  it.each(['#/project/s/o/r', '#/source/s'])(
+    'preserves named-view link values when leaving %s',
+    (hash) => {
+      const state = {
+        ...scoped(),
+        route: { ...parseHash(hash), q: 'old', tab: 'problems' as const, sort: 'title' as const },
+        selected: 'o/r#1',
+      };
+      const target = parseHash('#/view/a/order?q=bug&sort=updated');
+      const next = reducer(state, { type: 'route', route: target });
+      expect(next.route).toEqual(target);
+      expect(serializeHash(next.route)).toBe('#/view/a/order?q=bug&sort=updated');
+      expect(next.selected).toBeNull();
+      expect(next.loadedScopeId).toBeNull();
     },
   );
 
@@ -382,6 +399,77 @@ describe('project/source scope state', () => {
     expect(result.status).toBe(expected);
     expect(result.error).toBe('explanation');
     expect(result.snapshot).toBeNull();
+  });
+
+  it.each([0, 503])(
+    'keeps last-good scope data and job after failure %i, then recovers',
+    (status) => {
+      const f: ScopeFreshness = {
+        ...freshness,
+        computedAt: '2026-01-01T00:00:00Z',
+        repositories: [
+          {
+            project: { source: 's', repo: 'o/r' },
+            lastCheckedAt: '2025-12-31T23:59:00Z',
+            state: 'fresh',
+            partial: false,
+            error: null,
+            delayedUntil: null,
+          },
+        ],
+      };
+      const loaded = reducer(scoped(), {
+        type: 'scope-response',
+        response: response({ job, freshness: f }),
+      });
+      const selected = reducer(loaded, { type: 'select', key: 'o/r#1' });
+      const failed = reducer(selected, {
+        type: 'scope-failed',
+        scope: project,
+        status,
+        error: 'Service Unavailable',
+      });
+      expect(failed.status).toBe('ready');
+      expect(failed.snapshot).toBe(selected.snapshot);
+      expect(failed.job).toBe(job);
+      expect(failed.selected).toBe('o/r#1');
+      expect(failed.refreshError).toBe('Service Unavailable');
+      expect(failed.freshness).toEqual({
+        ...f,
+        repositories: [{ ...f.repositories[0]!, state: 'stale' }],
+      });
+      expect(f.repositories[0]!.state).toBe('fresh');
+      expect(
+        nextScopeRequestAt({
+          job: failed.job,
+          respondedAt: 1000,
+          visible: true,
+          visibleSince: null,
+        }),
+      ).toBe(3000);
+      const recovered = reducer(failed, {
+        type: 'scope-response',
+        response: response({ freshness: f }),
+      });
+      expect(recovered.refreshError).toBeNull();
+      expect(recovered.freshness).toBe(f);
+      expect(recovered.job).toBeNull();
+    },
+  );
+
+  it.each([404, 409])('authoritative %i replaces last-good data', (status) => {
+    const loaded = reducer(scoped(), { type: 'scope-response', response: response({ job }) });
+    const failed = reducer(loaded, {
+      type: 'scope-failed',
+      scope: project,
+      status,
+      error: 'catalog or policy changed',
+    });
+    expect(failed.status).toBe(status === 404 ? 'not-in-catalog' : 'conflict');
+    expect(failed.snapshot).toBeNull();
+    expect(failed.job).toBeNull();
+    expect(failed.refreshError).toBeNull();
+    expect(failed.error).toBe('catalog or policy changed');
   });
 
   it('ignores old scope results, starts, and errors immediately after navigation', () => {
