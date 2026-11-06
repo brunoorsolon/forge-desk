@@ -7,6 +7,7 @@ import type {
   ListOptions,
   PlanWarning,
   RawRelation,
+  RelationCoverage,
   RepoRef,
 } from '../core/types.js';
 import { HttpError, createHttpClient, createLimiter, type FetchLike } from './http.js';
@@ -151,6 +152,20 @@ function normalizeRelations(relations: RawRelation[]): RawRelation[] {
   return sorted.filter((r, i) => i === 0 || compareRelations(sorted[i - 1]!, r) !== 0);
 }
 
+function mapRelations(
+  items: GhIssue[],
+  repo: RepoRef,
+  source: RawRelation['source'],
+): RawRelation[] {
+  const relations: RawRelation[] = [];
+  for (const item of items) {
+    if (!isPlainObject(item)) continue;
+    const ref = refFromItem(item, repo);
+    if (ref) relations.push({ kind: 'blocked-by', ref, source });
+  }
+  return relations;
+}
+
 function isNotFound(err: unknown): boolean {
   return err instanceof HttpError && err.status === 404;
 }
@@ -234,14 +249,14 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     issues.sort((a, b) => a.number - b.number);
 
     const warnings: PlanWarning[] = [];
+    const relationCoverage: RelationCoverage = {
+      native: 'not-requested',
+      subIssues: 'not-requested',
+    };
     const relations = new Map<number, RawRelation[]>();
     const addRelations = (parent: Issue, items: GhIssue[], source: RawRelation['source']): void => {
       const list = relations.get(parent.number) ?? [];
-      for (const item of items) {
-        if (!isPlainObject(item)) continue;
-        const ref = refFromItem(item, repo);
-        if (ref) list.push({ kind: 'blocked-by', ref, source });
-      }
+      list.push(...mapRelations(items, repo, source));
       relations.set(parent.number, list);
     };
 
@@ -251,6 +266,11 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
           !summaryAllowsSkip(summaries.get(i.number)?.issue_dependencies_summary?.total_blocked_by),
       );
       const found = await fetchRelated(repo, candidates, 'dependencies/blocked_by');
+      // Later 404s skip individual issues without a warning, but leave coverage incomplete.
+      relationCoverage.native =
+        found !== null && found.size === new Set(candidates.map((issue) => issue.number)).size
+          ? 'complete'
+          : 'unsupported';
       if (found === null) {
         warnings.push({
           code: 'native-unsupported',
@@ -268,6 +288,10 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
         (i) => !summaryAllowsSkip(summaries.get(i.number)?.sub_issues_summary?.total),
       );
       const found = await fetchRelated(repo, candidates, 'sub_issues');
+      relationCoverage.subIssues =
+        found !== null && found.size === new Set(candidates.map((issue) => issue.number)).size
+          ? 'complete'
+          : 'unsupported';
       if (found === null) {
         warnings.push({
           code: 'native-unsupported',
@@ -283,19 +307,60 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     for (const issue of issues) {
       issue.nativeRelations = normalizeRelations(relations.get(issue.number) ?? []);
     }
-    return { issues, warnings };
+    return { issues, warnings, relationCoverage };
   }
 
-  async function getIssue(repoIn: RepoRef, number: number): Promise<Issue | null> {
+  async function getIssue(
+    repoIn: RepoRef,
+    number: number,
+    options?: ListOptions,
+  ): Promise<Issue | null> {
     const repo = lowerRepo(repoIn);
+    let raw: GhIssue;
     try {
       const { data } = await client.getJson<GhIssue>(`${repoPath(repo)}/issues/${number}`);
       if (!isPlainObject(data) || data.pull_request) return null;
-      return mapIssue(data, repo);
+      raw = data;
     } catch (err) {
       if (err instanceof HttpError && (err.status === 404 || err.status === 410)) return null;
       throw err;
     }
+    const issue = mapIssue(raw, repo);
+    if (options === undefined) return issue;
+
+    const relationCoverage: RelationCoverage = {
+      native: 'not-requested',
+      subIssues: 'not-requested',
+    };
+    const relations: RawRelation[] = [];
+    const readRelations = async (
+      kind: keyof RelationCoverage,
+      endpoint: string,
+      total: unknown,
+      source: RawRelation['source'],
+    ): Promise<void> => {
+      if (!options[kind]) return;
+      try {
+        const candidates = summaryAllowsSkip(total) ? [] : [issue];
+        const found = await fetchRelated(repo, candidates, endpoint);
+        relationCoverage[kind] = found === null ? 'unsupported' : 'complete';
+        if (found !== null)
+          relations.push(...mapRelations(found.get(issue.number) ?? [], repo, source));
+      } catch {
+        // Keep the successfully read issue; incomplete relations must not clear blockers.
+        relationCoverage[kind] = 'failed';
+      }
+    };
+    await readRelations(
+      'native',
+      'dependencies/blocked_by',
+      raw.issue_dependencies_summary?.total_blocked_by,
+      'native',
+    );
+    await readRelations('subIssues', 'sub_issues', raw.sub_issues_summary?.total, 'sub-issue');
+    issue.nativeRelations = normalizeRelations(relations);
+    issue.relationCoverage = relationCoverage;
+    return issue;
   }
 
   return { kind: 'github', listOpenIssues, getIssue, cooldownUntil: () => client.cooldownUntil() };
