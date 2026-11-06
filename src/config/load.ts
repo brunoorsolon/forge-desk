@@ -7,6 +7,8 @@ import {
   DEFAULT_KEYWORDS,
   MAX_REFRESH_MINUTES,
   enabledReleasesSchema,
+  absolutePathSchema,
+  publicOriginSchema,
   rawConfigSchema,
   type AppConfig,
   type RawConfig,
@@ -428,11 +430,51 @@ function resolveConfig(input: unknown, env: Env, baseDir: string): AppConfig {
       ? parseIntEnv(settingName(env, 'REFRESH_MINUTES'), refreshEnv, 0, MAX_REFRESH_MINUTES)
       : (raw.ui?.refreshMinutes ?? DEFAULT_REFRESH_MINUTES);
 
+  // New settings deliberately have no legacy EV_* aliases.
+  const originEnv = envValue(env, 'FD_PUBLIC_ORIGIN');
+  const dirEnv = envValue(env, 'FD_PREFERENCES_DIR');
+  const validateEnv = (name: string, value: string, schema: z.ZodString): string => {
+    const result = schema.safeParse(value);
+    if (!result.success) {
+      throw new ConfigError(
+        `${name}: ${result.error.issues.map((issue) => issue.message).join('; ')}`,
+      );
+    }
+    return result.data;
+  };
+  const origin =
+    originEnv !== undefined
+      ? validateEnv('FD_PUBLIC_ORIGIN', originEnv, publicOriginSchema)
+      : raw.server?.publicOrigin;
+  const publicOrigin = origin !== undefined ? new URL(origin).origin : null;
+  const dir =
+    dirEnv !== undefined
+      ? validateEnv('FD_PREFERENCES_DIR', dirEnv, absolutePathSchema)
+      : (raw.preferences?.dir ?? null);
+  const sweepEnv = envValue(env, 'FD_SWEEP_HOURS');
+  const sweepHours =
+    sweepEnv !== undefined
+      ? parseIntEnv('FD_SWEEP_HOURS', sweepEnv, 0, 168)
+      : (raw.refresh?.sweepHours ?? 0);
   const basicAuth = resolveBasicAuth(raw.server?.basicAuth, env);
+  if (dir !== null && basicAuth === null) {
+    warnings.push(
+      'preferences.dir: application login is not configured; preferences are unavailable',
+    );
+  }
+  if (sweepHours > 0 && ttlSeconds === 0) {
+    warnings.push('refresh.sweepHours: cache.ttlSeconds is 0; the sweep will not run');
+  }
   const releases = resolveReleases(raw.releases, kindById, basicAuth !== null);
 
   return {
-    server: { host, port, basicAuth },
+    server: { host, port, publicOrigin, basicAuth },
+    refresh: {
+      sweepHours,
+      requestsPerMinute: raw.refresh?.requestsPerMinute ?? 60,
+      concurrency: raw.refresh?.concurrency ?? 4,
+    },
+    preferences: { dir },
     cache: { ttlSeconds },
     ui: { refreshMinutes },
     webhooks: resolveWebhooks(raw.webhooks, env, warnings),
