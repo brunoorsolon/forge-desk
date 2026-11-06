@@ -395,35 +395,134 @@ describe('observation identities and lifecycle', () => {
     expect(store.readRepository(project)?.observation.issues?.[0]?.nativeRelations).toEqual([]);
   });
 
-  it('records missing outside results, treats unresolved as failure, and retains relations across missing reads', () => {
-    const { store, clock } = setup();
-    store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
-      result: { status: 'unresolved', error: 'offline' },
+  it('reports an initially missing outside issue without claiming successful data or relation removal', () => {
+    const { store } = setup();
+    store.invalidateRepository(project);
+    const token = store.beginOutsideIssueRead(outside);
+    store.invalidateRepository(project);
+    const before = store.readOutsideIssue(outside)!;
+    expect(
+      store.writeOutsideIssue(token, {
+        result: { status: 'missing' },
+        relationCoverage: complete,
+      }),
+    ).toBe(true);
+    expect(store.readOutsideIssue(outside)).toMatchObject({
+      invalidated: true,
+      observation: {
+        result: { status: 'missing' },
+        lastCheckedAt: null,
+        relationCoverage: { native: 'not-requested', subIssues: 'not-requested' },
+        relationsCheckedAt: { native: null, subIssues: null },
+        lastAttempt: {
+          attemptedAt: t1,
+          outcome: 'failed',
+          error: 'Issue was not found or is not accessible',
+        },
+        invalidationGeneration: 1,
+      },
     });
-    expect(store.readOutsideIssue(outside)?.observation).toMatchObject({
-      result: null,
-      lastAttempt: { outcome: 'failed', error: 'offline' },
-    });
+    expect(store.readOutsideIssue(outside)!.version).not.toBe(before.version);
+  });
+
+  it.each(['closed', 'complete-empty'] as const)(
+    'retains public last-good data immediately after an inaccessible lookup until a %s read',
+    (recovery) => {
+      const { store, clock } = setup();
+      store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+        result: { status: 'unresolved', error: 'offline' },
+      });
+      expect(store.readOutsideIssue(outside)?.observation).toMatchObject({
+        result: null,
+        lastAttempt: { outcome: 'failed', error: 'offline' },
+      });
+      const original = issue({
+        body: 'Blocked by #10',
+        nativeRelations: [relation('native', 2), relation('sub-issue', 3)],
+      });
+      store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+        result: { status: 'found', issue: original },
+        relationCoverage: complete,
+      });
+      const missing = store.beginOutsideIssueRead(outside);
+      store.invalidateRepository(project);
+      const before = store.readOutsideIssue(outside)!;
+      clock(t2);
+      expect(
+        store.writeOutsideIssue(missing, {
+          result: { status: 'missing' },
+          relationCoverage: complete,
+          error: 'Lookup returned an inaccessible 404/410',
+        }),
+      ).toBe(true);
+      const retained = store.readOutsideIssue(outside)!;
+      expect(retained).toMatchObject({
+        invalidated: true,
+        observation: {
+          result: { status: 'found', issue: original },
+          lastCheckedAt: t1,
+          relationCoverage: complete,
+          relationsCheckedAt: { native: t1, subIssues: t1 },
+          lastAttempt: {
+            attemptedAt: t2,
+            outcome: 'failed',
+            error: 'Lookup returned an inaccessible 404/410',
+          },
+          invalidationGeneration: 1,
+        },
+      });
+      expect(retained.version).not.toBe(before.version);
+      // Repeated missing reads must not refresh the retained body or relation ages either.
+      store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+        result: { status: 'missing' },
+      });
+      expect(store.readOutsideIssue(outside)?.observation.result).toEqual(
+        retained.observation.result,
+      );
+      expect(store.readOutsideIssue(outside)?.observation.lastCheckedAt).toBe(t1);
+      expect(store.readOutsideIssue(outside)?.invalidated).toBe(true);
+      clock(t3);
+      store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+        result: {
+          status: 'found',
+          issue: issue({
+            body: '',
+            state: recovery === 'closed' ? 'closed' : 'open',
+          }),
+        },
+        ...(recovery === 'complete-empty' ? { relationCoverage: complete } : {}),
+      });
+      const recovered = store.readOutsideIssue(outside)!;
+      expect(recovered.invalidated).toBe(false);
+      expect(recovered.observation).toMatchObject({
+        result: {
+          status: 'found',
+          issue: {
+            body: '',
+            state: recovery === 'closed' ? 'closed' : 'open',
+            nativeRelations: recovery === 'closed' ? original.nativeRelations : [],
+          },
+        },
+        lastCheckedAt: t3,
+        relationsCheckedAt: {
+          native: recovery === 'closed' ? t1 : t3,
+          subIssues: recovery === 'closed' ? t1 : t3,
+        },
+        lastAttempt: { outcome: 'success', error: null },
+      });
+    },
+  );
+
+  it('rejects an obsolete missing result after a newer successful outside lookup', () => {
+    const { store } = setup();
+    const old = store.beginOutsideIssueRead(outside);
     store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
-      result: { status: 'found', issue: issue({ nativeRelations: [relation('native', 2)] }) },
+      result: { status: 'found', issue: issue() },
       relationCoverage: complete,
     });
-    clock(t2);
-    store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
-      result: { status: 'missing' },
-    });
-    expect(store.readOutsideIssue(outside)?.observation).toMatchObject({
-      result: { status: 'missing' },
-      lastCheckedAt: t2,
-      relationsCheckedAt: { native: t1, subIssues: t1 },
-    });
-    store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
-      result: { status: 'found', issue: issue({ body: 'Updated', state: 'closed' }) },
-    });
-    expect(store.readOutsideIssue(outside)?.observation.result).toMatchObject({
-      status: 'found',
-      issue: { body: 'Updated', state: 'closed', nativeRelations: [relation('native', 2)] },
-    });
+    const current = store.readOutsideIssue(outside);
+    expect(store.writeOutsideIssue(old, { result: { status: 'missing' } })).toBe(false);
+    expect(store.readOutsideIssue(outside)).toEqual(current);
   });
 
   it('uses outside issue coverage when supplied on the issue and defaults missing coverage conservatively', () => {

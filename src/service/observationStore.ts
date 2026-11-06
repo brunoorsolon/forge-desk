@@ -189,6 +189,13 @@ export class ObservationStore {
     const request = this.accept(token, entry);
     if (!request || !entry) return false;
     const copy = structuredClone(result);
+    if (copy.result.status === 'missing') {
+      // Providers use this for inaccessible 404/410s too. Keep the public last-good
+      // issue, including body and relations, so derivation can retain every edge.
+      entry.observation.result ??= { status: 'missing' };
+      this.failed(entry, copy.error ?? 'Issue was not found or is not accessible');
+      return true;
+    }
     const coverage =
       copy.relationCoverage ??
       (copy.result.status === 'found' ? copy.result.issue.relationCoverage : undefined) ??
@@ -197,9 +204,6 @@ export class ObservationStore {
     if (copy.result.status === 'found') {
       const [issue] = this.relations(entry, [copy.result.issue], coverage, checkedAt);
       entry.observation.result = { status: 'found', issue: issue! };
-    } else {
-      // A missing/inaccessible issue is not evidence that its old relations were removed.
-      entry.observation.result = copy.result;
     }
     this.succeeded(entry, request, coverage, checkedAt, copy);
     return true;
@@ -212,12 +216,7 @@ export class ObservationStore {
         ? this.repositories.get(repositoryId(token.project))
         : this.outsideIssues.get(outsideId(token));
     if (!this.accept(token, entry) || !entry) return false;
-    entry.observation.lastAttempt = {
-      attemptedAt: this.now().toISOString(),
-      outcome: 'failed',
-      error,
-    };
-    entry.version = ++this.nextVersion;
+    this.failed(entry, error);
     return true;
   }
 
@@ -292,6 +291,15 @@ export class ObservationStore {
     }
     entry.lastAcceptedRead = request.sequence;
     return request;
+  }
+
+  private failed(entry: Entry<Observation>, error: string): void {
+    entry.observation.lastAttempt = {
+      attemptedAt: this.now().toISOString(),
+      outcome: 'failed',
+      error,
+    };
+    entry.version = ++this.nextVersion;
   }
 
   private succeeded(
