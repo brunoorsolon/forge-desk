@@ -28,7 +28,7 @@ export interface HttpClientOptions {
   fetch?: FetchLike;
   /** Injectable so tests stay fast. Defaults to setTimeout. */
   sleep?: (ms: number) => Promise<void>;
-  /** Injectable clock (epoch ms), only used to compute rate-limit waits. Defaults to Date.now. */
+  /** Injectable clock (epoch ms) for rate-limit cooldowns and waits. Defaults to Date.now. */
   now?: () => number;
   /** Retries after the first attempt. Default 3. */
   maxRetries?: number;
@@ -43,6 +43,8 @@ export interface JsonResponse<T> {
 }
 
 export interface HttpClient {
+  /** Active cooldown's end in epoch ms according to the client's clock, or null. */
+  cooldownUntil(): number | null;
   /** `pathOrUrl` is a path starting with "/" (relative to baseUrl) or an absolute URL on the origin of baseUrl. */
   getJson<T>(pathOrUrl: string): Promise<JsonResponse<T>>;
   /** GETs a JSON array endpoint and follows `Link: <...>; rel="next"` until exhausted. */
@@ -347,5 +349,9 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
     return items;
   }
 
-  return { getJson, getPaginatedLink };
+  return {
+    getJson,
+    getPaginatedLink,
+    cooldownUntil: () => (cooldown !== undefined && now() < cooldown.until ? cooldown.until : null),
+  };
 }
