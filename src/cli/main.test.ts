@@ -191,6 +191,24 @@ describe('check', () => {
     expect(result.stderr).toMatch(/refresh.sweepHours:.*sweep will not run/);
   });
 
+  it('reports a source policy conflict as a warning while checking every named view', async () => {
+    const configPath = writeProject([{ number: 1, title: 'A' }]);
+    writeFileSync(
+      configPath,
+      readFileSync(configPath, 'utf8') +
+        '  - id: other\n    source: fx\n    repos: [o/r]\n    dependencies: { native: false }\n',
+    );
+    const result = await run(['check', '-c', configPath]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/source "fx": planning policy conflict/);
+    expect(result.stderr).toContain(
+      'dependencies.native differs between views "chain" and "other"',
+    );
+    expect(result.stdout).toContain('chain');
+    expect(result.stdout).toContain('other');
+    expect(result.stdout).toContain('1 issues');
+  });
+
   it('reports the demo problems and exits 2', async () => {
     const r = await run(['check', '--config', 'config.demo.yaml']);
     expect(r.code).toBe(2);

@@ -55,6 +55,10 @@ describe('parseConfig defaults', () => {
         webUrl: 'https://github.com',
         token: null,
         path: null,
+        planning: {
+          dependencies: { native: true, body: true, subIssues: false, keywords: DEFAULT_KEYWORDS },
+          ordering: { priorityLabels: [], mode: 'priority' },
+        },
       },
     ]);
     expect(cfg.views).toEqual([
@@ -632,6 +636,15 @@ views:
           webUrl: 'https://github.com',
           token: 'ghtok',
           path: null,
+          planning: {
+            dependencies: {
+              native: true,
+              body: true,
+              subIssues: false,
+              keywords: DEFAULT_KEYWORDS,
+            },
+            ordering: { priorityLabels: [], mode: 'priority' },
+          },
         },
       ]);
       expect(cfg.views).toHaveLength(1);
@@ -1251,5 +1264,343 @@ describe('project-browsing configuration through loadConfig', () => {
         'preferences: { dir: /preferences }\nserver: { basicAuth: { username: user, password: pass } }\n',
       ).warnings,
     ).toEqual([]);
+  });
+});
+
+describe('project catalog and source planning policies', () => {
+  const defaultPolicy = {
+    dependencies: { native: true, body: true, subIssues: false, keywords: DEFAULT_KEYWORDS },
+    ordering: { priorityLabels: [], mode: 'priority' },
+  };
+  const view = { id: 'first', source: 'gh', repos: ['Acme/API'] };
+  function config(views: unknown[], planning?: unknown) {
+    return parseConfig(
+      JSON.stringify({ sources: [{ id: 'gh', kind: 'github', planning }], views }),
+      {},
+    );
+  }
+
+  it('unions and normalizes repositories in source order, without merging identical forges', () => {
+    const cfg = parseConfig(
+      JSON.stringify({
+        sources: [
+          { id: 'second', kind: 'github' },
+          { id: 'gh', kind: 'github' },
+          { id: 'unused', kind: 'github' },
+        ],
+        views: [
+          { ...view, repos: ['Zed/Web', 'Acme/API', 'ACME/API'] },
+          { id: 'other', source: 'gh', repos: ['acme/api', 'acme/Web', 'aaa/zzz'] },
+          { id: 'same-forge', source: 'second', repos: ['ACME/API'] },
+        ],
+      }),
+      {},
+    );
+    expect(cfg.catalog).toEqual({
+      sources: [
+        {
+          id: 'second',
+          kind: 'github',
+          projects: [{ source: 'second', repo: 'acme/api' }],
+          policy: { status: 'usable' },
+        },
+        {
+          id: 'gh',
+          kind: 'github',
+          projects: ['aaa/zzz', 'acme/api', 'acme/web', 'zed/web'].map((repo) => ({
+            source: 'gh',
+            repo,
+          })),
+          policy: { status: 'usable' },
+        },
+        { id: 'unused', kind: 'github', projects: [], policy: { status: 'usable' } },
+      ],
+    });
+    expect(cfg.sources.map((s) => s.planning)).toEqual([defaultPolicy, defaultPolicy, null]);
+    expect(cfg.warnings).toEqual([]);
+  });
+
+  it('includes empty projects without reading provider issues or promoting outside dependencies', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fd-catalog-'));
+    try {
+      writeFileSync(
+        join(dir, 'issues.json'),
+        JSON.stringify({
+          issues: [
+            {
+              owner: 'acme',
+              repo: 'api',
+              number: 1,
+              state: 'open',
+              body: 'Blocked by: outside/lib#2',
+            },
+            { owner: 'acme', repo: 'empty', number: 1, state: 'closed' },
+          ],
+        }),
+      );
+      const cfg = parseConfig(
+        JSON.stringify({
+          sources: [{ id: 'fx', kind: 'fixture', path: './issues.json' }],
+          views: [{ ...view, source: 'fx', repos: ['acme/api', 'acme/empty', 'acme/unfetched'] }],
+        }),
+        {},
+        { baseDir: dir },
+      );
+      expect(cfg.catalog.sources[0]!.projects.map((p) => p.repo)).toEqual([
+        'acme/api',
+        'acme/empty',
+        'acme/unfetched',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not add enabled release-only repositories to the catalog', () => {
+    const cfg = parseConfig(
+      JSON.stringify({
+        server: { basicAuth: { username: 'admin', password: 'pw' } },
+        sources: [{ id: 'gt', kind: 'gitea', baseUrl: 'https://gitea.example' }],
+        views: [{ ...view, source: 'gt' }],
+        releases: {
+          enabled: true,
+          publicOrigin: 'https://desk.example',
+          stateDir: '/var/lib/releases',
+          repositories: [
+            {
+              id: 'release',
+              source: 'gt',
+              repo: 'release/only',
+              origin: 'ssh://git@gitea.example/release/only.git',
+              apiTokenEnv: 'RELEASE_TOKEN',
+              expectedApiUser: 'bot',
+              ci: { workflowPath: '.gitea/workflows/ci.yml' },
+              ssh: { privateKeyFile: '/secrets/key', knownHostsFile: '/secrets/hosts' },
+              tagger: { name: 'Bot', email: 'bot@example.com' },
+            },
+          ],
+        },
+      }),
+      {},
+    );
+    expect(cfg.catalog.sources[0]!.projects).toEqual([{ source: 'gt', repo: 'acme/api' }]);
+  });
+
+  it('agrees on omitted and explicitly written defaults and ignores every scope setting', () => {
+    const cfg = config([
+      view,
+      {
+        ...view,
+        id: 'explicit',
+        ...defaultPolicy,
+        scope: { labels: ['feature'], excludeLabels: ['hold'], milestones: ['v1'] },
+      },
+    ]);
+    expect(cfg.sources[0]!.planning).toEqual(defaultPolicy);
+    expect(cfg.sources[0]!.planning).not.toHaveProperty('scope');
+    expect(cfg.catalog.sources[0]!.policy).toEqual({ status: 'usable' });
+    expect(cfg.warnings).toEqual([]);
+    expect(cfg.views[1]!.scope).toEqual({
+      labels: ['feature'],
+      excludeLabels: ['hold'],
+      milestones: ['v1'],
+    });
+  });
+
+  it('compares each keyword list as a case-insensitive set without changing view values', () => {
+    const first = {
+      ...view,
+      dependencies: {
+        keywords: { blockedBy: ['Needs', 'depends on', 'Needs'], blocks: ['BLOCKS', 'enables'] },
+      },
+    };
+    const second = {
+      ...view,
+      id: 'second',
+      dependencies: {
+        keywords: { blockedBy: ['DEPENDS ON', 'needs'], blocks: ['Enables', 'blocks', 'blocks'] },
+      },
+    };
+    const cfg = config([first, second]);
+    expect(cfg.catalog.sources[0]!.policy).toEqual({ status: 'usable' });
+    expect(cfg.warnings).toEqual([]);
+    expect(cfg.views[0]!.dependencies.keywords).toEqual(first.dependencies.keywords);
+    expect(cfg.views[1]!.dependencies.keywords).toEqual(second.dependencies.keywords);
+    expect(cfg.sources[0]!.planning!.dependencies.keywords).toEqual(first.dependencies.keywords);
+  });
+
+  it('compares priority labels in rank order, not as sets', () => {
+    const first = { ...view, ordering: { priorityLabels: ['P0', 'P1'] } };
+    const same = { ...first, id: 'same' };
+    expect(config([first, same]).catalog.sources[0]!.policy).toEqual({ status: 'usable' });
+    const cfg = config([first, { ...same, ordering: { priorityLabels: ['P1', 'P0'] } }]);
+    expect(cfg.sources[0]!.planning).toBeNull();
+    expect(cfg.catalog.sources[0]!.policy).toMatchObject({
+      status: 'conflict',
+      conflict: { differingSettings: ['ordering.priorityLabels'] },
+    });
+  });
+
+  it.each([
+    ['dependencies.native', { dependencies: { native: false } }],
+    ['dependencies.body', { dependencies: { body: 'strict' } }],
+    ['dependencies.subIssues', { dependencies: { subIssues: true } }],
+    ['dependencies.keywords.blockedBy', { dependencies: { keywords: { blockedBy: [] } } }],
+    ['dependencies.keywords.blocks', { dependencies: { keywords: { blocks: [] } } }],
+    ['ordering.priorityLabels', { ordering: { priorityLabels: ['P1'] } }],
+    ['ordering.mode', { ordering: { mode: 'waves' } }],
+  ])('identifies a difference in %s', (setting, changes) => {
+    const cfg = config([view, { ...view, id: 'second', ...changes }]);
+    expect(cfg.catalog.sources[0]!.policy).toMatchObject({
+      status: 'conflict',
+      conflict: { source: 'gh', differingSettings: [setting], views: ['first', 'second'] },
+    });
+    expect(cfg.warnings).toHaveLength(1);
+  });
+
+  it('explains all differing settings and view groups while preserving other sources and views', () => {
+    const cfg = parseConfig(
+      JSON.stringify({
+        sources: [
+          { id: 'gh', kind: 'github' },
+          { id: 'other', kind: 'github' },
+        ],
+        views: [
+          view,
+          { ...view, id: 'same' },
+          {
+            ...view,
+            id: 'different',
+            dependencies: { native: false, body: 'strict' },
+            ordering: { mode: 'waves' },
+          },
+          { ...view, id: 'unaffected', source: 'other' },
+        ],
+      }),
+      {},
+    );
+    const policy = cfg.catalog.sources[0]!.policy;
+    expect(policy.status).toBe('conflict');
+    if (policy.status !== 'conflict') throw new Error('expected conflict');
+    expect(policy.conflict.differingSettings).toEqual([
+      'dependencies.native',
+      'dependencies.body',
+      'ordering.mode',
+    ]);
+    for (const setting of policy.conflict.differingSettings) {
+      expect(policy.conflict.explanation).toContain(
+        `${setting} differs between views "first", "same" and "different"`,
+      );
+    }
+    expect(policy.conflict.explanation).toContain('source "gh"');
+    expect(policy.conflict.explanation).toContain('sources[].planning');
+    expect(cfg.warnings).toEqual([policy.conflict.explanation]);
+    expect(cfg.sources[0]!.planning).toBeNull();
+    expect(cfg.sources[1]!.planning).toEqual(defaultPolicy);
+    expect(cfg.catalog.sources[1]!.policy).toEqual({ status: 'usable' });
+    for (const v of cfg.views) {
+      const standalone = parseConfig(
+        JSON.stringify({
+          sources: [{ id: v.source, kind: 'github' }],
+          views: [
+            v.id === 'different'
+              ? {
+                  ...view,
+                  id: v.id,
+                  dependencies: { native: false, body: 'strict' },
+                  ordering: { mode: 'waves' },
+                }
+              : { ...view, id: v.id, source: v.source },
+          ],
+        }),
+        {},
+      );
+      expect(v).toEqual(standalone.views[0]);
+    }
+  });
+
+  it.each([true, false])('uses explicit source planning when view agreement is %s', (agree) => {
+    const views = [view, { ...view, id: 'second', dependencies: { native: agree } }];
+    const planning = {
+      dependencies: { body: 'strict', keywords: { blocks: [' enables ', 'BLOCKS'] } },
+      ordering: { priorityLabels: ['P1', 'P0'], mode: 'waves' },
+    };
+    const cfg = config(views, planning);
+    expect(cfg.sources[0]!.planning).toEqual({
+      dependencies: {
+        native: true,
+        body: 'strict',
+        subIssues: false,
+        keywords: { blockedBy: DEFAULT_KEYWORDS.blockedBy, blocks: ['enables', 'BLOCKS'] },
+      },
+      ordering: planning.ordering,
+    });
+    expect(cfg.views).toEqual(config(views).views);
+    expect(cfg.catalog.sources[0]!.policy).toEqual({ status: 'usable' });
+    expect(cfg.warnings).toEqual([]);
+  });
+
+  it('uses defaults for an explicit empty policy rather than inheriting views', () => {
+    const cfg = config(
+      [{ ...view, dependencies: { native: false }, ordering: { mode: 'waves' } }],
+      {},
+    );
+    expect(cfg.sources[0]!.planning).toEqual(defaultPolicy);
+    expect(cfg.views[0]!.dependencies.native).toBe(false);
+  });
+
+  it('does not share arrays between source policies, views, or default keywords', () => {
+    const cfg = config([view]);
+    cfg.sources[0]!.planning!.dependencies.keywords.blocks.push('new');
+    cfg.sources[0]!.planning!.ordering.priorityLabels.push('P0');
+    expect(cfg.views[0]!.dependencies.keywords.blocks).toEqual(DEFAULT_KEYWORDS.blocks);
+    expect(cfg.views[0]!.ordering.priorityLabels).toEqual([]);
+    expect(DEFAULT_KEYWORDS.blocks).toEqual(['blocks', 'blocking', 'required by']);
+  });
+
+  it.each([
+    { typo: true },
+    { scope: {} },
+    { dependencies: { typo: true } },
+    { dependencies: { keywords: { typo: [] } } },
+    { ordering: { typo: true } },
+    { dependencies: { native: 'true' } },
+    { dependencies: { body: 'yes' } },
+    { dependencies: { subIssues: 1 } },
+    { dependencies: { keywords: { blocks: [' '] } } },
+    { ordering: { priorityLabels: [1] } },
+    { ordering: { mode: 'alphabetical' } },
+    null,
+  ])('rejects an invalid source policy %j just as for views', (planning) => {
+    expect(() => config([view], planning)).toThrow(/sources\[0\].planning/);
+  });
+
+  it('resolves the env-only view catalog and its overridden planning settings', () => {
+    const cfg = configFromEnv({
+      FD_PROVIDER: 'github',
+      FD_REPOS: 'Zed/Web, ACME/API, acme/api',
+      FD_SUB_ISSUES: 'true',
+      FD_ORDERING_MODE: 'waves',
+      FD_PRIORITY_LABELS: 'P1, P0',
+    });
+    expect(cfg.catalog).toEqual({
+      sources: [
+        {
+          id: 'default',
+          kind: 'github',
+          projects: ['acme/api', 'zed/web'].map((repo) => ({ source: 'default', repo })),
+          policy: { status: 'usable' },
+        },
+      ],
+    });
+    expect(cfg.sources[0]!.planning).toEqual({
+      dependencies: cfg.views[0]!.dependencies,
+      ordering: cfg.views[0]!.ordering,
+    });
+    expect(cfg.sources[0]!.planning!.ordering).toEqual({
+      priorityLabels: ['P1', 'P0'],
+      mode: 'waves',
+    });
+    expect(cfg.sources[0]!.planning!.dependencies.subIssues).toBe(true);
   });
 });
