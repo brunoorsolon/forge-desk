@@ -159,12 +159,12 @@ export class PreferenceStore {
       );
     }
     let fd: number | undefined;
-    let raw: string;
+    let raw: Buffer;
     try {
       fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       if (!fstatSync(fd).isFile())
         return unavailable('unreadable', 'Preference storage is not a regular file.');
-      raw = readFileSync(fd, 'utf8');
+      raw = readFileSync(fd);
     } catch (error) {
       return code(error) === 'ENOENT'
         ? { available: true, profile: empty() }
@@ -174,7 +174,7 @@ export class PreferenceStore {
     }
     let value: unknown;
     try {
-      value = JSON.parse(raw);
+      value = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw));
     } catch {
       return unavailable('corrupt', 'Preference file is not valid JSON.');
     }

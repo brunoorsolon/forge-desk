@@ -88,6 +88,43 @@ describe('PreferenceStore', () => {
     });
     expect(readFileSync(path, 'utf8')).toBe(raw);
   });
+  it.each([
+    Buffer.concat([
+      Buffer.from('{"version":1,"revision":4,"favorites":[{"source":"github","repo":"owner/a'),
+      Buffer.from([0xff]),
+      Buffer.from('"}],"rememberedProject":null}'),
+    ]),
+    Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(saved()))]),
+  ])('rejects undecodable UTF-8 or BOM JSON without changing any bytes', async (raw) => {
+    const dir = directory();
+    const path = join(dir, 'preferences.json');
+    writeFileSync(path, raw);
+    const store = new PreferenceStore({ directory: dir });
+    expect(store.read()).toMatchObject({ available: false, reason: 'corrupt' });
+    await expect(store.addFavorite(ref('new'))).rejects.toMatchObject({
+      code: 'preferences-unavailable',
+    });
+    await expect(store.removeFavorite(ref('a'))).rejects.toMatchObject({
+      code: 'preferences-unavailable',
+    });
+    await expect(store.rememberProject(ref('new'))).rejects.toMatchObject({
+      code: 'preferences-unavailable',
+    });
+    expect(readFileSync(path)).toEqual(raw);
+  });
+  it('preserves valid non-ASCII UTF-8 through load and save', async () => {
+    const dir = directory();
+    const path = join(dir, 'preferences.json');
+    const original = { ...saved(), favorites: [ref('café'), ref('日本語')] };
+    writeFileSync(path, JSON.stringify(original));
+    const store = new PreferenceStore({ directory: dir });
+    expect(store.read()).toEqual({ available: true, profile: original });
+    const updated = await store.addFavorite(ref('新しい'));
+    expect(new PreferenceStore({ directory: dir }).read()).toEqual({
+      available: true,
+      profile: updated,
+    });
+  });
   it('refuses unreadable/non-regular storage and never follows a symlink', async () => {
     const dir = directory();
     const target = join(dir, 'target');
