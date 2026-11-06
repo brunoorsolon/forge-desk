@@ -289,4 +289,37 @@ describe('per-source request admission', () => {
       expect(() => queue({ requestsPerMinute })).toThrow();
     expect(() => queue({ shutdownWaitMs: -1 })).toThrow();
   });
+  it('close cancels units selected by pump but not yet dispatched', async () => {
+    const q = queue();
+    const work = vi.fn(async () => 1);
+    const result = q.submit('scheduled', 'interactive', work);
+    const rejected = expect(result).rejects.toBeInstanceOf(AdmissionShutdownError);
+    // The submit pump runs first, then close, then the selected unit callback.
+    const closing = new Promise<void>((resolve) => {
+      queueMicrotask(() => {
+        void q.close().then(resolve);
+      });
+    });
+    await closing;
+    await rejected;
+    expect(work).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rechecks cooldown between selecting a unit and invoking its provider', async () => {
+    let until: number | null = null;
+    const q = queue({ cooldownUntil: () => until });
+    const work = vi.fn(async () => 1);
+    const result = q.submit('scheduled', 'interactive', work);
+    queueMicrotask(() => {
+      until = Date.now() + 200;
+    });
+    await vi.advanceTimersByTimeAsync(199);
+    expect(work).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBe(1);
+    expect(work).toHaveBeenCalledTimes(1);
+    await q.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdmissionQueue } from './admissionQueue.js';
+import { createGiteaProvider } from '../providers/gitea.js';
 import { createGitHubProvider } from '../providers/github.js';
 import { createHttpClient } from '../providers/http.js';
 
@@ -117,4 +118,58 @@ describe('admission with real provider helpers', () => {
     await q.close();
     await rejected;
   });
+  it.each([
+    ['github', false],
+    ['github', true],
+    ['gitea', false],
+    ['gitea', true],
+  ] as const)(
+    'completes 5000 real %s provider units without recursive admission (cooldown=%s)',
+    async (kind, delayed) => {
+      const until = delayed ? Date.now() + 200 : null;
+      let calls = 0;
+      let active = 0;
+      let maxActive = 0;
+      const q = new AdmissionQueue({
+        concurrency: 4,
+        requestsPerMinute: 1_000_000,
+        cooldownUntil: () => until,
+      });
+      const fetch = q.wrapFetch(async () => {
+        calls++;
+        active++;
+        maxActive = Math.max(maxActive, active);
+        // Keep the fetch pending for one microtask to observe real concurrency.
+        await Promise.resolve();
+        active--;
+        return json([]);
+      });
+      const provider =
+        kind === 'github'
+          ? createGitHubProvider({ token: null, fetch })
+          : createGiteaProvider({ baseUrl: 'https://gitea.test', token: null, fetch });
+      const work = Array.from({ length: 5_000 }, (_, index) =>
+        q.submit(`repository-${index}`, index % 4 === 0 ? 'sweep' : 'interactive', () =>
+          provider.listOpenIssues(
+            { owner: 'owner', repo: `repo-${index}` },
+            { native: false, subIssues: false },
+          ),
+        ),
+      );
+      const settled = Promise.allSettled(work);
+      if (delayed) {
+        await vi.advanceTimersByTimeAsync(199);
+        expect(calls).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      const results = await settled;
+      expect(results.filter((result) => result.status === 'rejected')).toEqual([]);
+      expect(results).toHaveLength(5_000);
+      expect(calls).toBe(5_000);
+      expect(maxActive).toBeLessThanOrEqual(4);
+      await q.close();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+    20_000,
+  );
 });

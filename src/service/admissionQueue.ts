@@ -24,6 +24,7 @@ export interface AdmissionQueueOptions {
 interface Unit {
   priority: AdmissionPriority;
   running: boolean;
+  scheduled: boolean;
   settled: boolean;
   promise: Promise<unknown>;
   reject: (error: unknown) => void;
@@ -88,6 +89,7 @@ export class AdmissionQueue {
     const unit: Unit = {
       priority,
       running: false,
+      scheduled: false,
       settled: false,
       promise,
       reject,
@@ -212,7 +214,21 @@ export class AdmissionQueue {
       return;
     }
     for (const unit of this.units.values()) {
-      if (!unit.running && !unit.settled) unit.start();
+      if (unit.running || unit.scheduled || unit.settled) continue;
+      unit.scheduled = true;
+      // Work may synchronously call wrapFetch (and therefore pump). Dispatch it
+      // after this pump finishes instead of recursively admitting the next unit.
+      // Keep it queued until the callback starts so close can still reject it.
+      queueMicrotask(() => {
+        unit.scheduled = false;
+        if (unit.settled || this.closed) return;
+        // Another request can report a cooldown between selection and dispatch.
+        if (this.status.delayed) {
+          this.pump();
+          return;
+        }
+        unit.start();
+      });
     }
     while (
       this.requests.length > 0 &&
