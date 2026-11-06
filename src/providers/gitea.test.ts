@@ -154,7 +154,7 @@ describe('listOpenIssues: listing', () => {
   it('makes a single request for an empty repository', async () => {
     const { p, calls } = provider(() => list([]));
     const res = await p.listOpenIssues(REPO, NONE);
-    expect(res).toEqual({ issues: [], warnings: [] });
+    expect({ issues: res.issues, warnings: res.warnings }).toEqual({ issues: [], warnings: [] });
     expect(calls).toHaveLength(1);
   });
 
@@ -391,7 +391,7 @@ describe('listOpenIssues: native dependencies', () => {
   it('makes no dependency calls and no warning for a repo without issues', async () => {
     const { p, calls } = provider(() => list([]));
     const res = await p.listOpenIssues(REPO, NATIVE);
-    expect(res).toEqual({ issues: [], warnings: [] });
+    expect({ issues: res.issues, warnings: res.warnings }).toEqual({ issues: [], warnings: [] });
     expect(calls).toHaveLength(1);
   });
 
@@ -456,6 +456,204 @@ describe('getIssue', () => {
   it('throws on other errors', async () => {
     const { p } = provider(() => status(401));
     await expect(p.getIssue(REPO, 1)).rejects.toBeInstanceOf(HttpError);
+  });
+});
+
+describe('relation coverage', () => {
+  it('lookup paginates and maps the same native relations as a listing', async () => {
+    const { p, calls } = provider((url) => {
+      if (url.pathname === ISSUES_PATH) return list([gtIssue(4)]);
+      if (url.pathname === `${ISSUES_PATH}/4`) return json(gtIssue(4));
+      if (url.searchParams.get('page') === '1') {
+        return json([
+          gtIssue(9, { repository: { name: 'Lib', owner: { login: 'Other' } } }),
+          gtIssue(1),
+          gtIssue(1),
+          null,
+        ]);
+      }
+      return json([gtIssue(7, { repository: { full_name: 'Foo/Bar' } })]);
+    });
+    const lookup = await p.getIssue({ owner: 'Acme', repo: 'API' }, 4, NATIVE);
+    expect(lookup?.nativeRelations).toEqual([
+      { kind: 'blocked-by', ref: { owner: 'acme', repo: 'api', number: 1 }, source: 'native' },
+      { kind: 'blocked-by', ref: { owner: 'foo', repo: 'bar', number: 7 }, source: 'native' },
+      { kind: 'blocked-by', ref: { owner: 'other', repo: 'lib', number: 9 }, source: 'native' },
+    ]);
+    expect(lookup?.relationCoverage).toEqual({ native: 'complete', subIssues: 'not-requested' });
+    expect(calls.map((c) => c.url)).toEqual([
+      `${API}/repos/acme/api/issues/4`,
+      `${API}/repos/acme/api/issues/4/dependencies?limit=50&page=1`,
+      `${API}/repos/acme/api/issues/4/dependencies?limit=50&page=2`,
+    ]);
+    const listing = await p.listOpenIssues(REPO, NATIVE);
+    expect(lookup?.nativeRelations).toEqual(listing.issues[0]?.nativeRelations);
+    expect(listing.relationCoverage).toEqual(lookup?.relationCoverage);
+    expect(listing.warnings).toEqual([]);
+  });
+
+  it('reports complete native coverage for an empty dependency response', async () => {
+    const { p } = provider((url) =>
+      url.pathname === `${ISSUES_PATH}/4` ? json(gtIssue(4)) : list([]),
+    );
+    const result = await p.getIssue(REPO, 4, NATIVE);
+    expect(result?.nativeRelations).toEqual([]);
+    expect(result?.relationCoverage).toEqual({ native: 'complete', subIssues: 'not-requested' });
+  });
+
+  it('keeps a closed issue with unsupported coverage when its dependencies return 404', async () => {
+    const { p, calls } = provider((url) =>
+      url.pathname === `${ISSUES_PATH}/4` ? json(gtIssue(4, { state: 'closed' })) : status(404),
+    );
+    const result = await p.getIssue(REPO, 4, NATIVE);
+    expect(result).toMatchObject({
+      key: 'acme/api#4',
+      state: 'closed',
+      nativeRelations: [],
+      relationCoverage: { native: 'unsupported', subIssues: 'not-requested' },
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it.each([401, 403, 410, 500])(
+    'keeps the observed issue with failed coverage after dependency HTTP %s',
+    async (code) => {
+      const { p } = provider((url) =>
+        url.pathname === `${ISSUES_PATH}/4`
+          ? json(gtIssue(4, { state: 'closed', body: 'Observed body' }))
+          : status(code),
+      );
+      expect(await p.getIssue(REPO, 4, NATIVE)).toMatchObject({
+        key: 'acme/api#4',
+        state: 'closed',
+        body: 'Observed body',
+        nativeRelations: [],
+        relationCoverage: { native: 'failed', subIssues: 'not-requested' },
+      });
+    },
+  );
+
+  it('reports failed coverage for an invalid dependencies payload', async () => {
+    const { p } = provider((url) =>
+      url.pathname === `${ISSUES_PATH}/4` ? json(gtIssue(4)) : json({ error: 'invalid' }),
+    );
+    expect((await p.getIssue(REPO, 4, NATIVE))?.relationCoverage).toEqual({
+      native: 'failed',
+      subIssues: 'not-requested',
+    });
+  });
+
+  it('does not report a partially paginated dependency read as complete', async () => {
+    const { p } = provider((url) => {
+      if (url.pathname === `${ISSUES_PATH}/4`) return json(gtIssue(4));
+      if (url.searchParams.get('page') === '1') return json([gtIssue(9)]);
+      return status(500);
+    });
+    const result = await p.getIssue(REPO, 4, NATIVE);
+    expect(result?.nativeRelations).toEqual([]);
+    expect(result?.relationCoverage?.native).toBe('failed');
+  });
+
+  it.each([NONE, { native: false, subIssues: true }])(
+    'makes no relation request when native is disabled: %j',
+    async (options) => {
+      const { p, calls } = provider(() => json(gtIssue(4)));
+      const result = await p.getIssue(REPO, 4, options);
+      expect(result?.nativeRelations).toEqual([]);
+      expect(result?.relationCoverage).toEqual({
+        native: 'not-requested',
+        subIssues: options.subIssues ? 'unsupported' : 'not-requested',
+      });
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  it('reports unsupported sub-issues independently of a native relation read', async () => {
+    const { p, calls } = provider((url) =>
+      url.pathname === `${ISSUES_PATH}/4` ? json(gtIssue(4)) : list([]),
+    );
+    const result = await p.getIssue(REPO, 4, { native: true, subIssues: true });
+    expect(result?.relationCoverage).toEqual({ native: 'complete', subIssues: 'unsupported' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('leaves the legacy lookup result unchanged without relation options', async () => {
+    const { p, calls } = provider(() => json(gtIssue(4)));
+    expect(await p.getIssue(REPO, 4)).toEqual({
+      key: 'acme/api#4',
+      repo: REPO,
+      number: 4,
+      title: 'Issue 4',
+      state: 'open',
+      url: `${ROOT}/acme/api/issues/4`,
+      body: '',
+      labels: [],
+      assignees: [],
+      milestone: null,
+      updatedAt: null,
+      nativeRelations: [],
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not read relations for missing issues or pull requests even when requested', async () => {
+    const { p, calls } = provider((url) => {
+      if (url.pathname.endsWith('/1')) return status(404);
+      if (url.pathname.endsWith('/2')) return status(410);
+      return json(gtIssue(3, { pull_request: {} }));
+    });
+    for (const number of [1, 2, 3]) expect(await p.getIssue(REPO, number, NATIVE)).toBeNull();
+    expect(calls).toHaveLength(3);
+    expect(calls.filter(isDeps)).toEqual([]);
+  });
+
+  it.each([NONE, NATIVE, { native: false, subIssues: true }, { native: true, subIssues: true }])(
+    'reports listing coverage independently for each option: %j',
+    async (options) => {
+      const { p, calls } = provider((url) =>
+        url.pathname === ISSUES_PATH ? list([gtIssue(1), gtIssue(2)]) : list([]),
+      );
+      const result = await p.listOpenIssues(REPO, options);
+      expect(result.relationCoverage).toEqual({
+        native: options.native ? 'complete' : 'not-requested',
+        subIssues: options.subIssues ? 'unsupported' : 'not-requested',
+      });
+      expect(result.issues.map((i) => i.nativeRelations)).toEqual([[], []]);
+      expect(result.warnings).toEqual([]);
+      expect(calls.filter(isDeps)).toHaveLength(options.native ? 2 : 0);
+    },
+  );
+
+  it('reports unsupported listing coverage beside the existing first-probe warning', async () => {
+    const { p, calls } = provider((url) =>
+      url.pathname === ISSUES_PATH ? list([gtIssue(1), gtIssue(2)]) : status(404),
+    );
+    const result = await p.listOpenIssues(REPO, NATIVE);
+    expect(result.relationCoverage).toEqual({ native: 'unsupported', subIssues: 'not-requested' });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]?.code).toBe('native-unsupported');
+    expect(calls.filter(isDeps)).toHaveLength(1);
+  });
+
+  it('does not claim complete listing coverage after a later isolated 404', async () => {
+    const { p } = provider((url) => {
+      if (url.pathname === ISSUES_PATH) return list([gtIssue(1), gtIssue(2), gtIssue(3)]);
+      if (url.pathname === `${ISSUES_PATH}/2/dependencies`) return status(404);
+      return list([gtIssue(7)]);
+    });
+    const result = await p.listOpenIssues(REPO, NATIVE);
+    expect(result.relationCoverage?.native).toBe('unsupported');
+    expect(result.issues.map((i) => i.nativeRelations.length)).toEqual([1, 0, 1]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('reports requested coverage for an empty listing without probing dependencies', async () => {
+    const { p, calls } = provider(() => list([]));
+    const result = await p.listOpenIssues(REPO, { native: true, subIssues: true });
+    expect(result.relationCoverage).toEqual({ native: 'complete', subIssues: 'unsupported' });
+    expect(result.issues).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(calls).toHaveLength(1);
   });
 });
 

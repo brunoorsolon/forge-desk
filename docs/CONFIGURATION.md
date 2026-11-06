@@ -101,6 +101,42 @@ A list (at least one) of places where issues come from.
 
 Derived `webUrl`: for `github`, `https://github.com` when `baseUrl` is `https://api.github.com`, otherwise `baseUrl` without a trailing `/api/v3`; for `gitea`, `baseUrl`; for `fixture`, none (issue URLs default to `https://fixture.local/...`, and URLs in bodies are only recognised if you set `webUrl` explicitly, as `config.demo.yaml` does).
 
+#### Source catalogs and `sources[].planning`
+
+At configuration load, each source gets a project catalog: the distinct union of its named views' repositories, lowercased and sorted by `owner/repo`. This includes repositories with no open issues and does not query the provider. Repositories mentioned only as outside dependencies or in `releases` are not projects. Separate source IDs retain separate catalogs even when they point to the same forge or repository. A source with no views has an empty catalog and needs no policy. Environment-only mode uses its single view's repositories and policy.
+
+For project and All projects browsing, a source can explicitly set its policy:
+
+```yaml
+sources:
+  - id: gh
+    kind: github
+    planning:
+      dependencies:
+        native: true
+        body: strict
+        subIssues: false
+        keywords:
+          blockedBy: [depends on, needs]
+          blocks: [blocks]
+      ordering:
+        priorityLabels: [P0, P1, P2]
+        mode: priority
+```
+
+`planning` is optional. Its `dependencies` and `ordering` accept exactly the same keys, validation and defaults as [a view](#views), including keyword lists. Unknown keys at any level are rejected; `scope` is not accepted here. An explicit `planning` block always wins, even when all views agree. An empty `planning: {}` selects the defaults, rather than inheriting settings from views.
+
+Without `planning`, all views of that source must agree on **resolved** `dependencies` and `ordering`:
+
+- Omitted and explicitly written defaults compare equal.
+- Each keyword list compares as a case-insensitive set: list order, duplicate entries and casing do not create a conflict.
+- Priority labels compare in rank order: `[P0, P1]` and `[P1, P0]` conflict.
+- `scope.labels`, `scope.excludeLabels` and `scope.milestones` are never compared or copied into the source policy.
+
+If the views disagree, loading still succeeds. The catalog records a policy conflict, and a load warning names the source, each differing setting and the involved views. `forge-desk check` reports that warning without failing because of it. Resolve it by adding `sources[].planning` for that source or aligning the differing settings in its views. Other sources and every named view keep working with their existing settings. The source policy never changes how named views are resolved or planned.
+
+The loaded configuration exposes `catalog` in the shared `CatalogResponse` shape, with sources in configuration order and each source's policy status (`usable` or `conflict`). `sources[].planning` holds the resolved dependency/ordering values, or `null` for a conflict or an unused source without an explicit policy. Catalog computation is available now; project read routes and scope planning consume it separately.
+
 ### `views`
 
 A list (at least one). A view is a set of repositories of one source that are planned together: one graph, one order.
