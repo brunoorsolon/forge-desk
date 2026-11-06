@@ -292,5 +292,5 @@ export function createGiteaProvider(opts: GiteaProviderOptions): IssueProvider {
     }
   }
 
-  return { kind: 'gitea', listOpenIssues, getIssue };
+  return { kind: 'gitea', listOpenIssues, getIssue, cooldownUntil: () => client.cooldownUntil() };
 }

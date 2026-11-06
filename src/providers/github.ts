@@ -298,5 +298,5 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     }
   }
 
-  return { kind: 'github', listOpenIssues, getIssue };
+  return { kind: 'github', listOpenIssues, getIssue, cooldownUntil: () => client.cooldownUntil() };
 }
