@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_KEYWORDS } from '../core/parser.js';
-import type { Issue } from '../core/types.js';
+import { buildPlan } from '../core/plan.js';
+import type { Issue, OpenPullRequest } from '../core/types.js';
 import {
   pendingOutsideIssueKeys,
   resolvePlanInput,
@@ -200,6 +201,70 @@ describe('pure resolution', () => {
           number: 11,
           title: 'URL close for issue 1',
           url: 'https://web.test/a/web/pull/11',
+        },
+      },
+    ]);
+  });
+
+  it('resolves conflicting duplicate pull request records deterministically regardless of arrival order', () => {
+    const root = issue(1);
+    const pr: OpenPullRequest = {
+      key: 'a/r#10',
+      repo: { owner: 'a', repo: 'r' },
+      number: 10,
+      title: 'Implement work',
+      url: 'https://web.test/a/r/pull/10',
+      body: 'Closes #1',
+    };
+    const other: OpenPullRequest = {
+      ...pr,
+      title: 'Alternate payload',
+      body: 'No closing reference',
+    };
+    const first = buildPlan(resolvePlanInput([root], new Map(), settings, [], [pr, other]));
+    const second = buildPlan(resolvePlanInput([root], new Map(), settings, [], [other, pr]));
+    expect(first).toEqual(second);
+  });
+
+  it('recognizes closing URLs under a subpath-hosted forge webUrl while rejecting mismatched prefixes', () => {
+    const root = issue(1);
+    const subpathSettings: ResolutionSettings = {
+      ...settings,
+      webHosts: ['example.com'],
+      webUrl: 'https://example.com/gitea',
+    };
+    const input = resolvePlanInput(
+      [root],
+      new Map(),
+      subpathSettings,
+      [],
+      [
+        {
+          key: 'a/r#10',
+          repo: { owner: 'a', repo: 'r' },
+          number: 10,
+          title: 'Subpath close',
+          url: 'https://example.com/gitea/a/r/pulls/10',
+          body: 'Closes https://example.com/gitea/a/r/issues/1',
+        },
+        {
+          key: 'a/r#11',
+          repo: { owner: 'a', repo: 'r' },
+          number: 11,
+          title: 'Wrong prefix',
+          url: 'https://example.com/gitea/a/r/pulls/11',
+          body: 'Closes https://example.com/other/a/r/issues/1\nCloses https://example.com/a/r/issues/1',
+        },
+      ],
+    );
+    expect(input.closingPullRequests).toEqual([
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Subpath close',
+          url: 'https://example.com/gitea/a/r/pulls/10',
         },
       },
     ]);

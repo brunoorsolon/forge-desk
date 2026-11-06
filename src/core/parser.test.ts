@@ -938,4 +938,42 @@ describe('parseClosingIssues', () => {
     ].join('\n');
     expect(parseClosingIssues(body, HOSTS)).toEqual(['#2', '#7'].map(issueRef));
   });
+
+  it('ignores multiline inline code spans while keeping closing references after the span', () => {
+    const body = ['`example starts', 'Closes #1', 'example ends`', 'Fixes #2'].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual(['#2'].map(issueRef));
+  });
+
+  it('recognizes issue URLs on subpath-hosted forges for both bare hosts and configured prefixes', () => {
+    expect(
+      parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
+        webHosts: ['example.com'],
+      }),
+    ).toEqual([issueRef('a/r#1')]);
+    expect(
+      parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([issueRef('a/r#1')]);
+    expect(
+      parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
+        webHosts: ['https://example.com/gitea'],
+      }),
+    ).toEqual([issueRef('a/r#1')]);
+    expect(
+      parseClosingIssues('Closes https://example.com/other/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([]);
+    expect(
+      parseClosingIssues('Closes https://example.com/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([]);
+    expect(
+      parseClosingIssues('Closes https://other.example/gitea/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([]);
+  });
 });

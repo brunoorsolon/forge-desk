@@ -67,22 +67,101 @@ function buildKeywords(config: KeywordConfig): KeywordEntry[] {
   return entries;
 }
 
+interface AllowedWebRoot {
+  host: string;
+  /** Lowercased path prefix without leading/trailing `/`, or `null` when any path prefix is allowed. */
+  subpath: string | null;
+}
+
+function parseWebRoots(webHosts: readonly string[] | undefined): AllowedWebRoot[] {
+  const out: AllowedWebRoot[] = [];
+  for (const raw of webHosts ?? []) {
+    const entry = raw.trim();
+    if (entry === '') continue;
+    if (/^https?:\/\//i.test(entry)) {
+      try {
+        const u = new URL(entry);
+        const host = u.host.toLowerCase();
+        const subpath = u.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+        if (host !== '') out.push({ host, subpath });
+      } catch {
+        // Ignore malformed URL entries.
+      }
+      continue;
+    }
+    const trimmed = entry.replace(/\/+$/, '').toLowerCase();
+    if (trimmed === '') continue;
+    const slash = trimmed.indexOf('/');
+    if (slash < 0) {
+      out.push({ host: trimmed, subpath: null });
+    } else {
+      const host = trimmed.slice(0, slash);
+      const subpath = trimmed.slice(slash + 1).replace(/^\/+/, '');
+      if (host !== '') out.push({ host, subpath });
+    }
+  }
+  return out;
+}
+
+function matchesWebRoot(
+  roots: readonly AllowedWebRoot[],
+  rawHost: string,
+  rawSubpath: string | undefined,
+): boolean {
+  const host = rawHost.toLowerCase();
+  const subpath = (rawSubpath ?? '').replace(/^\/+|\/+$/g, '').toLowerCase();
+  return roots.some((r) => r.host === host && (r.subpath === null || r.subpath === subpath));
+}
+
 interface LineState {
   inComment: boolean;
+  codeSpanEnd: { line: number; col: number } | null;
+}
+
+function findBacktickClose(line: string, start: number, length: number): number {
+  let j = start;
+  while (j < line.length) {
+    if (line[j] !== '`') {
+      j++;
+      continue;
+    }
+    let m = 1;
+    while (line[j + m] === '`') m++;
+    if (m === length) return j + m;
+    j += m;
+  }
+  return -1;
+}
+
+function isFenceOpenLine(raw: string): { char: string; length: number } | null {
+  const open = FENCE_OPEN_RE.exec(raw);
+  if (!open) return null;
+  const marker = open[1]!;
+  // A backtick fence's info string cannot contain backticks (that is an inline span).
+  if (marker[0] === '`' && open[2]!.includes('`')) return null;
+  return { char: marker[0]!, length: marker.length };
 }
 
 /**
  * Removes HTML comments (replaced by a space) and inline code spans (replaced by a
- * placeholder) from one line. Comment state carries over to following lines.
+ * placeholder) from one line. Comment and multiline inline code-span state carry over
+ * to following lines.
  */
-function cleanLine(line: string, state: LineState): string {
+function cleanLine(lines: readonly string[], lineIndex: number, state: LineState): string {
+  const line = lines[lineIndex]!;
   let out = '';
   let i = 0;
+  if (state.codeSpanEnd !== null) {
+    if (lineIndex < state.codeSpanEnd.line) return CODE_PLACEHOLDER;
+    out = CODE_PLACEHOLDER;
+    i = state.codeSpanEnd.col;
+    state.codeSpanEnd = null;
+  }
   if (state.inComment) {
-    const end = line.indexOf('-->');
-    if (end < 0) return ' ';
+    const end = line.indexOf('-->', i);
+    if (end < 0) return out + ' ';
     state.inComment = false;
-    out = ' ';
+    out += ' ';
     i = end + 3;
   }
   while (i < line.length) {
@@ -98,28 +177,28 @@ function cleanLine(line: string, state: LineState): string {
     } else if (ch === '`') {
       let n = 1;
       while (line[i + n] === '`') n++;
-      // Find the next backtick run of exactly the same length.
-      let j = i + n;
-      let close = -1;
-      while (j < line.length) {
-        if (line[j] !== '`') {
-          j++;
-          continue;
+      const sameLineClose = findBacktickClose(line, i + n, n);
+      if (sameLineClose >= 0) {
+        out += CODE_PLACEHOLDER;
+        i = sameLineClose;
+      } else {
+        let multilineClose: { line: number; col: number } | null = null;
+        for (let k = lineIndex + 1; k < lines.length; k++) {
+          const nextLine = lines[k]!;
+          if (isFenceOpenLine(nextLine) !== null || /^\s*>/.test(nextLine)) break;
+          const col = findBacktickClose(nextLine, 0, n);
+          if (col >= 0) {
+            multilineClose = { line: k, col };
+            break;
+          }
         }
-        let m = 1;
-        while (line[j + m] === '`') m++;
-        if (m === n) {
-          close = j + m;
-          break;
+        if (multilineClose !== null) {
+          state.codeSpanEnd = multilineClose;
+          out += CODE_PLACEHOLDER;
+          return out;
         }
-        j += m;
-      }
-      if (close < 0) {
         out += line.slice(i, i + n);
         i += n;
-      } else {
-        out += CODE_PLACEHOLDER;
-        i = close;
       }
     } else {
       out += ch;
@@ -166,9 +245,7 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
   const keywords = buildKeywords(options.keywords ?? DEFAULT_KEYWORDS);
   if (!body) return [];
   const kindOf = new Map<string, Kind>(keywords.map((k) => [k.text, k.kind]));
-  const hosts = new Set(
-    (options.webHosts ?? []).map((h) => h.trim().toLowerCase()).filter((h) => h !== ''),
-  );
+  const webRoots = parseWebRoots(options.webHosts);
 
   const alternation = keywords.map((k) => escapeRegex(k.text).replace(/ /g, '\\s+')).join('|');
   const keywordLineRe = new RegExp(
@@ -178,11 +255,11 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
 
   const refRe = new RegExp(
     [
-      // 1: host, 2: owner, 3: repo, 4: number
-      `(?<![${WORD}])https?://([A-Za-z0-9.-]+(?::\\d+)?)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
-      // 5: owner, 6: repo, 7: number
+      // 1: host, 2: subpath, 3: owner, 4: repo, 5: number
+      `(?<![${WORD}])https?://([A-Za-z0-9.-]+(?::\\d+)?)(?:/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+))?/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
+      // 6: owner, 7: repo, 8: number
       `(?<![${WORD}])([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\\d+)(?![${WORD}])`,
-      // 8: number
+      // 9: number
       `(?<![${WORD}/])#(\\d+)(?![${WORD}])`,
     ].join('|'),
     'gu',
@@ -194,17 +271,17 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
       let owner: string | null = null;
       let repo: string | null = null;
       let numText: string;
-      if (m[4] !== undefined) {
-        if (!hosts.has(m[1]!.toLowerCase())) continue;
-        owner = m[2]!.toLowerCase();
-        repo = m[3]!.toLowerCase();
-        numText = m[4];
-      } else if (m[7] !== undefined) {
-        owner = m[5]!.toLowerCase();
-        repo = m[6]!.toLowerCase();
-        numText = m[7];
+      if (m[5] !== undefined) {
+        if (!matchesWebRoot(webRoots, m[1]!, m[2])) continue;
+        owner = m[3]!.toLowerCase();
+        repo = m[4]!.toLowerCase();
+        numText = m[5];
+      } else if (m[8] !== undefined) {
+        owner = m[6]!.toLowerCase();
+        repo = m[7]!.toLowerCase();
+        numText = m[8];
       } else {
-        numText = m[8]!;
+        numText = m[9]!;
       }
       const number = Number(numText);
       if (!Number.isSafeInteger(number) || number < 1) continue;
@@ -215,29 +292,27 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
     }
   };
 
-  const lineState: LineState = { inComment: false };
+  const lineState: LineState = { inComment: false, codeSpanEnd: null };
   let fence: { char: string; length: number } | null = null;
   let section: Kind | null = null;
+  const lines = body.split(/\r\n|\r|\n/);
 
-  for (const raw of body.split(/\r\n|\r|\n/)) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!;
     if (fence) {
       const close = FENCE_CLOSE_RE.exec(raw);
       if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
       continue;
     }
-    if (!lineState.inComment) {
-      const open = FENCE_OPEN_RE.exec(raw);
-      if (open) {
-        const marker = open[1]!;
-        // A backtick fence's info string cannot contain backticks (that is an inline span).
-        if (!(marker[0] === '`' && open[2]!.includes('`'))) {
-          fence = { char: marker[0]!, length: marker.length };
-          continue;
-        }
+    if (!lineState.inComment && lineState.codeSpanEnd === null) {
+      const opened = isFenceOpenLine(raw);
+      if (opened) {
+        fence = opened;
+        continue;
       }
     }
 
-    const line = cleanLine(raw, lineState);
+    const line = cleanLine(lines, lineIndex, lineState);
     if (/^\s*>/.test(line)) continue;
 
     // A relation line is read in every mode; when it has this shape, only the
@@ -285,17 +360,15 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
  */
 export function parseClosingIssues(body: string, options: ClosingParseOptions = {}): IssueRef[] {
   if (!body) return [];
-  const hosts = new Set(
-    (options.webHosts ?? []).map((h) => h.trim().toLowerCase()).filter((h) => h !== ''),
-  );
+  const webRoots = parseWebRoots(options.webHosts);
   const closingRe = new RegExp(
     `(?<![${WORD}/])(?:\\*{1,2}|_{1,2})?(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:(?=(?:\\*{1,2}|_{1,2})(?![${WORD}]))|(?![${WORD}]))(?:\\*{1,2}|_{1,2})?(?:\\s*:\\s*(?:\\*{1,2}|_{1,2})?\\s*|\\s+)(?:\\[\\s*)?(?:` +
       [
-        // 1: host, 2: owner, 3: repo, 4: number
-        `https?://([A-Za-z0-9.-]+(?::\\d+)?)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
-        // 5: owner, 6: repo, 7: number
+        // 1: host, 2: subpath, 3: owner, 4: repo, 5: number
+        `https?://([A-Za-z0-9.-]+(?::\\d+)?)(?:/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+))?/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
+        // 6: owner, 7: repo, 8: number
         `([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\\d+)(?![${WORD}])`,
-        // 8: number
+        // 9: number
         `#(\\d+)(?![${WORD}])`,
       ].join('|') +
       ')',
@@ -303,44 +376,43 @@ export function parseClosingIssues(body: string, options: ClosingParseOptions = 
   );
 
   const found = new Map<string, IssueRef>();
-  const lineState: LineState = { inComment: false };
+  const lineState: LineState = { inComment: false, codeSpanEnd: null };
   let fence: { char: string; length: number } | null = null;
+  const lines = body.split(/\r\n|\r|\n/);
 
-  for (const raw of body.split(/\r\n|\r|\n/)) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!;
     if (fence) {
       const close = FENCE_CLOSE_RE.exec(raw);
       if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
       continue;
     }
-    if (!lineState.inComment) {
-      const open = FENCE_OPEN_RE.exec(raw);
-      if (open) {
-        const marker = open[1]!;
-        if (!(marker[0] === '`' && open[2]!.includes('`'))) {
-          fence = { char: marker[0]!, length: marker.length };
-          continue;
-        }
+    if (!lineState.inComment && lineState.codeSpanEnd === null) {
+      const opened = isFenceOpenLine(raw);
+      if (opened) {
+        fence = opened;
+        continue;
       }
     }
 
-    const line = cleanLine(raw, lineState);
+    const line = cleanLine(lines, lineIndex, lineState);
     if (/^\s*>/.test(line)) continue;
 
     for (const m of line.matchAll(closingRe)) {
       let owner: string | null = null;
       let repo: string | null = null;
       let numText: string;
-      if (m[4] !== undefined) {
-        if (!hosts.has(m[1]!.toLowerCase())) continue;
-        owner = m[2]!.toLowerCase();
-        repo = m[3]!.toLowerCase();
-        numText = m[4];
-      } else if (m[7] !== undefined) {
-        owner = m[5]!.toLowerCase();
-        repo = m[6]!.toLowerCase();
-        numText = m[7];
+      if (m[5] !== undefined) {
+        if (!matchesWebRoot(webRoots, m[1]!, m[2])) continue;
+        owner = m[3]!.toLowerCase();
+        repo = m[4]!.toLowerCase();
+        numText = m[5];
+      } else if (m[8] !== undefined) {
+        owner = m[6]!.toLowerCase();
+        repo = m[7]!.toLowerCase();
+        numText = m[8];
       } else {
-        numText = m[8]!;
+        numText = m[9]!;
       }
       const number = Number(numText);
       if (!Number.isSafeInteger(number) || number < 1) continue;

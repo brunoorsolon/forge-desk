@@ -7,6 +7,7 @@ import type {
   Issue,
   IssueKey,
   NodeStatus,
+  OpenPullRequest,
   OrderingMode,
   Plan,
   PlanNode,
@@ -56,6 +57,40 @@ function safeCompareKeys(a: IssueKey, b: IssueKey): number {
   } catch {
     return cmp(a, b);
   }
+}
+
+export function normalizeOpenPullRequests(prs: readonly OpenPullRequest[]): OpenPullRequest[] {
+  if (prs.length === 0) return [];
+  const items = prs
+    .map((pr) => ({
+      pr: {
+        key: pr.key,
+        repo: { owner: pr.repo.owner, repo: pr.repo.repo },
+        number: pr.number,
+        title: pr.title,
+        url: pr.url,
+        body: pr.body,
+      },
+      tie: '',
+    }))
+    .sort((a, b) => safeCompareKeys(a.pr.key, b.pr.key));
+  for (let i = 0; i < items.length;) {
+    let j = i + 1;
+    while (j < items.length && items[j]!.pr.key === items[i]!.pr.key) j++;
+    if (j - i > 1) {
+      const group = items.slice(i, j);
+      for (const g of group) g.tie = canonicalJson(g.pr);
+      group.sort((a, b) => cmp(a.tie, b.tie));
+      for (let k = 0; k < group.length; k++) items[i + k] = group[k]!;
+    }
+    i = j;
+  }
+  const out: OpenPullRequest[] = [];
+  for (const { pr } of items) {
+    if (out.length > 0 && out[out.length - 1]!.key === pr.key) continue;
+    out.push(pr);
+  }
+  return out;
 }
 
 function normalizeClosingPullRequests(prs: readonly ClosingPullRequest[]): ClosingPullRequest[] {

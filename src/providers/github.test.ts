@@ -136,6 +136,26 @@ describe('listOpenIssues: listing', () => {
     ]);
   });
 
+  it('resolves conflicting duplicate pull requests deterministically regardless of item order', async () => {
+    const prA = ghIssue(10, {
+      title: 'Implement work',
+      body: 'Closes #1',
+      html_url: 'https://github.com/acme/api/pull/10',
+      pull_request: { url: 'x', merged_at: null },
+    });
+    const prB = ghIssue(10, {
+      title: 'Alternate payload',
+      body: 'No closing reference',
+      html_url: 'https://github.com/acme/api/pull/10',
+      pull_request: { url: 'x', merged_at: null },
+    });
+    const { p: p1 } = provider(() => json([prA, prB]));
+    const { p: p2 } = provider(() => json([prB, prA]));
+    expect((await p1.listOpenIssues(REPO, NONE)).pullRequests).toEqual(
+      (await p2.listOpenIssues(REPO, NONE)).pullRequests,
+    );
+  });
+
   it('maps and normalizes fields', async () => {
     const { p } = provider(() =>
       json([

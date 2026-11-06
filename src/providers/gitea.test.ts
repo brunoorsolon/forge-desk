@@ -209,6 +209,26 @@ describe('listOpenIssues: listing', () => {
     ]);
   });
 
+  it('resolves conflicting duplicate pull requests deterministically regardless of item order', async () => {
+    const prA = gtIssue(10, {
+      title: 'Implement work',
+      body: 'Closes #1',
+      html_url: `${ROOT}/acme/api/pulls/10`,
+      pull_request: { merged: false },
+    });
+    const prB = gtIssue(10, {
+      title: 'Alternate payload',
+      body: 'No closing reference',
+      html_url: `${ROOT}/acme/api/pulls/10`,
+      pull_request: { merged: false },
+    });
+    const { p: p1 } = provider(() => list([prA, prB]));
+    const { p: p2 } = provider(() => list([prB, prA]));
+    expect((await p1.listOpenIssues(REPO, NONE)).pullRequests).toEqual(
+      (await p2.listOpenIssues(REPO, NONE)).pullRequests,
+    );
+  });
+
   it('pages on the raw item count even when a full page is all pull requests', async () => {
     const page1 = range(1, 50).map((i) => ({ ...i, pull_request: { merged: true } }));
     const { p, calls } = provider((url) =>

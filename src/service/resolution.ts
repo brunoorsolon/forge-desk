@@ -1,7 +1,12 @@
 import type { ResolvedView } from '../config/schema.js';
 import { compareKeys, makeKey, parseKey } from '../core/keys.js';
 import { parseBodyRelations, parseClosingIssues } from '../core/parser.js';
-import type { ClosingPullRequestLink, ParentLink, PlanInput } from '../core/plan.js';
+import {
+  normalizeOpenPullRequests,
+  type ClosingPullRequestLink,
+  type ParentLink,
+  type PlanInput,
+} from '../core/plan.js';
 import type {
   DependencyEdge,
   DependencySource,
@@ -84,7 +89,37 @@ function placeholderIssue(key: IssueKey, webUrl: string): Issue {
   };
 }
 
-function relationsOf(issue: Issue, settings: RelationSettings): RawRelation[] {
+export function webHostsOf(webUrl: string): string[] {
+  if (webUrl === '') return [];
+  try {
+    const u = new URL(webUrl);
+    const host = u.host.toLowerCase();
+    const subpath = u.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+    return subpath === '' ? [host] : [`${host}/${subpath}`];
+  } catch {
+    return [];
+  }
+}
+
+function effectiveWebHosts(settings: RelationSettings & { webUrl?: string }): string[] {
+  if (!settings.webUrl) return settings.webHosts;
+  try {
+    const u = new URL(settings.webUrl);
+    const host = u.host.toLowerCase();
+    const subpath = u.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (subpath === '') return settings.webHosts;
+    const prefixed = `${host}/${subpath}`;
+    const mapped = settings.webHosts.map((h) => (h.trim().toLowerCase() === host ? prefixed : h));
+    return mapped.includes(prefixed) ? mapped : [...mapped, prefixed];
+  } catch {
+    return settings.webHosts;
+  }
+}
+
+function relationsOf(
+  issue: Issue,
+  settings: RelationSettings & { webUrl?: string },
+): RawRelation[] {
   const out: RawRelation[] = [];
   for (const rel of issue.nativeRelations) {
     if (
@@ -97,7 +132,7 @@ function relationsOf(issue: Issue, settings: RelationSettings): RawRelation[] {
     out.push(
       ...parseBodyRelations(issue.body, {
         keywords: settings.dependencies.keywords,
-        webHosts: settings.webHosts,
+        webHosts: effectiveWebHosts(settings),
         strict: settings.dependencies.body === 'strict',
       }),
     );
@@ -268,13 +303,10 @@ export function resolvePlanInput(
     }
   }
 
-  const pullRequests = new Map<IssueKey, OpenPullRequest>();
-  for (const pr of openPullRequests) {
-    if (!pullRequests.has(pr.key)) pullRequests.set(pr.key, pr);
-  }
+  const closingWebHosts = effectiveWebHosts(settings);
   const closingPullRequests: ClosingPullRequestLink[] = [];
-  for (const pr of [...pullRequests.values()].sort((a, b) => compareKeys(a.key, b.key))) {
-    for (const ref of parseClosingIssues(pr.body, { webHosts: settings.webHosts })) {
+  for (const pr of normalizeOpenPullRequests(openPullRequests)) {
+    for (const ref of parseClosingIssues(pr.body, { webHosts: closingWebHosts })) {
       const issueKey = makeKey(
         { owner: ref.owner ?? pr.repo.owner, repo: ref.repo ?? pr.repo.repo },
         ref.number,

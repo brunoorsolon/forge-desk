@@ -1,4 +1,5 @@
 import { compareRefs, makeKey } from '../core/keys.js';
+import { normalizeOpenPullRequests } from '../core/plan.js';
 import type {
   FetchResult,
   Issue,
@@ -282,18 +283,18 @@ export function createGiteaProvider(opts: GiteaProviderOptions): IssueProvider {
     const rawItems = await getPaged<GtIssue>(`${repoPath(repo)}/issues?state=open`);
 
     const issues: Issue[] = [];
-    const pullRequestsByNumber = new Map<number, OpenPullRequest>();
+    const rawPullRequests: OpenPullRequest[] = [];
     for (const raw of rawItems) {
       if (!isPlainObject(raw)) continue;
       if (raw.pull_request) {
         const pr = mapPullRequest(raw, repo);
-        if (pr && !pullRequestsByNumber.has(pr.number)) pullRequestsByNumber.set(pr.number, pr);
+        if (pr) rawPullRequests.push(pr);
         continue;
       }
       issues.push(mapIssue(raw, repo));
     }
     issues.sort((a, b) => a.number - b.number);
-    const pullRequests = [...pullRequestsByNumber.values()].sort((a, b) => a.number - b.number);
+    const pullRequests = normalizeOpenPullRequests(rawPullRequests);
 
     const warnings: PlanWarning[] = [];
     const relationCoverage: RelationCoverage = {

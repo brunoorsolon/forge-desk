@@ -1,4 +1,5 @@
 import { compareRefs, makeKey } from '../core/keys.js';
+import { normalizeOpenPullRequests } from '../core/plan.js';
 import type {
   FetchResult,
   Issue,
@@ -260,13 +261,13 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     );
 
     const issues: Issue[] = [];
-    const pullRequestsByNumber = new Map<number, OpenPullRequest>();
+    const rawPullRequests: OpenPullRequest[] = [];
     const summaries = new Map<number, GhIssue>();
     for (const raw of rawItems) {
       if (!isPlainObject(raw)) continue;
       if (raw.pull_request) {
         const pr = mapPullRequest(raw, repo);
-        if (pr && !pullRequestsByNumber.has(pr.number)) pullRequestsByNumber.set(pr.number, pr);
+        if (pr) rawPullRequests.push(pr);
         continue;
       }
       const issue = mapIssue(raw, repo);
@@ -274,7 +275,7 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
       summaries.set(issue.number, raw);
     }
     issues.sort((a, b) => a.number - b.number);
-    const pullRequests = [...pullRequestsByNumber.values()].sort((a, b) => a.number - b.number);
+    const pullRequests = normalizeOpenPullRequests(rawPullRequests);
 
     const warnings: PlanWarning[] = [];
     const relationCoverage: RelationCoverage = {
