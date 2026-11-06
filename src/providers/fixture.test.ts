@@ -251,6 +251,67 @@ describe('createFixtureProvider', () => {
   });
 });
 
+describe('relation coverage', () => {
+  const repo = { owner: 'acme', repo: 'api' };
+  const declared = [
+    { kind: 'blocked-by', ref: { owner: 'acme', repo: 'api', number: 2 }, source: 'native' },
+  ];
+
+  it.each([
+    undefined,
+    NO_NATIVE,
+    OPTS,
+    { native: false, subIssues: true },
+    { native: true, subIssues: true },
+  ])('lookups keep declared relations and complete coverage with options %j', async (options) => {
+    const path = await writeFixture({
+      issues: [issue({ state: 'closed', blockedBy: ['acme/api#2'] })],
+    });
+    const provider = createFixtureProvider({ path });
+    const result = await provider.getIssue(repo, 1, options);
+    expect(result?.state).toBe('closed');
+    expect(result?.nativeRelations).toEqual(declared);
+    expect(result?.relationCoverage).toEqual({ native: 'complete', subIssues: 'complete' });
+    expect(await provider.getIssue(repo, 2, options)).toBeNull();
+  });
+
+  it('reports complete lookup coverage when the fixture declares no relations', async () => {
+    const provider = createFixtureProvider({ path: await writeFixture({ issues: [issue()] }) });
+    const result = await provider.getIssue(repo, 1);
+    expect(result?.nativeRelations).toEqual([]);
+    expect(result?.relationCoverage).toEqual({ native: 'complete', subIssues: 'complete' });
+  });
+
+  it.each([NO_NATIVE, OPTS, { native: false, subIssues: true }, { native: true, subIssues: true }])(
+    'reports listing coverage matching the returned relations: %j',
+    async (options) => {
+      const provider = createFixtureProvider({
+        path: await writeFixture({ issues: [issue({ blockedBy: ['acme/api#2'] })] }),
+      });
+      const result = await provider.listOpenIssues(repo, options);
+      expect(result.relationCoverage).toEqual({
+        native: options.native ? 'complete' : 'not-requested',
+        subIssues: options.subIssues ? 'complete' : 'not-requested',
+      });
+      expect(result.issues[0]?.nativeRelations).toEqual(options.native ? declared : []);
+      expect(result.warnings).toEqual([]);
+      const empty = await provider.listOpenIssues({ owner: 'acme', repo: 'empty' }, options);
+      expect(empty.issues).toEqual([]);
+      expect(empty.relationCoverage).toEqual(result.relationCoverage);
+    },
+  );
+
+  it('returns independent coverage objects for listings and lookups', async () => {
+    const provider = createFixtureProvider({ path: await writeFixture({ issues: [issue()] }) });
+    const first = await provider.listOpenIssues(repo, OPTS);
+    first.relationCoverage!.native = 'failed';
+    expect((await provider.listOpenIssues(repo, OPTS)).relationCoverage?.native).toBe('complete');
+    const lookup = await provider.getIssue(repo, 1);
+    lookup!.relationCoverage!.native = 'failed';
+    expect((await provider.getIssue(repo, 1))?.relationCoverage?.native).toBe('complete');
+  });
+});
+
 describe('demo.json', () => {
   it('loads and contains both repos', async () => {
     const provider = createFixtureProvider({ path: DEMO_PATH });
