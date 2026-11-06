@@ -449,3 +449,300 @@ describe('retries and error hygiene', () => {
     expect((err as HttpError).message).not.toContain(TOKEN);
   });
 });
+
+const RELATION_KINDS = [
+  { kind: 'native', endpoint: 'dependencies/blocked_by', source: 'native' },
+  { kind: 'subIssues', endpoint: 'sub_issues', source: 'sub-issue' },
+] as const;
+const BOTH = { native: true, subIssues: true };
+
+function coverageFor(kind: 'native' | 'subIssues', value: string) {
+  return { native: 'not-requested', subIssues: 'not-requested', [kind]: value };
+}
+
+describe('getIssue: relation coverage', () => {
+  it('preserves the exact legacy result and makes no relation requests without options', async () => {
+    const { p, calls } = provider(() => json(ghIssue(7)));
+    expect(await p.getIssue(REPO, 7)).toEqual({
+      key: 'acme/api#7',
+      repo: REPO,
+      number: 7,
+      title: 'Issue 7',
+      state: 'open',
+      url: 'https://github.com/acme/api/issues/7',
+      body: '',
+      labels: [],
+      assignees: [],
+      milestone: null,
+      updatedAt: null,
+      nativeRelations: [],
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reports explicitly disabled kinds as not-requested without extra requests', async () => {
+    const { p, calls } = provider(() => json(ghIssue(7)));
+    expect(await p.getIssue(REPO, 7, NONE)).toMatchObject({
+      nativeRelations: [],
+      relationCoverage: { native: 'not-requested', subIssues: 'not-requested' },
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each(RELATION_KINDS)(
+    'reads only the enabled $kind kind and paginates and maps its relations',
+    async ({ kind, endpoint, source }) => {
+      const { p, calls } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues/7')
+          return json(ghIssue(7, { state: 'closed' }));
+        if (url.pathname !== `/repos/acme/api/issues/7/${endpoint}`) return undefined;
+        if (url.searchParams.get('page') === '2')
+          return json([{ number: 4 }, { number: 12, repository_url: `${API}/repos/Other/Lib` }]);
+        return json(
+          [null, { number: 'bad' }, { number: 12, repository_url: `${API}/repos/Other/Lib` }],
+          { headers: { link: `<${API}${url.pathname}?per_page=100&page=2>; rel="next"` } },
+        );
+      });
+      const issue = await p.getIssue({ owner: 'ACME', repo: 'API' }, 7, {
+        ...NONE,
+        [kind]: true,
+      });
+      expect(issue).toMatchObject({
+        state: 'closed',
+        nativeRelations: [
+          { kind: 'blocked-by', ref: { owner: 'acme', repo: 'api', number: 4 }, source },
+          { kind: 'blocked-by', ref: { owner: 'other', repo: 'lib', number: 12 }, source },
+        ],
+        relationCoverage: coverageFor(kind, 'complete'),
+      });
+      expect(calls.map((call) => call.url)).toEqual([
+        `${API}/repos/acme/api/issues/7`,
+        `${API}/repos/acme/api/issues/7/${endpoint}?per_page=100`,
+        `${API}/repos/acme/api/issues/7/${endpoint}?per_page=100&page=2`,
+      ]);
+    },
+  );
+
+  it('combines and normalizes both kinds just like a listing', async () => {
+    const { p, calls } = provider((url) => {
+      if (url.pathname === '/repos/acme/api/issues/7') return json(ghIssue(7));
+      return json([ghIssue(9), ghIssue(2), ghIssue(2)]);
+    });
+    expect(await p.getIssue(REPO, 7, BOTH)).toMatchObject({
+      nativeRelations: [
+        { kind: 'blocked-by', ref: { ...REPO, number: 2 }, source: 'native' },
+        { kind: 'blocked-by', ref: { ...REPO, number: 2 }, source: 'sub-issue' },
+        { kind: 'blocked-by', ref: { ...REPO, number: 9 }, source: 'native' },
+        { kind: 'blocked-by', ref: { ...REPO, number: 9 }, source: 'sub-issue' },
+      ],
+      relationCoverage: { native: 'complete', subIssues: 'complete' },
+    });
+    expect(calls).toHaveLength(3);
+  });
+
+  it.each([false, true])(
+    'reports empty enabled kinds as complete (summary skips: %s)',
+    async (skip) => {
+      const { p, calls } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues/7')
+          return json(
+            ghIssue(
+              7,
+              skip
+                ? {
+                    issue_dependencies_summary: { total_blocked_by: 0 },
+                    sub_issues_summary: { total: 0 },
+                  }
+                : {},
+            ),
+          );
+        return json([]);
+      });
+      expect(await p.getIssue(REPO, 7, BOTH)).toMatchObject({
+        nativeRelations: [],
+        relationCoverage: { native: 'complete', subIssues: 'complete' },
+      });
+      expect(calls).toHaveLength(skip ? 1 : 3);
+    },
+  );
+
+  it.each([null, '0', 2])(
+    'reads enabled kinds when summaries are absent, odd or positive (%s)',
+    async (total) => {
+      const { p, calls } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues/7')
+          return json(
+            ghIssue(7, {
+              issue_dependencies_summary: { total_blocked_by: total },
+              sub_issues_summary: { total },
+            }),
+          );
+        return json([]);
+      });
+      expect((await p.getIssue(REPO, 7, BOTH))?.relationCoverage).toEqual({
+        native: 'complete',
+        subIssues: 'complete',
+      });
+      expect(calls).toHaveLength(3);
+    },
+  );
+
+  it.each(RELATION_KINDS)(
+    'reports a $kind 404 as unsupported and still reads the other kind',
+    async ({ kind, endpoint }) => {
+      const { p, calls } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues/7') return json(ghIssue(7));
+        if (url.pathname.endsWith(`/${endpoint}`)) return status(404);
+        return json([ghIssue(2)]);
+      });
+      const issue = await p.getIssue(REPO, 7, BOTH);
+      expect(issue?.relationCoverage).toEqual({
+        native: 'complete',
+        subIssues: 'complete',
+        [kind]: 'unsupported',
+      });
+      expect(issue?.nativeRelations).toEqual([
+        {
+          kind: 'blocked-by',
+          ref: { ...REPO, number: 2 },
+          source: kind === 'native' ? 'sub-issue' : 'native',
+        },
+      ]);
+      expect(calls).toHaveLength(3);
+    },
+  );
+
+  it.each(RELATION_KINDS)(
+    'retains the issue and the other kind when the $kind read fails',
+    async ({ kind, endpoint }) => {
+      const { p, sleeps, calls } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues/7')
+          return json(ghIssue(7, { body: 'Still observed' }));
+        if (url.pathname.endsWith(`/${endpoint}`)) return status(502);
+        return json([ghIssue(2)]);
+      });
+      const issue = await p.getIssue(REPO, 7, BOTH);
+      expect(issue).toMatchObject({
+        key: 'acme/api#7',
+        body: 'Still observed',
+        relationCoverage: { native: 'complete', subIssues: 'complete', [kind]: 'failed' },
+        nativeRelations: [
+          {
+            kind: 'blocked-by',
+            ref: { ...REPO, number: 2 },
+            source: kind === 'native' ? 'sub-issue' : 'native',
+          },
+        ],
+      });
+      expect(calls).toHaveLength(6);
+      expect(sleeps).toEqual([500, 1000, 2000]);
+    },
+  );
+
+  it('marks a relation read failed if a later page fails, without treating it as a complete empty read', async () => {
+    const { p } = provider((url) => {
+      if (url.pathname === '/repos/acme/api/issues/7') return json(ghIssue(7));
+      if (url.searchParams.has('page')) return status(410);
+      return json([ghIssue(2)], {
+        headers: { link: `<${API}${url.pathname}?page=2>; rel="next"` },
+      });
+    });
+    expect(await p.getIssue(REPO, 7, { native: true, subIssues: false })).toMatchObject({
+      key: 'acme/api#7',
+      relationCoverage: coverageFor('native', 'failed'),
+    });
+  });
+
+  it('keeps missing, inaccessible and pull-request lookups null even with options', async () => {
+    const { p, calls } = provider((url) => {
+      if (url.pathname.endsWith('/1')) return status(404);
+      if (url.pathname.endsWith('/2')) return status(410);
+      if (url.pathname.endsWith('/3')) return json(ghIssue(3, { pull_request: { url: 'x' } }));
+      return undefined;
+    });
+    for (const number of [1, 2, 3]) expect(await p.getIssue(REPO, number, BOTH)).toBeNull();
+    expect(calls).toHaveLength(3);
+  });
+
+  it('still throws when reading or mapping the issue itself fails', async () => {
+    const failed = provider(() => status(401));
+    await expect(failed.p.getIssue(REPO, 7, BOTH)).rejects.toBeInstanceOf(HttpError);
+    expect(failed.calls).toHaveLength(1);
+    const malformed = provider(() => json(ghIssue(7, { title: null })));
+    await expect(malformed.p.getIssue(REPO, 7, BOTH)).rejects.toThrow(
+      'Unexpected GitHub issue payload',
+    );
+    expect(malformed.calls).toHaveLength(1);
+  });
+});
+
+describe('listOpenIssues: relation coverage', () => {
+  it.each([NONE, BOTH, { native: true, subIssues: false }, { native: false, subIssues: true }])(
+    'reports requested coverage without changing issues or warnings (%j)',
+    async (options) => {
+      const { p } = provider((url) =>
+        url.pathname === '/repos/acme/api/issues' ? json([ghIssue(7)]) : json([]),
+      );
+      const legacy = await p.listOpenIssues(REPO, NONE);
+      const result = await p.listOpenIssues(REPO, options);
+      expect(result).toEqual({
+        issues: legacy.issues,
+        warnings: legacy.warnings,
+        relationCoverage: {
+          native: options.native ? 'complete' : 'not-requested',
+          subIssues: options.subIssues ? 'complete' : 'not-requested',
+        },
+      });
+      expect(result.issues[0]).not.toHaveProperty('relationCoverage');
+    },
+  );
+
+  it.each([
+    { issues: [] },
+    {
+      issues: [
+        ghIssue(7, {
+          issue_dependencies_summary: { total_blocked_by: 0 },
+          sub_issues_summary: { total: 0 },
+        }),
+      ],
+    },
+  ])(
+    'reports complete when an empty listing or summaries make relation requests unnecessary (%j)',
+    async ({ issues }) => {
+      const { p, calls } = provider(() => json(issues));
+      expect(await p.listOpenIssues(REPO, BOTH)).toMatchObject({
+        warnings: [],
+        relationCoverage: { native: 'complete', subIssues: 'complete' },
+      });
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  it.each(RELATION_KINDS)(
+    'reports $kind unsupported alongside its unchanged warning',
+    async ({ kind, endpoint }) => {
+      const { p } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues') return json([ghIssue(7)]);
+        if (url.pathname.endsWith(`/${endpoint}`)) return status(404);
+        return json([]);
+      });
+      const result = await p.listOpenIssues(REPO, BOTH);
+      expect(result.relationCoverage).toEqual({
+        native: 'complete',
+        subIssues: 'complete',
+        [kind]: 'unsupported',
+      });
+      expect(result.warnings).toEqual([
+        {
+          code: 'native-unsupported',
+          issues: [],
+          message:
+            kind === 'native'
+              ? 'Native issue dependencies are not available for acme/api (the dependencies endpoint returned 404); GitHub Enterprise Server versions without issue dependencies do not support them. Native dependencies are skipped.'
+              : 'Sub-issues are not available for acme/api (the sub_issues endpoint returned 404); GitHub Enterprise Server versions without sub-issues do not support them. Sub-issue relations are skipped.',
+        },
+      ]);
+    },
+  );
+});
