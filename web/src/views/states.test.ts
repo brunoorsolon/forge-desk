@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { absoluteTime } from '../format.js';
 import { createScopeStates } from './states.js';
 
 class FakeText {
@@ -112,7 +113,7 @@ describe('scope state panels', () => {
     expect(panel.el.textContent).not.toContain('denied');
   });
 
-  it('shows cooldown reason and the exact expected end', () => {
+  it('shows cooldown reason and the local expected end, preserving the exact timestamp', () => {
     const panel = createScopeStates();
     panel.update({
       kind: 'delayed',
@@ -123,7 +124,9 @@ describe('scope state panels', () => {
     expect(panel.el.textContent).toContain('Source quota exhausted');
     const times = descendants(panel.el as unknown as FakeElement, (e) => e.tagName === 'time');
     expect(times[0]?.getAttribute('datetime')).toBe('2026-11-06T23:00:00Z');
-    expect(times[0]?.textContent).toBe('2026-11-06T23:00:00Z');
+    expect(times).toHaveLength(1);
+    expect(times[0]?.textContent).toBe(absoluteTime('2026-11-06T23:00:00Z'));
+    expect(times[0]?.textContent).not.toBe('2026-11-06T23:00:00Z');
   });
 
   it('explains every part of a source policy conflict', () => {

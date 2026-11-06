@@ -1,4 +1,5 @@
 import { append, clear, h, icon } from '../dom.js';
+import { absoluteTime } from '../format.js';
 import type { AppState } from '../state.js';
 import type { View, ViewCtx } from './shared.js';
 
@@ -147,7 +148,7 @@ export function createScopeStates(options: { chooseProject?: () => void } = {}):
             'p',
             null,
             'Provider cooldown ends at ',
-            h('time', { datetime: state.expectedEnd }, state.expectedEnd),
+            h('time', { datetime: state.expectedEnd }, absoluteTime(state.expectedEnd)),
             '.',
           ),
         );
