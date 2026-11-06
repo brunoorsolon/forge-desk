@@ -1090,3 +1090,31 @@ bundled at build time; nothing is loaded from a CDN.
 - Before pushing, run `npm run typecheck && npm test && npm run format:check`.
   All must pass.
 - No network access in tests. Use fixtures and an injected `fetch`.
+
+## Cache-first scope read service
+
+`ScopeReadService` composes the shared `ObservationStore`, `ScopeRefreshJobs` and
+source catalog/policies. `get(scope)` returns `ScopeResponse`; `refresh(scope)` (or
+`get(scope, { refresh: true })`) explicitly rechecks the scope. This service does
+not register HTTP routes or change named-view caching.
+
+- Fresh contributing observations cause no upstream work. Stale, missing or
+  invalidated observations start/join an interactive job, retaining last-good
+  data, per-repository check times, partial coverage and errors.
+- First-load and explicit refresh reads wait at most 15 seconds. Missing data
+  remains a null snapshot; a successful empty listing is a real empty plan.
+- Zero TTL always waits for revalidation and only derives from that job's
+  successful units, excluding unrelated cached listings. An unfinished or failed
+  revalidation never returns a cached snapshot. A source already in cooldown
+  raises `ScopeCooldownError` with its ISO `delayedUntil` immediately.
+- Derivation reports contributing repositories and outside references, including
+  closed dependency targets. Each read recomputes catalog scope plans from current
+  observations, so cross-scope changes and age warnings need no unrelated fetch.
+  Outside freshness reports the oldest successful observation (null if any has
+  never succeeded), and counts incomplete/unavailable outside observations.
+- After recomputation, unreferenced outside observations and non-catalog listings
+  are pruned. Pruning is deferred while any scope job is active so in-flight store
+  tokens cannot be retired before their results arrive.
+
+`src/service/scopeReadService.test.ts` exercises these contracts with real jobs
+and observation storage, fake providers, and a controllable clock.

@@ -191,6 +191,8 @@ describe('scope plan derivation', () => {
         snapshot: null,
         computedAt: checked,
         pendingOutsideIssues: [],
+        contributingRepositories: state === 'empty-catalog' ? [] : ['a/other', 'a/r'],
+        referencedOutsideIssues: [],
       });
     },
   );

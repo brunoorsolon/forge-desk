@@ -140,6 +140,13 @@ export class ObservationStore {
     return snapshot(this.outsideIssues.get(outsideId(ref)));
   }
 
+  /** Detached source-local inputs for derivation, including closed outside issues. */
+  listOutsideIssues(source: string): StoredObservation<OutsideIssueObservation>[] {
+    return [...this.outsideIssues.values()]
+      .filter((entry) => entry.observation.source === source)
+      .map((entry) => snapshot(entry)!);
+  }
+
   beginRepositoryRead(project: ProjectRef): RepositoryRead {
     const canonical = projectRef(project);
     const entry = this.repository(canonical);

@@ -42,6 +42,9 @@ export interface ScopePlanResult {
   computedAt: string;
   /** Sorted outstanding lookups, bounded by the legacy per-resolution budget. */
   pendingOutsideIssues: IssueKey[];
+  /** Observations used by this derivation, including closed dependency targets. */
+  contributingRepositories: string[];
+  referencedOutsideIssues: IssueKey[];
 }
 
 /** Derive from current observations, never from previously derived snapshots. No I/O. */
@@ -66,7 +69,13 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
   const listedRepos = scopeRepos.filter((repo) => records.get(repo)?.observation.issues != null);
   const unlistedRepos = scopeRepos.filter((repo) => records.get(repo)?.observation.issues == null);
   if (listedRepos.length === 0) {
-    return { snapshot: null, computedAt, pendingOutsideIssues: [] };
+    return {
+      snapshot: null,
+      computedAt,
+      pendingOutsideIssues: [],
+      contributingRepositories: scopeRepos,
+      referencedOutsideIssues: [],
+    };
   }
   const id =
     scope.kind === 'project'
@@ -234,6 +243,10 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       snapshot: null,
       computedAt,
       pendingOutsideIssues: pendingOutsideIssues.sort(compareKeys),
+      contributingRepositories: [...new Set([...scopeRepos, ...usedRepositories])].sort(),
+      referencedOutsideIssues: [...lookups.keys()]
+        .filter((key) => !knownCatalog.has(key))
+        .sort(compareKeys),
     };
   const snapshot: Snapshot = {
     viewId: id,
@@ -248,5 +261,13 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
     plan,
     layout,
   };
-  return { snapshot, computedAt, pendingOutsideIssues: pendingOutsideIssues.sort(compareKeys) };
+  return {
+    snapshot,
+    computedAt,
+    pendingOutsideIssues: pendingOutsideIssues.sort(compareKeys),
+    contributingRepositories: [...new Set([...scopeRepos, ...usedRepositories])].sort(),
+    referencedOutsideIssues: [...lookups.keys()]
+      .filter((key) => !knownCatalog.has(key))
+      .sort(compareKeys),
+  };
 }
