@@ -59,8 +59,30 @@ export interface Issue {
   updatedAt: string | null;
   /** Relations reported by the provider API (native dependencies, sub-issues). */
   nativeRelations: RawRelation[];
+  /** Open pull requests that close this issue, when already attached to the issue. */
+  closingPullRequests?: ClosingPullRequest[];
   /** Absent on legacy reads. Missing coverage must never be treated as complete. */
   relationCoverage?: RelationCoverage;
+}
+
+/** An open pull request returned by a repository listing, before closing-reference resolution. */
+export interface OpenPullRequest {
+  key: IssueKey;
+  repo: RepoRef;
+  number: number;
+  title: string;
+  /** Browser URL of the pull request. */
+  url: string;
+  body: string;
+}
+
+/** An open pull request whose body declares that it closes an issue. */
+export interface ClosingPullRequest {
+  key: IssueKey;
+  number: number;
+  title: string;
+  /** Browser URL of the pull request. */
+  url: string;
 }
 
 /** `from` must be closed before `to` can start. */
@@ -118,6 +140,8 @@ export interface PlanNode {
   parents: IssueKey[];
   /** Keys of issues whose `Parent:` relation line names this issue, present in the plan and sorted with compareKeys. */
   children: IssueKey[];
+  /** Open pull requests that close this issue, sorted by `key` with compareKeys. */
+  closingPullRequests: ClosingPullRequest[];
   /** Index of the first matching entry of ordering.priorityLabels; priorityLabels.length when none match. Lower = more urgent. */
   priority: number;
   /** Number of nodes on the longest dependent chain starting at this node (1 = nothing depends on it). 0 when unschedulable. */
@@ -221,6 +245,8 @@ export interface Snapshot {
 
 export interface FetchResult {
   issues: Issue[];
+  /** Open pull requests observed during listing, sorted by number ascending. */
+  pullRequests?: OpenPullRequest[];
   warnings: PlanWarning[];
   /** Coverage across this repository listing; absent on legacy providers. */
   relationCoverage?: RelationCoverage;

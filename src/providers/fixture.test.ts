@@ -123,6 +123,44 @@ describe('createFixtureProvider', () => {
     expect(got?.key).toBe('acme/api#4');
   });
 
+  it('collects open pull requests without turning them into issues or getIssue results', async () => {
+    const path = await writeFixture({
+      issues: [
+        issue({ number: 1, title: 'Open issue' }),
+        issue({ number: 3, title: 'Open PR in issues', pullRequest: true, body: 'Closes #1' }),
+        issue({ number: 4, title: 'Closed PR in issues', state: 'closed', pullRequest: true }),
+      ],
+      pullRequests: [
+        { owner: 'Acme', repo: 'API', number: 2, title: 'Top-level PR', body: 'Fixes #1' },
+        { owner: 'Acme', repo: 'API', number: 5, title: 'Closed PR', state: 'closed' },
+      ],
+    });
+    const provider = createFixtureProvider({ path });
+    const repo = { owner: 'acme', repo: 'api' };
+    const listed = await provider.listOpenIssues(repo, OPTS);
+    expect(listed.issues.map((i) => i.number)).toEqual([1]);
+    expect(listed.pullRequests).toEqual([
+      {
+        key: 'acme/api#2',
+        repo: { owner: 'acme', repo: 'api' },
+        number: 2,
+        title: 'Top-level PR',
+        url: 'https://fixture.local/acme/api/pulls/2',
+        body: 'Fixes #1',
+      },
+      {
+        key: 'acme/api#3',
+        repo: { owner: 'acme', repo: 'api' },
+        number: 3,
+        title: 'Open PR in issues',
+        url: 'https://fixture.local/acme/api/pulls/3',
+        body: 'Closes #1',
+      },
+    ]);
+    expect(await provider.getIssue(repo, 2)).toBeNull();
+    expect(await provider.getIssue(repo, 3)).toBeNull();
+  });
+
   it('getIssue returns closed issues and null for unknown ones', async () => {
     const path = await writeFixture({
       issues: [issue({ number: 1, state: 'closed' }), issue({ number: 2 })],

@@ -1,13 +1,14 @@
 import type { ResolvedView } from '../config/schema.js';
 import { compareKeys, makeKey, parseKey } from '../core/keys.js';
-import { parseBodyRelations } from '../core/parser.js';
-import type { ParentLink, PlanInput } from '../core/plan.js';
+import { parseBodyRelations, parseClosingIssues } from '../core/parser.js';
+import type { ClosingPullRequestLink, ParentLink, PlanInput } from '../core/plan.js';
 import type {
   DependencyEdge,
   DependencySource,
   Issue,
   IssueKey,
   IssueRef,
+  OpenPullRequest,
   PlanWarning,
   RawRelation,
 } from '../core/types.js';
@@ -137,6 +138,7 @@ export function resolvePlanInput(
   outsideIssues: ReadonlyMap<IssueKey, OutsideIssueLookup>,
   settings: ResolutionSettings,
   listingWarnings: readonly PlanWarning[] = [],
+  openPullRequests: readonly OpenPullRequest[] = [],
 ): PlanInput {
   const warnings = [...listingWarnings];
   const nodes = new Map<IssueKey, Issue>();
@@ -266,6 +268,30 @@ export function resolvePlanInput(
     }
   }
 
+  const pullRequests = new Map<IssueKey, OpenPullRequest>();
+  for (const pr of openPullRequests) {
+    if (!pullRequests.has(pr.key)) pullRequests.set(pr.key, pr);
+  }
+  const closingPullRequests: ClosingPullRequestLink[] = [];
+  for (const pr of [...pullRequests.values()].sort((a, b) => compareKeys(a.key, b.key))) {
+    for (const ref of parseClosingIssues(pr.body, { webHosts: settings.webHosts })) {
+      const issueKey = makeKey(
+        { owner: ref.owner ?? pr.repo.owner, repo: ref.repo ?? pr.repo.repo },
+        ref.number,
+      );
+      if (!included.has(issueKey)) continue;
+      closingPullRequests.push({
+        issue: issueKey,
+        pullRequest: {
+          key: pr.key,
+          number: pr.number,
+          title: pr.title,
+          url: pr.url,
+        },
+      });
+    }
+  }
+
   const keys = [...included].sort(compareKeys);
   const input: PlanInput = {
     viewId: settings.id,
@@ -273,6 +299,7 @@ export function resolvePlanInput(
     externalKeys: keys.filter((k) => !scoped.has(k)),
     edges: allEdges.filter((e) => included.has(e.from) && included.has(e.to)),
     parentLinks,
+    closingPullRequests,
     // Drop problems that concern issues which are not part of the plan.
     warnings: warnings.filter(
       (w) =>

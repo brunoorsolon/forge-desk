@@ -97,7 +97,7 @@ Cycles are found with strongly connected components (Tarjan's algorithm, visitin
 
 `snapshot.contentHash` is the SHA-256 (hex) of the **canonical JSON** of `{ plan, layout }`. Canonical JSON has object keys sorted recursively (by code unit), no whitespace, and keeps array order.
 
-**Covered:** everything in `plan` and `layout`: the view id, each node's key, title, URL, labels, assignees, milestone, last-update timestamp, external flag, status, wave, order, priority and depth, the `parents` and `children` hierarchy, all edges and their sources, the order, waves, cycles, critical path, the stats and the **text of the warnings**, and all layout coordinates.
+**Covered:** everything in `plan` and `layout`: the view id, each node's key, title, URL, labels, assignees, milestone, last-update timestamp, external flag, status, wave, order, priority and depth, the `parents` and `children` hierarchy, `closingPullRequests`, all edges and their sources, the order, waves, cycles, critical path, the stats and the **text of the warnings**, and all layout coordinates.
 
 **Not covered:** `fetchedAt` (the only clock value), and the view's `title` (it is stored beside the plan, not in it).
 
@@ -123,6 +123,7 @@ Note that the JSON and Markdown exports contain `fetchedAt`, so diff `.plan` (or
 | An issue is opened, closed (any reason) or transferred                                                         | Nodes, edges, waves and order change                                                                 |
 | A relation is added or removed (native, body line, sub-issue)                                                  | Edges, waves, order, critical path, cycles                                                           |
 | A `Parent: [...]` relation line is added or removed                                                            | `parents`/`children` and the hash change; edges, waves, order and critical path do not               |
+| An open pull request with a closing keyword (`closes`, `fixes`, `resolves`) is opened, edited or closed        | `closingPullRequests` and the hash change; `status`, edges, waves, order and critical path do not    |
 | A body reference is edited, or moved into or out of an ignored region                                          | Same as a relation                                                                                   |
 | An issue's title, labels, assignees, milestone or URL changes                                                  | The node fields and the hash change; the order changes only if a priority or scope label is involved |
 | The tracker reports a newer last-update time for an issue                                                      | `updatedAt` and the hash change; nothing else does                                                   |

@@ -112,6 +112,7 @@ function node(key: string, extra: Partial<PlanNode> = {}): PlanNode {
     blocks: [],
     parents: [],
     children: [],
+    closingPullRequests: [],
     priority: 0,
     remainingDepth: 0,
     ...extra,

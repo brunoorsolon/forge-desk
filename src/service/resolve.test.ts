@@ -9,6 +9,7 @@ import type {
   IssueProvider,
   IssueState,
   ListOptions,
+  OpenPullRequest,
   RawRelation,
   RepoRef,
 } from '../core/types.js';
@@ -60,6 +61,7 @@ class FakeProvider implements IssueProvider {
   readonly getCalls: string[] = [];
   readonly listCalls: { repo: string; options: ListOptions }[] = [];
   private readonly issues = new Map<string, Issue>();
+  readonly pullRequests: OpenPullRequest[] = [];
   readonly throwing = new Set<string>();
   listWarnings: FetchResult['warnings'] = [];
 
@@ -72,7 +74,14 @@ class FakeProvider implements IssueProvider {
     const issues = [...this.issues.values()]
       .filter((i) => i.state === 'open' && i.repo.owner === repo.owner && i.repo.repo === repo.repo)
       .sort((a, b) => a.number - b.number);
-    return { issues, warnings: this.listWarnings };
+    const pullRequests = this.pullRequests
+      .filter((pr) => pr.repo.owner === repo.owner && pr.repo.repo === repo.repo)
+      .sort((a, b) => a.number - b.number);
+    return {
+      issues,
+      ...(pullRequests.length > 0 ? { pullRequests } : {}),
+      warnings: this.listWarnings,
+    };
   }
 
   async getIssue(repo: RepoRef, number: number): Promise<Issue | null> {
@@ -583,6 +592,68 @@ describe('resolveView: scope', () => {
     expect(input.warnings.map((w) => `${w.code}:${w.issues.join(',')}`)).toEqual([
       'native-unsupported:',
       'dangling-reference:a/r#1',
+    ]);
+  });
+
+  it('collects open pull requests across view repos and attaches closingPullRequests without extra lookups', async () => {
+    const provider = new FakeProvider([mk('a/r#1'), mk('a/w#2')]);
+    provider.pullRequests.push(
+      {
+        key: 'a/r#10',
+        repo: { owner: 'a', repo: 'r' },
+        number: 10,
+        title: 'Same-repo PR',
+        url: 'https://web.test/a/r/pull/10',
+        body: 'Closes #1 and fixes a/w#2',
+      },
+      {
+        key: 'a/w#20',
+        repo: { owner: 'a', repo: 'w' },
+        number: 20,
+        title: 'Cross-repo PR',
+        url: 'https://web.test/a/w/pull/20',
+        body: 'Resolves https://web.test/a/r/issues/1\nCloses #99',
+      },
+    );
+    const { input } = await resolveView(
+      view({
+        repos: [
+          { owner: 'a', repo: 'r' },
+          { owner: 'a', repo: 'w' },
+        ],
+      }),
+      SOURCE,
+      provider,
+    );
+    expect(provider.getCalls).toEqual([]);
+    expect(input.closingPullRequests).toEqual([
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Same-repo PR',
+          url: 'https://web.test/a/r/pull/10',
+        },
+      },
+      {
+        issue: 'a/w#2',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Same-repo PR',
+          url: 'https://web.test/a/r/pull/10',
+        },
+      },
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/w#20',
+          number: 20,
+          title: 'Cross-repo PR',
+          url: 'https://web.test/a/w/pull/20',
+        },
+      },
     ]);
   });
 });

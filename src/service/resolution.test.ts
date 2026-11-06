@@ -146,4 +146,62 @@ describe('pure resolution', () => {
     expect({ root, other, lookups, settings }).toEqual(before);
     expect(mismatched.key).toBe('a/r#99');
   });
+
+  it('resolves same-repo, cross-repo, and web-host closing pull requests onto included issues only', () => {
+    const first = issue(1);
+    const second = issue(2, '', { key: 'a/web#2', repo: { owner: 'a', repo: 'web' } });
+    const input = resolvePlanInput(
+      [first, second],
+      new Map(),
+      settings,
+      [],
+      [
+        {
+          key: 'a/r#10',
+          repo: { owner: 'a', repo: 'r' },
+          number: 10,
+          title: 'Fix issue 1 and web 2',
+          url: 'https://web.test/a/r/pull/10',
+          body: 'Closes #1\nFixes a/web#2\nResolves #99',
+        },
+        {
+          key: 'a/web#11',
+          repo: { owner: 'a', repo: 'web' },
+          number: 11,
+          title: 'URL close for issue 1',
+          url: 'https://web.test/a/web/pull/11',
+          body: 'Closes https://web.test/a/r/issues/1',
+        },
+      ],
+    );
+    expect(input.closingPullRequests).toEqual([
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Fix issue 1 and web 2',
+          url: 'https://web.test/a/r/pull/10',
+        },
+      },
+      {
+        issue: 'a/web#2',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Fix issue 1 and web 2',
+          url: 'https://web.test/a/r/pull/10',
+        },
+      },
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/web#11',
+          number: 11,
+          title: 'URL close for issue 1',
+          url: 'https://web.test/a/web/pull/11',
+        },
+      },
+    ]);
+  });
 });

@@ -1,4 +1,4 @@
-import type { NodeStatus } from '../../src/core/types.js';
+import type { ClosingPullRequest, NodeStatus } from '../../src/core/types.js';
 import { displayStatus, type DisplayStatus } from './format.js';
 
 /**
@@ -40,6 +40,8 @@ export interface FilterTarget {
   critical: boolean;
   /** Keys of the issues that name this one in `parents`. */
   parents: readonly string[];
+  /** Open pull requests that close this issue. */
+  closingPullRequests?: readonly ClosingPullRequest[];
 }
 
 export type Field =

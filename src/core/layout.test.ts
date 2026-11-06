@@ -41,6 +41,7 @@ function makePlan(nodes: N[], edges: [IssueKey, IssueKey][], order?: IssueKey[])
         blocks: [],
         parents: [],
         children: [],
+        closingPullRequests: [],
         priority: 0,
         remainingDepth: n.wave === null ? 0 : 1,
       };

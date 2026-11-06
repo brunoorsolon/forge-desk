@@ -228,7 +228,7 @@ A snapshot is the JSON document returned by the snapshot, refresh and `export.js
 | `warnings`      | `{ code, message, issues }`. Codes: `cycle`, `blocked-by-cycle`, `self-reference`, `dangling-reference`, `external-unresolved`, `native-unsupported`, `fetch-error` ([meaning and fixes](PREREQUISITES.md#warning-codes)) |
 | `stats`         | `total`, `ready`, `blocked`, `unschedulable`, `external`, `edges`, `waves`                                                                                                                                                |
 
-A node has: `key` (`owner/repo#number`, lowercase), `repo`, `number`, `title`, `url`, `labels`, `assignees`, `milestone` (or `null`), `updatedAt` (the issue's last-update timestamp, or `null` when the provider does not report one), `external` (boolean), `status` (`ready`, `blocked`, `in-cycle` or `blocked-by-cycle`), `wave` and `order` (0-based, `null` when unschedulable), `blockedBy` and `blocks` (keys of open direct prerequisites and dependents), `parents` and `children` (keys of the `Parent:` hierarchy; never dependencies), `priority` (index in `priorityLabels`, or `priorityLabels.length`) and `remainingDepth`.
+A node has: `key` (`owner/repo#number`, lowercase), `repo`, `number`, `title`, `url`, `labels`, `assignees`, `milestone` (or `null`), `updatedAt` (the issue's last-update timestamp, or `null` when the provider does not report one), `external` (boolean), `status` (`ready`, `blocked`, `in-cycle` or `blocked-by-cycle`), `wave` and `order` (0-based, `null` when unschedulable), `blockedBy` and `blocks` (keys of open direct prerequisites and dependents), `parents` and `children` (keys of the `Parent:` hierarchy; never dependencies), `closingPullRequests` (`{ key, number, title, url }[]`, open pull requests that declare a closing keyword for this issue, sorted by `key`), `priority` (index in `priorityLabels`, or `priorityLabels.length`) and `remainingDepth`.
 
 ### `layout`
 
@@ -265,6 +265,7 @@ Abridged real output (a five-issue view):
         "blocks": ["acme/app#5"],
         "parents": [],
         "children": [],
+        "closingPullRequests": [],
         "priority": 3,
         "remainingDepth": 2
       }
@@ -309,12 +310,12 @@ curl -sI http://localhost:8080/api/views/demo/snapshot
 Conditional request: only download when the plan changed. When the `ETag` still matches, the server answers `304` with no body (use the `ETag` of your own last response):
 
 ```sh
-curl -s -o /dev/null -D - -H 'If-None-Match: "1f532dbcf53112168cfe1903885c9b0bb3836b2ec6e75ae955ddaee5ecc6fae3"' http://localhost:8080/api/views/demo/snapshot
+curl -s -o /dev/null -D - -H 'If-None-Match: "1181a20e638836c9b73543250bb11eaf0a77e5b0735529275c36d30e8acb2d21"' http://localhost:8080/api/views/demo/snapshot
 ```
 
 ```text
 HTTP/1.1 304 Not Modified
-etag: "1f532dbcf53112168cfe1903885c9b0bb3836b2ec6e75ae955ddaee5ecc6fae3"
+etag: "1181a20e638836c9b73543250bb11eaf0a77e5b0735529275c36d30e8acb2d21"
 cache-control: no-store
 ```
 

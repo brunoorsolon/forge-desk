@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_KEYWORDS, parseBodyRelations, type ParseOptions } from './parser.js';
-import type { RawRelation } from './types.js';
+import {
+  DEFAULT_KEYWORDS,
+  parseBodyRelations,
+  parseClosingIssues,
+  type ParseOptions,
+} from './parser.js';
+import type { IssueRef, RawRelation } from './types.js';
 
 /** Compact relation notation: "b:#12", "k:o/r#3", "p:#7" (b = blocked-by, k = blocks, p = parent). */
 function rel(spec: string): RawRelation {
@@ -864,5 +869,73 @@ describe('realistic bodies', () => {
     expect(parseBodyRelations(body, HOSTS)).toEqual(
       ['b:#1', 'b:acme/api#3', 'b:acme/web#2', 'k:#10', 'k:acme/docs#11'].map(rel),
     );
+  });
+});
+
+function issueRef(spec: string): IssueRef {
+  const m = /^(?:([^#/]+)\/([^#/]+))?#(\d+)$/.exec(spec);
+  if (!m) throw new Error(`bad ref ${spec}`);
+  return {
+    owner: m[1] ?? null,
+    repo: m[2] ?? null,
+    number: Number(m[3]),
+  };
+}
+
+describe('parseClosingIssues', () => {
+  it('extracts all nine closing keywords case-insensitively across #N, owner/repo#N, and web-host URLs', () => {
+    const body = [
+      'close #1, closes #2, closed #3',
+      'Fix o/r#4; FIXES O/R#5, fixed #6',
+      'resolve https://github.com/Acme/Web/issues/7',
+      'Resolves: #8 and **Resolved**: [acme/api#9](https://github.com/acme/api/issues/9)',
+      '__Closes__ #10 and *Fixes:* #11',
+    ].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual(
+      [
+        '#1',
+        '#2',
+        '#3',
+        '#6',
+        '#8',
+        '#10',
+        '#11',
+        'acme/api#9',
+        'acme/web#7',
+        'o/r#4',
+        'o/r#5',
+      ].map(issueRef),
+    );
+  });
+
+  it('ignores non-closing keywords, unknown hosts, pull URLs, and word-boundary false positives', () => {
+    const body = [
+      'Depends on #1',
+      'Part of #2',
+      'disclose #3, prefix #4, unfixed #5, closes_not #6, foo_closes #7',
+      'Closes https://other.example/o/r/issues/8',
+      'Closes https://github.com/o/r/pull/9',
+      'Closes #0',
+    ].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual([]);
+    expect(parseClosingIssues('', HOSTS)).toEqual([]);
+  });
+
+  it('ignores fenced code blocks, inline code spans, HTML comments, and blockquotes', () => {
+    const body = [
+      '```',
+      'Closes #1',
+      '```',
+      '~~~',
+      'Fixes #2',
+      '~~~',
+      '`Resolves #3` and Closes `#4`',
+      '<!-- Closes #5',
+      'Fixes #6 --> Closes #7',
+      '> Closes #8',
+      '  > Fixes #9',
+      'Resolves #2, fixes #7',
+    ].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual(['#2', '#7'].map(issueRef));
   });
 });

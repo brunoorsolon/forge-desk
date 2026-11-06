@@ -178,6 +178,11 @@ export class ObservationStore {
     const coverage = copy.relationCoverage ?? noCoverage();
     const checkedAt = this.now().toISOString();
     entry.observation.issues = this.relations(entry, copy.issues, coverage, checkedAt);
+    if (copy.pullRequests !== undefined) {
+      entry.observation.pullRequests = copy.pullRequests;
+    } else {
+      delete entry.observation.pullRequests;
+    }
     entry.observation.warnings = copy.warnings;
     this.succeeded(entry, request, coverage, checkedAt, copy);
     return true;

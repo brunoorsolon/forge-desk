@@ -1,5 +1,5 @@
 import { compareRefs } from './keys.js';
-import type { RawRelation } from './types.js';
+import type { IssueRef, RawRelation } from './types.js';
 
 export interface KeywordConfig {
   blockedBy: string[];
@@ -17,6 +17,11 @@ export interface ParseOptions {
   webHosts?: string[];
   /** When true, read only `Blocked by: [...]` / `Parent: [...]` relation lines and ignore the keyword-line and section forms. */
   strict?: boolean;
+}
+
+export interface ClosingParseOptions {
+  /** Hostnames accepted in URL references (e.g. ['github.com']). Empty or undefined: URLs are ignored. */
+  webHosts?: string[];
 }
 
 type Kind = RawRelation['kind'];
@@ -271,4 +276,80 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
   return [...found.values()].sort(
     (a, b) => kindRank(a.kind) - kindRank(b.kind) || compareRefs(a.ref, b.ref),
   );
+}
+
+/**
+ * Extracts issue references after standard pull-request closing keywords
+ * (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`),
+ * ignoring fenced code blocks, inline code spans, HTML comments, and blockquotes.
+ */
+export function parseClosingIssues(body: string, options: ClosingParseOptions = {}): IssueRef[] {
+  if (!body) return [];
+  const hosts = new Set(
+    (options.webHosts ?? []).map((h) => h.trim().toLowerCase()).filter((h) => h !== ''),
+  );
+  const closingRe = new RegExp(
+    `(?<![${WORD}/])(?:\\*{1,2}|_{1,2})?(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:(?=(?:\\*{1,2}|_{1,2})(?![${WORD}]))|(?![${WORD}]))(?:\\*{1,2}|_{1,2})?(?:\\s*:\\s*(?:\\*{1,2}|_{1,2})?\\s*|\\s+)(?:\\[\\s*)?(?:` +
+      [
+        // 1: host, 2: owner, 3: repo, 4: number
+        `https?://([A-Za-z0-9.-]+(?::\\d+)?)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
+        // 5: owner, 6: repo, 7: number
+        `([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\\d+)(?![${WORD}])`,
+        // 8: number
+        `#(\\d+)(?![${WORD}])`,
+      ].join('|') +
+      ')',
+    'giu',
+  );
+
+  const found = new Map<string, IssueRef>();
+  const lineState: LineState = { inComment: false };
+  let fence: { char: string; length: number } | null = null;
+
+  for (const raw of body.split(/\r\n|\r|\n/)) {
+    if (fence) {
+      const close = FENCE_CLOSE_RE.exec(raw);
+      if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
+      continue;
+    }
+    if (!lineState.inComment) {
+      const open = FENCE_OPEN_RE.exec(raw);
+      if (open) {
+        const marker = open[1]!;
+        if (!(marker[0] === '`' && open[2]!.includes('`'))) {
+          fence = { char: marker[0]!, length: marker.length };
+          continue;
+        }
+      }
+    }
+
+    const line = cleanLine(raw, lineState);
+    if (/^\s*>/.test(line)) continue;
+
+    for (const m of line.matchAll(closingRe)) {
+      let owner: string | null = null;
+      let repo: string | null = null;
+      let numText: string;
+      if (m[4] !== undefined) {
+        if (!hosts.has(m[1]!.toLowerCase())) continue;
+        owner = m[2]!.toLowerCase();
+        repo = m[3]!.toLowerCase();
+        numText = m[4];
+      } else if (m[7] !== undefined) {
+        owner = m[5]!.toLowerCase();
+        repo = m[6]!.toLowerCase();
+        numText = m[7];
+      } else {
+        numText = m[8]!;
+      }
+      const number = Number(numText);
+      if (!Number.isSafeInteger(number) || number < 1) continue;
+      const id = `${owner ?? ''}/${repo ?? ''}#${number}`;
+      if (!found.has(id)) {
+        found.set(id, { owner, repo, number });
+      }
+    }
+  }
+
+  return [...found.values()].sort(compareRefs);
 }
