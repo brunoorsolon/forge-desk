@@ -1,4 +1,11 @@
 import type {
+  Scope,
+  ScopeId,
+  ScopeResponse,
+  ScopeFreshness,
+  RefreshJobStatus,
+} from '../../src/core/scope.js';
+import type {
   DependencySource,
   IssueKey,
   LayoutNode,
@@ -73,7 +80,8 @@ export function warningsByCode(warnings: readonly PlanWarning[]): Map<string, Pl
 // App state + reducer
 // ---------------------------------------------------------------------------
 
-export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type LoadStatus =
+  'idle' | 'loading' | 'ready' | 'error' | 'unavailable' | 'not-in-catalog' | 'conflict';
 
 export interface AppState {
   views: ViewSummary[] | null;
@@ -82,6 +90,10 @@ export interface AppState {
   status: LoadStatus;
   /** View the snapshot / status / error belong to. */
   loadedViewId: string | null;
+  /** Scope loading is never cached as a named view. */
+  loadedScopeId: ScopeId | null;
+  freshness: ScopeFreshness | null;
+  job: RefreshJobStatus | null;
   snapshot: Snapshot | null;
   /** Last snapshot of every view loaded in this tab, so a revisit skips the fetch. */
   snapshots: Record<string, Snapshot>;
@@ -97,6 +109,9 @@ export const INITIAL_STATE: AppState = {
   route: DEFAULT_ROUTE,
   status: 'idle',
   loadedViewId: null,
+  loadedScopeId: null,
+  freshness: null,
+  job: null,
   snapshot: null,
   snapshots: {},
   error: null,
@@ -109,6 +124,9 @@ export type Action =
   | { type: 'views-loaded'; views: ViewSummary[] }
   | { type: 'views-failed'; error: string }
   | { type: 'route'; route: Route }
+  | { type: 'scope-load-start'; scope: Scope }
+  | { type: 'scope-response'; response: ScopeResponse }
+  | { type: 'scope-failed'; scope: Scope; status: number; error: string }
   | { type: 'load-start'; viewId: string }
   | { type: 'load-done'; viewId: string; snapshot: Snapshot }
   | { type: 'load-failed'; viewId: string; error: string }
@@ -121,9 +139,54 @@ export type Action =
 /** The view shown: the routed one when it exists, else the first one. */
 export function effectiveViewId(state: Pick<AppState, 'views' | 'route'>): string | null {
   const { views, route } = state;
+  if (route.scope !== undefined) return null;
   if (views === null || views.length === 0) return null;
   if (route.viewId !== null && views.some((v) => v.id === route.viewId)) return route.viewId;
   return views[0]!.id;
+}
+
+/** Stable IDs shared with scope snapshots, not URL-encoded route strings. */
+export function scopeId(scope: Scope): ScopeId {
+  return scope.kind === 'source'
+    ? `source:${scope.source}`
+    : (`project:${scope.source}/${scope.repo.toLowerCase()}` as ScopeId);
+}
+
+export function routeScopeId(route: Route): ScopeId | null {
+  const scope = route.scope;
+  if (scope === undefined) return null;
+  return scopeId(
+    scope.kind === 'source'
+      ? scope
+      : { kind: 'project', source: scope.source, repo: `${scope.owner}/${scope.repo}` },
+  );
+}
+
+export function isActiveScopeJob(job: RefreshJobStatus | null): boolean {
+  return job?.state === 'queued' || job?.state === 'running';
+}
+
+/**
+ * Absolute due time, for the caller to schedule (no requests/timers here).
+ * `visibleSince` is the most recent hidden-to-visible transition, or null before
+ * one occurs. A response at/after that transition consumes its freshness check.
+ * Callers reset these timestamps when changing scope, and coalesce pending requests.
+ */
+export function nextScopeRequestAt(input: {
+  job: RefreshJobStatus | null;
+  respondedAt: number | null;
+  visible: boolean;
+  visibleSince: number | null;
+}): number | null {
+  if (!input.visible) return null;
+  if (
+    input.visibleSince !== null &&
+    (input.respondedAt === null || input.respondedAt < input.visibleSince)
+  )
+    return input.visibleSince;
+  return isActiveScopeJob(input.job) && input.respondedAt !== null
+    ? input.respondedAt + 2000
+    : null;
 }
 
 function keepSelection(selected: IssueKey | null, snapshot: Snapshot): IssueKey | null {
@@ -137,18 +200,117 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'views-failed':
       return { ...state, viewsError: action.error };
     case 'route': {
+      const currentScope = routeScopeId(state.route);
+      const nextScope = routeScopeId(action.route);
+      if (currentScope !== nextScope) {
+        return {
+          ...state,
+          route:
+            nextScope === null
+              ? action.route
+              : { ...action.route, q: '', tab: state.route.tab, sort: state.route.sort },
+          selected: null,
+          loadedScopeId: nextScope,
+          loadedViewId: null,
+          snapshot: null,
+          freshness: null,
+          job: null,
+          status: nextScope === null ? 'idle' : 'loading',
+          error: null,
+          refreshing: false,
+          refreshError: null,
+        };
+      }
+      if (JSON.stringify(action.route) === JSON.stringify(state.route)) return state;
       const viewChanged = action.route.viewId !== state.route.viewId;
-      // A different view id in the URL invalidates the selection; the snapshot
-      // is swapped by the loader (which dispatches load-start).
       return { ...state, route: action.route, selected: viewChanged ? null : state.selected };
     }
+    case 'scope-load-start':
+      if (scopeId(action.scope) !== routeScopeId(state.route)) return state;
+      return {
+        ...state,
+        loadedScopeId: scopeId(action.scope),
+        loadedViewId: null,
+        status: state.snapshot === null ? 'loading' : 'ready',
+        error: null,
+      };
+    case 'scope-response': {
+      const response = action.response;
+      const id = scopeId(response.scope);
+      if (id !== routeScopeId(state.route)) return state;
+      const active = isActiveScopeJob(response.job);
+      return {
+        ...state,
+        loadedScopeId: id,
+        loadedViewId: null,
+        snapshot: response.snapshot,
+        freshness: response.freshness,
+        job: response.job,
+        refreshError: null,
+        refreshing: false,
+        status: response.snapshot !== null ? 'ready' : active ? 'loading' : 'unavailable',
+        error:
+          response.snapshot !== null || active
+            ? null
+            : (response.job?.error ??
+              response.freshness.repositories.find((r) => r.error !== null)?.error ??
+              'Scope data is unavailable'),
+        selected:
+          response.snapshot === null ? null : keepSelection(state.selected, response.snapshot),
+      };
+    }
+    case 'scope-failed':
+      if (scopeId(action.scope) !== routeScopeId(state.route)) return state;
+      // A transport/refresh failure does not invalidate last-good data or the
+      // active job. Only authoritative catalog/policy responses replace it.
+      if (state.snapshot !== null && action.status !== 404 && action.status !== 409) {
+        return {
+          ...state,
+          status: 'ready',
+          refreshing: false,
+          refreshError: action.error,
+          freshness:
+            state.freshness === null
+              ? null
+              : {
+                  ...state.freshness,
+                  repositories: state.freshness.repositories.map((repository) =>
+                    repository.lastCheckedAt === null
+                      ? repository
+                      : { ...repository, state: 'stale' },
+                  ),
+                },
+        };
+      }
+      return {
+        ...state,
+        loadedScopeId: scopeId(action.scope),
+        loadedViewId: null,
+        snapshot: null,
+        freshness: null,
+        job: null,
+        selected: null,
+        status:
+          action.status === 404
+            ? 'not-in-catalog'
+            : action.status === 409
+              ? 'conflict'
+              : 'unavailable',
+        error: action.error,
+        refreshError: null,
+        refreshing: false,
+      };
     case 'load-start': {
+      if (state.route.scope !== undefined) return state;
       // A view loaded earlier is shown as it was; the refresh timer updates it.
       const cached = state.snapshots[action.viewId] ?? null;
       return {
         ...state,
         status: cached === null ? 'loading' : 'ready',
         loadedViewId: action.viewId,
+        loadedScopeId: null,
+        freshness: null,
+        job: null,
         snapshot: cached,
         error: null,
         refreshing: false,
@@ -170,6 +332,7 @@ export function reducer(state: AppState, action: Action): AppState {
       if (action.viewId !== state.loadedViewId) return state;
       return { ...state, status: 'error', snapshot: null, error: action.error };
     case 'refresh-start':
+      if (state.route.scope !== undefined) return state;
       return { ...state, refreshing: true, refreshError: null };
     case 'refresh-done':
       if (action.viewId !== state.loadedViewId) return state;

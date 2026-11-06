@@ -1,3 +1,5 @@
+import type { ScopeFreshness, RefreshJobStatus, ScopeResponse } from '../../src/core/scope.js';
+import { scopeId, routeScopeId, nextScopeRequestAt, type Action } from './state.js';
 import { describe, expect, it } from 'vitest';
 import type { PlanNode, Snapshot } from '../../src/core/types.js';
 import type { ViewSummary } from './api.js';
@@ -236,4 +238,282 @@ describe('scope route compatibility', () => {
       expect(route.viewId).toBeNull();
     },
   );
+});
+
+describe('project/source scope state', () => {
+  const project = { kind: 'project', source: 's', repo: 'o/r' } as const;
+  const freshness: ScopeFreshness = {
+    computedAt: null,
+    repositories: [],
+    outsideIssues: { count: 0, oldestObservedAt: null, provisionalCount: 0 },
+  };
+  const job: RefreshJobStatus = {
+    id: 'job',
+    scope: project,
+    trigger: 'interactive',
+    state: 'running',
+    queuedAt: '2026-01-01T00:00:00Z',
+    startedAt: null,
+    finishedAt: null,
+    delayedUntil: null,
+    error: null,
+  };
+  const route = parseHash('#/project/s/o/r/graph');
+  function scoped(): AppState {
+    return reducer(INITIAL_STATE, { type: 'route', route });
+  }
+  function response(overrides: Partial<ScopeResponse> = {}): ScopeResponse {
+    return { scope: project, snapshot: snapshot(['o/r#1']), freshness, job: null, ...overrides };
+  }
+
+  it('keys scope by canonical shared ID, not a named view', () => {
+    const state = scoped();
+    expect(state.loadedScopeId).toBe('project:s/o/r');
+    expect(routeScopeId(parseHash('#/project/s/O/R'))).toBe('project:s/o/r');
+    expect(scopeId({ kind: 'source', source: 'S' })).toBe('source:S');
+    expect(effectiveViewId({ ...state, views })).toBeNull();
+  });
+
+  it.each(['#/project/s/o/other', '#/source/s', '#/source/other'])(
+    'switches to %s without stale selection/filter or snapshot',
+    (hash) => {
+      const state: AppState = {
+        ...scoped(),
+        route: { ...route, q: 'bug', tab: 'order', sort: 'title' },
+        selected: 'o/r#1',
+        snapshot: snapshot(['o/r#1']),
+      };
+      const next = reducer(state, { type: 'route', route: parseHash(hash) });
+      expect(next.route).toMatchObject({ q: '', tab: 'order', sort: 'title' });
+      expect(next.selected).toBeNull();
+      expect(next.snapshot).toBeNull();
+      const back = reducer(next, { type: 'route', route });
+      expect(back.route.q).toBe('');
+      expect(back.selected).toBeNull();
+    },
+  );
+
+  it.each(['#/project/s/o/r', '#/source/s'])(
+    'preserves named-view link values when leaving %s',
+    (hash) => {
+      const state = {
+        ...scoped(),
+        route: { ...parseHash(hash), q: 'old', tab: 'problems' as const, sort: 'title' as const },
+        selected: 'o/r#1',
+      };
+      const target = parseHash('#/view/a/order?q=bug&sort=updated');
+      const next = reducer(state, { type: 'route', route: target });
+      expect(next.route).toEqual(target);
+      expect(serializeHash(next.route)).toBe('#/view/a/order?q=bug&sort=updated');
+      expect(next.selected).toBeNull();
+      expect(next.loadedScopeId).toBeNull();
+    },
+  );
+
+  it('enters projects from All projects and from named views, preserving tab and sort', () => {
+    for (const hash of ['#/source/s', '#/view/a']) {
+      const before = {
+        ...INITIAL_STATE,
+        route: { ...parseHash(hash), q: 'old', tab: 'problems' as const, sort: 'title' as const },
+        selected: 'o/r#1',
+      };
+      const after = reducer(before, { type: 'route', route });
+      expect(after.route).toMatchObject({ q: '', tab: 'problems', sort: 'title' });
+      expect(after.selected).toBeNull();
+    }
+  });
+
+  it('reselecting current route is a no-op and tab/filter updates keep selection', () => {
+    const state = { ...scoped(), selected: 'o/r#1' };
+    expect(reducer(state, { type: 'route', route: { ...state.route } })).toBe(state);
+    expect(
+      reducer(state, { type: 'route', route: { ...state.route, tab: 'order', q: 'bug' } }).selected,
+    ).toBe('o/r#1');
+  });
+
+  it('shows snapshots immediately with freshness, including active refresh', () => {
+    const result = reducer(scoped(), { type: 'scope-response', response: response({ job }) });
+    expect(result.status).toBe('ready');
+    expect(result.freshness).toBe(freshness);
+    expect(result.job).toBe(job);
+    expect(result.snapshot).not.toBeNull();
+    expect(result.snapshots).toEqual({});
+  });
+
+  it.each(['queued', 'running'] as const)('missing snapshot with %s job stays loading', (state) => {
+    const result = reducer(scoped(), {
+      type: 'scope-response',
+      response: response({ snapshot: null, job: { ...job, state } }),
+    });
+    expect(result.status).toBe('loading');
+    expect(result.snapshot).toBeNull();
+    expect(result.error).toBeNull();
+  });
+
+  it.each(['completed', 'partial', 'failed'] as const)(
+    'missing snapshot with %s job is unavailable, not an empty plan',
+    (state) => {
+      const result = reducer(scoped(), {
+        type: 'scope-response',
+        response: response({ snapshot: null, job: { ...job, state, error: 'failed upstream' } }),
+      });
+      expect(result.status).toBe('unavailable');
+      expect(result.snapshot).toBeNull();
+      expect(result.error).toBe('failed upstream');
+    },
+  );
+
+  it('missing snapshot and job is unavailable with repository explanation', () => {
+    const f: ScopeFreshness = {
+      ...freshness,
+      repositories: [
+        {
+          project: { source: 's', repo: 'o/r' },
+          lastCheckedAt: null,
+          state: 'unavailable',
+          partial: false,
+          error: 'no access',
+          delayedUntil: null,
+        },
+      ],
+    };
+    const result = reducer(scoped(), {
+      type: 'scope-response',
+      response: response({ snapshot: null, freshness: f }),
+    });
+    expect(result.status).toBe('unavailable');
+    expect(result.error).toBe('no access');
+  });
+
+  it.each([
+    [404, 'not-in-catalog'],
+    [409, 'conflict'],
+    [500, 'unavailable'],
+  ] as const)('keeps %i explanation in distinct state', (status, expected) => {
+    const result = reducer(scoped(), {
+      type: 'scope-failed',
+      scope: project,
+      status,
+      error: 'explanation',
+    });
+    expect(result.status).toBe(expected);
+    expect(result.error).toBe('explanation');
+    expect(result.snapshot).toBeNull();
+  });
+
+  it.each([0, 503])(
+    'keeps last-good scope data and job after failure %i, then recovers',
+    (status) => {
+      const f: ScopeFreshness = {
+        ...freshness,
+        computedAt: '2026-01-01T00:00:00Z',
+        repositories: [
+          {
+            project: { source: 's', repo: 'o/r' },
+            lastCheckedAt: '2025-12-31T23:59:00Z',
+            state: 'fresh',
+            partial: false,
+            error: null,
+            delayedUntil: null,
+          },
+        ],
+      };
+      const loaded = reducer(scoped(), {
+        type: 'scope-response',
+        response: response({ job, freshness: f }),
+      });
+      const selected = reducer(loaded, { type: 'select', key: 'o/r#1' });
+      const failed = reducer(selected, {
+        type: 'scope-failed',
+        scope: project,
+        status,
+        error: 'Service Unavailable',
+      });
+      expect(failed.status).toBe('ready');
+      expect(failed.snapshot).toBe(selected.snapshot);
+      expect(failed.job).toBe(job);
+      expect(failed.selected).toBe('o/r#1');
+      expect(failed.refreshError).toBe('Service Unavailable');
+      expect(failed.freshness).toEqual({
+        ...f,
+        repositories: [{ ...f.repositories[0]!, state: 'stale' }],
+      });
+      expect(f.repositories[0]!.state).toBe('fresh');
+      expect(
+        nextScopeRequestAt({
+          job: failed.job,
+          respondedAt: 1000,
+          visible: true,
+          visibleSince: null,
+        }),
+      ).toBe(3000);
+      const recovered = reducer(failed, {
+        type: 'scope-response',
+        response: response({ freshness: f }),
+      });
+      expect(recovered.refreshError).toBeNull();
+      expect(recovered.freshness).toBe(f);
+      expect(recovered.job).toBeNull();
+    },
+  );
+
+  it.each([404, 409])('authoritative %i replaces last-good data', (status) => {
+    const loaded = reducer(scoped(), { type: 'scope-response', response: response({ job }) });
+    const failed = reducer(loaded, {
+      type: 'scope-failed',
+      scope: project,
+      status,
+      error: 'catalog or policy changed',
+    });
+    expect(failed.status).toBe(status === 404 ? 'not-in-catalog' : 'conflict');
+    expect(failed.snapshot).toBeNull();
+    expect(failed.job).toBeNull();
+    expect(failed.refreshError).toBeNull();
+    expect(failed.error).toBe('catalog or policy changed');
+  });
+
+  it('ignores old scope results, starts, and errors immediately after navigation', () => {
+    const state = reducer(scoped(), { type: 'route', route: parseHash('#/source/s') });
+    expect(reducer(state, { type: 'scope-response', response: response() })).toBe(state);
+    expect(
+      reducer(state, { type: 'scope-failed', scope: project, status: 404, error: 'old' }),
+    ).toBe(state);
+    expect(reducer(state, { type: 'scope-load-start', scope: project })).toBe(state);
+    const ready = reducer(state, {
+      type: 'scope-response',
+      response: response({ scope: { kind: 'source', source: 's' } }),
+    });
+    expect(ready.loadedScopeId).toBe('source:s');
+    expect(ready.status).toBe('ready');
+  });
+
+  it('ignores named-view callbacks while a scope is current', () => {
+    const state = reducer({ ...INITIAL_STATE, loadedViewId: 'a' }, { type: 'route', route });
+    for (const action of [
+      { type: 'load-start', viewId: 'a' },
+      { type: 'load-done', viewId: 'a', snapshot: snapshot([]) },
+      { type: 'refresh-start', viewId: 'a' },
+      { type: 'refresh-done', viewId: 'a', snapshot: snapshot([]) },
+      { type: 'refresh-failed', viewId: 'a', error: 'late' },
+      { type: 'load-failed', viewId: 'a', error: 'late' },
+    ] satisfies Action[])
+      expect(reducer(state, action)).toBe(state);
+    const legacy = reducer(state, { type: 'route', route: parseHash('#/view/a') });
+    expect(reducer(legacy, { type: 'scope-response', response: response() })).toBe(legacy);
+    expect(reducer(legacy, { type: 'load-start', viewId: 'a' }).loadedViewId).toBe('a');
+  });
+
+  it('plans follow-ups only while visible, and one freshness check after returning', () => {
+    const input = { job, respondedAt: 1000, visible: true, visibleSince: null };
+    expect(nextScopeRequestAt(input)).toBe(3000);
+    expect(nextScopeRequestAt({ ...input, visible: false })).toBeNull();
+    expect(nextScopeRequestAt({ ...input, job: null })).toBeNull();
+    expect(nextScopeRequestAt({ ...input, job: { ...job, state: 'completed' } })).toBeNull();
+    expect(nextScopeRequestAt({ ...input, job: null, visibleSince: 5000 })).toBe(5000);
+    expect(
+      nextScopeRequestAt({ ...input, job: null, visibleSince: 5000, respondedAt: 5000 }),
+    ).toBeNull();
+    expect(nextScopeRequestAt({ ...input, visibleSince: 5000, respondedAt: 5001 })).toBe(7001);
+    expect(nextScopeRequestAt({ ...input, visibleSince: 5000, respondedAt: null })).toBe(5000);
+  });
 });
