@@ -120,6 +120,112 @@ describe('preference state', () => {
   );
 
   it.each(['add-favorite', 'remember-project'] as const)(
+    'retains queued cancellation feedback when the active %s later fails',
+    (kind) => {
+      const h = harness();
+      h.ready();
+      const [save] = h.send({ type: 'mutate', mutation: { kind, project: a } });
+      h.send({ type: 'mutate', mutation: { kind, project: b } });
+      const [read] = h.send({ type: 'reload' });
+      h.send({ type: 'read-failure', id: read!.id, message: 'Offline' });
+      const canceled = kind === 'remember-project' ? h.state.notice : h.state.error;
+      h.send({ type: 'save-failure', id: save!.id, message: 'Active save failed' });
+      const feedback = kind === 'remember-project' ? h.state.notice : h.state.error;
+      expect(feedback).toContain(canceled!);
+      expect(feedback).toContain('Active save failed');
+    },
+  );
+
+  describe.each(['save-failure', 'read-failure', 'unavailable'] as const)(
+    'queue cancellation on %s',
+    (failure) => {
+      it.each(['add-favorite', 'remove-favorite', 'remember-project'] as const)(
+        'reports discarded %s and never replays it after immediate recovery',
+        (kind) => {
+          const h = harness();
+          h.ready(response(1, [b.repo]));
+          const [save] = h.send({ type: 'mutate', mutation: { kind: 'add-favorite', project: a } });
+          h.send({ type: 'mutate', mutation: { kind, project: b } });
+          let read: PreferenceEffect;
+          if (failure === 'save-failure') {
+            [read] = h.send({ type: 'save-failure', id: save!.id, message: 'Star failed' }) as [
+              PreferenceEffect,
+            ];
+          } else {
+            const [background] = h.send({ type: 'reload' });
+            h.send(
+              failure === 'read-failure'
+                ? { type: 'read-failure', id: background!.id, message: 'Offline' }
+                : {
+                    type: 'read-success',
+                    id: background!.id,
+                    response: { available: false, reason: 'store-locked', message: 'Locked' },
+                  },
+            );
+            expect(h.state.active?.id).toBe(save!.id);
+            expect(
+              h.send({
+                type: 'save-success',
+                id: save!.id,
+                response: response(2, [a.repo, b.repo]),
+              }),
+            ).toEqual([]);
+            [read] = h.send({ type: 'reload' }) as [PreferenceEffect];
+          }
+          expect(h.state.queue).toEqual([]);
+          if (kind === 'remember-project') {
+            expect(h.state.notice).toContain('queued project selection was not remembered');
+            expect(h.state.error).toBe(failure === 'save-failure' ? 'Star failed' : null);
+          } else {
+            expect(h.state.error).toContain('Queued favorite changes were not saved');
+            expect(h.state.notice).toBeNull();
+          }
+          const feedback = { error: h.state.error, notice: h.state.notice };
+          expect(
+            h.send({ type: 'read-success', id: read.id, response: response(3, [a.repo, b.repo]) }),
+          ).toEqual([]);
+          expect(h.state).toMatchObject(feedback);
+          expect(h.state.active).toBeNull();
+          expect(h.state.confirmed?.rememberedProject).toBeNull();
+        },
+      );
+
+      it('preserves earlier unrelated feedback while reporting both kinds of cancellation', () => {
+        const h = harness();
+        h.ready();
+        const [save] = h.send({
+          type: 'mutate',
+          mutation: { kind: 'remember-project', project: a },
+        });
+        h.send({ type: 'mutate', mutation: { kind: 'add-favorite', project: b } });
+        h.send({ type: 'mutate', mutation: { kind: 'remember-project', project: b } });
+        const [read] = h.send({ type: 'reload' });
+        const event: PreferenceEvent =
+          failure === 'save-failure'
+            ? { type: 'save-failure', id: save!.id, message: 'Remember failed' }
+            : failure === 'read-failure'
+              ? { type: 'read-failure', id: read!.id, message: 'Offline' }
+              : {
+                  type: 'read-success',
+                  id: read!.id,
+                  response: { available: false, reason: 'store-locked', message: 'Locked' },
+                };
+        const result = reducePreferences(
+          { ...h.state, error: 'Earlier star failed', notice: 'Earlier notice' },
+          event,
+        );
+        expect(result.state.error).toContain('Earlier star failed');
+        expect(result.state.error).toContain('Queued favorite changes were not saved');
+        expect(result.state.notice).toContain(
+          failure === 'save-failure' ? 'Remember failed' : 'Earlier notice',
+        );
+        expect(result.state.notice).toContain('queued project selection was not remembered');
+        expect(result.state.queue).toEqual([]);
+      });
+    },
+  );
+
+  it.each(['add-favorite', 'remember-project'] as const)(
     'discards queued %s through failed save and reread without offline replay',
     (kind) => {
       const h = harness();

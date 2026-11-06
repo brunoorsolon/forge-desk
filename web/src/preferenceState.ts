@@ -118,19 +118,45 @@ function startNext(state: PreferenceState): PreferenceTransition {
   };
 }
 
+function appendFeedback(previous: string | null, message: string): string {
+  return previous ? previous + ' ' + message : message;
+}
+
+function discardQueued(state: PreferenceState): PreferenceState {
+  const canceledFavorite = state.queue.some((mutation) => mutation.kind !== 'remember-project');
+  const canceledRemember = state.queue.some((mutation) => mutation.kind === 'remember-project');
+  return {
+    ...state,
+    queue: [],
+    error: canceledFavorite
+      ? appendFeedback(
+          state.error,
+          'Queued favorite changes were not saved because preferences became unavailable.',
+        )
+      : state.error,
+    notice: canceledRemember
+      ? appendFeedback(
+          state.notice,
+          'The queued project selection was not remembered because preferences became unavailable.',
+        )
+      : state.notice,
+  };
+}
+
 function saveFailed(state: PreferenceState, message: string): PreferenceTransition {
   const remember = state.active?.mutation.kind === 'remember-project';
   // Drop unsent mutations too: a later recovery must never replay offline intent.
   return read(
-    display({
-      ...state,
-      active: null,
-      queue: [],
-      reads: [],
-      rereadRequired: true,
-      error: remember ? state.error : message,
-      notice: remember ? message : state.notice,
-    }),
+    display(
+      discardQueued({
+        ...state,
+        active: null,
+        reads: [],
+        rereadRequired: true,
+        error: remember ? state.error : appendFeedback(state.error, message),
+        notice: remember ? appendFeedback(state.notice, message) : state.notice,
+      }),
+    ),
   );
 }
 
@@ -191,9 +217,8 @@ export function reducePreferences(
       if (!state.reads.includes(event.id)) return { state, effects: [] };
       // A newer completed read supersedes this one (its id will have removed older reads).
       const next = {
-        ...state,
+        ...discardQueued(state),
         reads: state.reads.filter((id) => id !== event.id),
-        queue: [],
         rereadRequired: true,
       };
       return {
@@ -223,10 +248,9 @@ export function reducePreferences(
       if (!response.available)
         return {
           state: {
-            ...next,
+            ...discardQueued(next),
             view: { status: 'unavailable', reason: response.reason, message: response.message },
             confirmed: null,
-            queue: [],
             rereadRequired: true,
           },
           effects: [],

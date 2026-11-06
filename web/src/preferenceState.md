@@ -11,7 +11,10 @@ changes are optimistic, while `confirmed` always retains the last authoritative
 server response. A failed save rolls the display back and automatically requests
 a fresh read. It discards both the failed mutation and all unsent mutations. A later successful
 read never replays those actions; a new explicit user action is required. A failed or unavailable read also discards unsent mutations, while retaining any
-already in-flight save identity until its result arrives. A failed read keeps earlier data visible as
+already in-flight save identity until its result arrives. Discarded queued favorite
+changes produce an error; discarded remembered-project selections produce a
+notice. Cancellation feedback is appended to existing feedback, so the original
+failure and unrelated messages remain visible even after recovery. A failed read keeps earlier data visible as
 `unverified` and read-only. Use `canChangeFavorites` to enable star controls,
 including removal of an `inCatalog: false` favorite. Its existing entry remains
 visible so the view can mark it unavailable.
