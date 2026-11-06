@@ -37,7 +37,7 @@ export interface ScopePlanInput {
 }
 
 export interface ScopePlanResult {
-  /** No partial plan is invented before all scope repositories have a listing. */
+  /** Null before any scoped repository has a listing; missing listings are warned otherwise. */
   snapshot: Snapshot | null;
   computedAt: string;
   /** Sorted outstanding lookups, bounded by the legacy per-resolution budget. */
@@ -63,10 +63,9 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
   const scopeRepos = [...projects]
     .filter((repo) => scope.kind === 'source' || repo === scope.repo.toLowerCase())
     .sort();
-  if (
-    scopeRepos.length === 0 ||
-    scopeRepos.some((r) => records.get(r)?.observation.issues == null)
-  ) {
+  const listedRepos = scopeRepos.filter((repo) => records.get(repo)?.observation.issues != null);
+  const unlistedRepos = scopeRepos.filter((repo) => records.get(repo)?.observation.issues == null);
+  if (listedRepos.length === 0) {
     return { snapshot: null, computedAt, pendingOutsideIssues: [] };
   }
   const id =
@@ -90,7 +89,7 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       if (issue.state === 'open') knownCatalog.set(issue.key, { issue, record: record! });
     }
   }
-  const roots = scopeRepos
+  const roots = listedRepos
     .flatMap((r) => records.get(r)!.observation.issues!)
     .filter((i) => i.state === 'open');
   const known = new Map(roots.map((i) => [i.key, i]));
@@ -99,7 +98,7 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       .filter((r) => r.observation.source === scope.source)
       .map((r) => [r.observation.key, r]),
   );
-  const usedRepositories = new Set(scopeRepos);
+  const usedRepositories = new Set(listedRepos);
   const usedOutside = new Map<IssueKey, DerivationObservation<OutsideIssueObservation>>();
   const lookups = new Map<IssueKey, OutsideIssueLookup>();
   const provisional = new Set<IssueKey>();
@@ -139,7 +138,14 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       provisional.add(key);
     }
   }
-  const warnings: PlanWarning[] = scopeRepos.flatMap((r) => records.get(r)!.observation.warnings);
+  const warnings: PlanWarning[] = [
+    ...listedRepos.flatMap((r) => records.get(r)!.observation.warnings),
+    ...unlistedRepos.map((repo): PlanWarning => ({
+      code: 'repository-unlisted',
+      message: `All projects plan is partial: ${scope.source}/${repo} has no successful repository listing`,
+      issues: [],
+    })),
+  ];
   const resolved = resolvePlanInput(roots, lookups, settings, warnings);
   const included = new Set(resolved.issues.map((i) => i.key));
   const stale = (record: DerivationObservation<ObservationMetadata>): boolean => {

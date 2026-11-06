@@ -35,7 +35,10 @@ function metadata(): ObservationMetadata {
     invalidationGeneration: 0,
   };
 }
-function repository(repo: string, issues: Issue[]): DerivationObservation<RepositoryObservation> {
+function repository(
+  repo: string,
+  issues: Issue[] | null,
+): DerivationObservation<RepositoryObservation> {
   return {
     invalidated: false,
     observation: { ...metadata(), project: { source: 's', repo }, issues, warnings: [] },
@@ -91,6 +94,7 @@ describe('scope plan derivation', () => {
     expect(result.snapshot!.orderingMode).toBe('priority');
     expect(result.snapshot!.layout).toBeDefined();
     expect(result.computedAt).toBe(checked);
+    expect(warnings(o, 'repository-unlisted')).toEqual([]);
   });
   it('All projects includes empty repositories and dates by oldest scoped check', () => {
     const o = input();
@@ -101,6 +105,147 @@ describe('scope plan derivation', () => {
     o.repositories[1]!.observation.issues = [];
     expect(nodes(o)).toHaveLength(1);
     expect(deriveScopePlan(o).snapshot!.fetchedAt).toBe('2026-11-06T11:59:00.000Z');
+    expect(warnings(o, 'repository-unlisted')).toEqual([]);
+  });
+  it.each(['absent', 'not-attempted', 'failed', 'other-source'] as const)(
+    'derives a partial All projects plan when a repository is %s, naming the missing listing',
+    (state) => {
+      const o = input();
+      o.scope = { kind: 'source', source: 's' };
+      o.repositories = [repository('a/r', [issue(1)])];
+      o.repositories[0]!.observation.lastCheckedAt = '2026-11-06T11:59:00.000Z';
+      if (state !== 'absent') {
+        const missing = repository('a/other', state === 'other-source' ? [issue(2)] : null);
+        missing.observation.lastCheckedAt = null;
+        missing.observation.lastAttempt =
+          state === 'failed'
+            ? { attemptedAt: checked, outcome: 'failed', error: 'Access denied' }
+            : null;
+        if (state === 'other-source') missing.observation.project.source = 'foreign';
+        o.repositories = [...o.repositories, missing];
+      }
+      const result = deriveScopePlan(o);
+      expect(result.snapshot).toMatchObject({
+        viewId: 'source:s',
+        title: 's / All projects',
+        fetchedAt: '2026-11-06T11:59:00.000Z',
+        plan: {
+          warnings: [
+            {
+              code: 'repository-unlisted',
+              message:
+                'All projects plan is partial: s/a/other has no successful repository listing',
+              issues: [],
+            },
+          ],
+        },
+      });
+      expect(result.snapshot!.plan.nodes.map((n) => n.key)).toEqual(['a/r#1']);
+      expect(result.pendingOutsideIssues).toEqual([]);
+      expect(result.computedAt).toBe(checked);
+    },
+  );
+  it('treats a verified empty listing as data in a partial All projects plan', () => {
+    const o = input();
+    o.scope = { kind: 'source', source: 's' };
+    o.repositories = [repository('a/r', [])];
+    o.repositories[0]!.observation.lastCheckedAt = '2026-11-06T11:59:00.000Z';
+    const result = deriveScopePlan(o);
+    expect(result.snapshot!.plan.nodes).toEqual([]);
+    expect(result.snapshot!.fetchedAt).toBe('2026-11-06T11:59:00.000Z');
+    expect(warnings(o, 'repository-unlisted')).toHaveLength(1);
+    o.repositories = [...o.repositories, repository('a/other', [issue(2, '', 'a/other')])];
+    o.catalog.projects.push({ source: 's', repo: 'a/third' });
+    expect(nodes(o).map((n) => n.key)).toEqual(['a/other#2']);
+    expect(deriveScopePlan(o).snapshot!.fetchedAt).toBe('2026-11-06T11:59:00.000Z');
+  });
+  it('retains last-good listings and their stale warnings in a partial All projects plan', () => {
+    const o = input();
+    o.scope = { kind: 'source', source: 's' };
+    o.repositories = [repository('a/r', [issue(1)])];
+    o.repositories[0]!.observation.lastAttempt = {
+      attemptedAt: checked,
+      outcome: 'failed',
+      error: 'Access denied',
+    };
+    expect(nodes(o).map((n) => n.key)).toEqual(['a/r#1']);
+    expect(warnings(o, 'stale-data')[0]!.message).toBe('Stale observation: s/a/r');
+    expect(warnings(o, 'repository-unlisted')[0]!.message).toContain('s/a/other');
+    expect(deriveScopePlan(o).snapshot!.fetchedAt).toBe(checked);
+  });
+  it.each(['absent', 'unlisted', 'empty-catalog'] as const)(
+    'keeps All projects unavailable with no scoped listing (%s)',
+    (state) => {
+      const o = input();
+      o.scope = { kind: 'source', source: 's' };
+      if (state === 'absent') o.repositories = [];
+      if (state === 'unlisted')
+        o.repositories = [repository('a/r', null), repository('a/other', null)];
+      if (state === 'empty-catalog') o.catalog.projects = [];
+      const extra = repository('a/unconfigured', [issue(9, '', 'a/unconfigured')]);
+      const foreign = repository('a/r', [issue(1)]);
+      foreign.observation.project.source = 'foreign';
+      o.repositories = [...o.repositories, extra, foreign];
+      o.outsideIssues = [outside('a/r#1', { status: 'found', issue: issue(1) })];
+      expect(deriveScopePlan(o)).toEqual({
+        snapshot: null,
+        computedAt: checked,
+        pendingOutsideIssues: [],
+      });
+    },
+  );
+  it('keeps dependencies on unlisted repositories blocked and reports outstanding lookups', () => {
+    const o = input();
+    o.scope = { kind: 'source', source: 's' };
+    o.repositories = [repository('a/r', [issue(1, 'Blocked by a/other#2')])];
+    const result = deriveScopePlan(o);
+    expect(result.snapshot!.plan.nodes.map((n) => [n.key, n.status, n.external])).toEqual([
+      ['a/other#2', 'ready', true],
+      ['a/r#1', 'blocked', false],
+    ]);
+    expect(result.pendingOutsideIssues).toEqual(['a/other#2']);
+    expect(warnings(o, 'repository-unlisted')).toHaveLength(1);
+    expect(warnings(o, 'dependency-provisional')[0]!.issues).toEqual(['a/other#2', 'a/r#1']);
+    o.outsideIssues = [outside('a/other#2', { status: 'found', issue: issue(2, '', 'a/other') })];
+    expect(deriveScopePlan(o).pendingOutsideIssues).toEqual([]);
+    expect(warnings(o, 'dependency-provisional')).toEqual([]);
+    expect(warnings(o, 'repository-unlisted')).toHaveLength(1);
+  });
+  it('removes the partial warning once the unlisted repository has a successful listing', () => {
+    const o = input();
+    o.scope = { kind: 'source', source: 's' };
+    o.repositories = [repository('a/r', [issue(1)])];
+    const partial = deriveScopePlan(o);
+    o.repositories = [...o.repositories, repository('a/other', [])];
+    const complete = deriveScopePlan(o);
+    expect(warnings(o, 'repository-unlisted')).toEqual([]);
+    expect(complete.snapshot!.contentHash).not.toBe(partial.snapshot!.contentHash);
+    expect(complete.snapshot!.plan.nodes).toEqual(partial.snapshot!.plan.nodes);
+    o.repositories[1]!.observation.issues = [issue(2, '', 'a/other')];
+    expect(nodes(o).map((n) => [n.key, n.external])).toEqual([
+      ['a/other#2', false],
+      ['a/r#1', false],
+    ]);
+  });
+  it('names every unlisted catalog repository deterministically without mutating observations', () => {
+    const o = input();
+    o.scope = { kind: 'source', source: 's' };
+    o.catalog.projects.push({ source: 's', repo: 'A/Third' });
+    o.repositories = [repository('a/r', [issue(1)]), repository('a/not-in-catalog', [])];
+    const before = structuredClone(o);
+    const result = deriveScopePlan(o);
+    expect(warnings(o, 'repository-unlisted').map((w) => w.message)).toEqual([
+      'All projects plan is partial: s/a/other has no successful repository listing',
+      'All projects plan is partial: s/a/third has no successful repository listing',
+    ]);
+    expect(o).toEqual(before);
+    expect(
+      deriveScopePlan({
+        ...o,
+        catalog: { ...o.catalog, projects: [...o.catalog.projects].reverse() },
+        repositories: [...o.repositories].reverse(),
+      }),
+    ).toEqual(result);
   });
   it('uses another catalog listing as external context without lookup; ignores other sources and noncatalog repos', () => {
     const o = input();
@@ -276,7 +421,7 @@ describe('scope plan derivation', () => {
     expect(warnings(o, 'dependency-provisional')[0]!.issues).toEqual(['a/r#1', 'a/r#2']);
     expect(o).toEqual(before);
   });
-  it('does not invent partial snapshots or accept foreign/conflicted scopes', () => {
+  it('does not invent a project snapshot without its listing or accept foreign/conflicted scopes', () => {
     const o = input();
     o.repositories[0]!.observation.issues = null;
     expect(deriveScopePlan(o).snapshot).toBeNull();
