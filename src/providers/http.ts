@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { requestContext } from './requestContext.js';
 /**
  * Shared HTTP helpers for the API providers: JSON GET with retries, Link-header
  * pagination and a small concurrency limiter. Error messages never contain the
@@ -102,34 +104,46 @@ export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) =>
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error(`createLimiter: concurrency must be a positive integer, got ${concurrency}`);
   }
-  let active = 0;
-  const queue: Array<() => void> = [];
+  const ordinary = { active: 0, queue: [] as Array<() => void> };
+  const admitted = new WeakMap<object, typeof ordinary>();
 
-  const next = (): void => {
-    if (active >= concurrency) return;
-    const start = queue.shift();
-    if (start) {
-      active++;
-      start();
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    const context = requestContext.getStore();
+    let lane = context ? admitted.get(context) : ordinary;
+    if (!lane) {
+      lane = { active: 0, queue: [] };
+      admitted.set(context!, lane);
     }
-  };
+    const state = lane;
+    const runInContext = AsyncLocalStorage.snapshot();
 
-  return <T>(fn: () => Promise<T>): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      queue.push(() => {
-        let p: Promise<T>;
-        try {
-          p = Promise.resolve(fn());
-        } catch (err) {
-          p = Promise.reject(err);
-        }
-        p.then(resolve, reject).finally(() => {
-          active--;
-          next();
-        });
-      });
+    const next = (): void => {
+      if (state.active >= concurrency) return;
+      const start = state.queue.shift();
+      if (start) {
+        state.active++;
+        start();
+      }
+    };
+
+    return new Promise<T>((resolve, reject) => {
+      state.queue.push(() =>
+        runInContext(() => {
+          let p: Promise<T>;
+          try {
+            p = Promise.resolve(fn());
+          } catch (err) {
+            p = Promise.reject(err);
+          }
+          p.then(resolve, reject).finally(() => {
+            state.active--;
+            next();
+          });
+        }),
+      );
       next();
     });
+  };
 }
 
 function secretsFrom(headers: Record<string, string>): string[] {
@@ -170,6 +184,7 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
   const secrets = secretsFrom(opts.headers);
   const cache = new Map<string, JsonResponse<unknown>>();
   const inFlight = new Map<string, Promise<JsonResponse<unknown>>>();
+  const admittedInFlight = new WeakMap<object, typeof inFlight>();
   let cooldown: { until: number; status: number } | undefined;
 
   const redact = (text: string): string => {
@@ -317,14 +332,20 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
   async function getJson<T>(pathOrUrl: string): Promise<JsonResponse<T>> {
     const url = resolveUrl(pathOrUrl);
     if (!opts.conditionalRequests) return requestJson<T>(url);
-    const running = inFlight.get(url);
+    const context = requestContext.getStore();
+    let lane = context ? admittedInFlight.get(context) : inFlight;
+    if (!lane) {
+      lane = new Map();
+      admittedInFlight.set(context!, lane);
+    }
+    const running = lane.get(url);
     if (running !== undefined) return running as Promise<JsonResponse<T>>;
     const promise = requestJson<T>(url);
-    inFlight.set(url, promise);
+    lane.set(url, promise);
     try {
       return await promise;
     } finally {
-      inFlight.delete(url);
+      lane.delete(url);
     }
   }
 
