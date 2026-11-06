@@ -21,3 +21,16 @@ describe('independent release links', () => {
     expect(parseReleaseHash('#/releases/%zz')?.repositoryId).toBeNull();
   });
 });
+
+it('keeps project and source links independent of release selection', () => {
+  for (const hash of ['#/project/forge/acme/api/order', '#/source/forge/problems']) {
+    expect(parseReleaseHash(hash)).toBeNull();
+    expect(serializeHash(parseHash(hash))).toBe(hash);
+  }
+  expect(parseHash('#/releases/repo?job=1&plan=2')).toEqual({
+    viewId: null,
+    tab: 'graph',
+    q: '',
+    sort: 'number',
+  });
+});
