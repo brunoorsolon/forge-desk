@@ -156,6 +156,24 @@ describe('scope plan derivation', () => {
     expect(result.snapshot!.plan.edges).toHaveLength(205);
     expect(warnings(o, 'dependency-provisional')[0]!.issues).toHaveLength(206);
   });
+  it.each(['open', 'closed'] as const)(
+    'does not charge stored %s outside issues against the lookup budget',
+    (state) => {
+      const o = input();
+      o.repositories[0]!.observation.issues = [
+        issue(1, `Blocked by ${Array.from({ length: 201 }, (_, n) => `#${n + 2}`).join(', ')}`),
+      ];
+      o.outsideIssues = Array.from({ length: 200 }, (_, n) =>
+        outside(`a/r#${n + 2}`, { status: 'found', issue: { ...issue(n + 2), state } }),
+      );
+      const result = deriveScopePlan(o);
+      expect(result.pendingOutsideIssues).toEqual(['a/r#202']);
+      expect(result.snapshot!.plan.edges).toHaveLength(state === 'open' ? 201 : 1);
+      expect(deriveScopePlan({ ...o, outsideIssues: [...o.outsideIssues].reverse() })).toEqual(
+        result,
+      );
+    },
+  );
   it('traverses stored outside issues transitively and reports remaining lookups', () => {
     const o = input();
     o.repositories[0]!.observation.issues = [issue(1, 'Blocked by #2')];

@@ -118,13 +118,15 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       }
       const record = outside.get(key);
       const result = record?.observation.result;
-      if (budget-- > 0) {
-        if (record) usedOutside.set(key, record);
-        if (result?.status === 'found') {
-          lookups.set(key, result);
-          if (result.issue.state === 'open') known.set(key, result.issue);
-          continue;
-        }
+      if (record) usedOutside.set(key, record);
+      // Stored results require no lookup and must not starve new dependencies.
+      if (result?.status === 'found') {
+        lookups.set(key, result);
+        if (result.issue.state === 'open') known.set(key, result.issue);
+        continue;
+      }
+      if (budget > 0) {
+        budget--;
         pendingOutsideIssues.push(key);
       }
       // Missing/inaccessible is not evidence of closure. Even beyond the cap,
