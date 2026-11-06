@@ -266,7 +266,9 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
           !summaryAllowsSkip(summaries.get(i.number)?.issue_dependencies_summary?.total_blocked_by),
       );
       const found = await fetchRelated(repo, candidates, 'dependencies/blocked_by');
-      relationCoverage.native = found === null ? 'unsupported' : 'complete';
+      // Later 404s skip individual issues without a warning, but leave coverage incomplete.
+      relationCoverage.native =
+        found !== null && found.size === candidates.length ? 'complete' : 'unsupported';
       if (found === null) {
         warnings.push({
           code: 'native-unsupported',
@@ -284,7 +286,8 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
         (i) => !summaryAllowsSkip(summaries.get(i.number)?.sub_issues_summary?.total),
       );
       const found = await fetchRelated(repo, candidates, 'sub_issues');
-      relationCoverage.subIssues = found === null ? 'unsupported' : 'complete';
+      relationCoverage.subIssues =
+        found !== null && found.size === candidates.length ? 'complete' : 'unsupported';
       if (found === null) {
         warnings.push({
           code: 'native-unsupported',

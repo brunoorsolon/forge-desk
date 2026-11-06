@@ -677,6 +677,43 @@ describe('getIssue: relation coverage', () => {
 });
 
 describe('listOpenIssues: relation coverage', () => {
+  it.each(RELATION_KINDS)(
+    'reports an isolated later $kind 404 as unsupported without changing issues or warnings',
+    async ({ kind, endpoint, source }) => {
+      const { p, calls } = provider((url) => {
+        if (url.pathname === '/repos/acme/api/issues')
+          return json([
+            ghIssue(1),
+            ghIssue(2),
+            ghIssue(3, {
+              issue_dependencies_summary: { total_blocked_by: 0 },
+              sub_issues_summary: { total: 0 },
+            }),
+            ghIssue(4),
+          ]);
+        if (url.pathname === `/repos/acme/api/issues/2/${endpoint}`) return status(404);
+        if (url.pathname === `/repos/acme/api/issues/4/${endpoint}`) return json([ghIssue(5)]);
+        return json([]);
+      });
+      const result = await p.listOpenIssues(REPO, BOTH);
+      expect(result.relationCoverage).toEqual({
+        native: 'complete',
+        subIssues: 'complete',
+        [kind]: 'unsupported',
+      });
+      expect(result.warnings).toEqual([]);
+      expect(result.issues.map((issue) => issue.number)).toEqual([1, 2, 3, 4]);
+      expect(result.issues.map((issue) => issue.nativeRelations)).toEqual([
+        [],
+        [],
+        [],
+        [{ kind: 'blocked-by', ref: { ...REPO, number: 5 }, source }],
+      ]);
+      expect(calls).toHaveLength(7);
+      expect(calls.some((call) => call.url.includes('/issues/3/'))).toBe(false);
+    },
+  );
+
   it.each([NONE, BOTH, { native: true, subIssues: false }, { native: false, subIssues: true }])(
     'reports requested coverage without changing issues or warnings (%j)',
     async (options) => {
