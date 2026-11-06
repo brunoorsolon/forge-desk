@@ -24,6 +24,7 @@ import { initialPreferenceState } from ${source('preferenceState.ts')};
 import { INITIAL_STATE, Store } from ${source('state.ts')};
 import { h } from ${source('dom.ts')};
 
+void (async () => {
 const results = [];
 const checked = '2026-11-06T12:00:00Z';
 const snapshot = {
@@ -32,10 +33,13 @@ const snapshot = {
   layout: { width: 0, height: 0, nodes: [], edges: [] },
 };
 for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
+  const frame = h('iframe', { style: 'width:' + width + 'px;height:' + height + 'px;border:0' });
+  document.body.append(frame);
+  await new Promise(resolve => { frame.onload = resolve; frame.srcdoc = '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body></body></html>'; });
   for (const count of [3, 22, 40]) {
     for (const sweeping of [false, true]) {
       const app = h('div', { id: 'app', style: 'width:' + width + 'px;height:' + height + 'px' });
-      document.body.append(app);
+      frame.contentDocument.body.append(app);
       const repositories = Array.from({ length: count }, (_, i) => ({
         project: { source: 'work', repo: 'owner/project-' + (i + 1) }, state: 'fresh', lastCheckedAt: checked,
         partial: false, delayedUntil: null, error: null,
@@ -64,7 +68,8 @@ for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
       const headingRect = heading.el.getBoundingClientRect();
       const mainRect = main.getBoundingClientRect();
       const rows = heading.el.querySelectorAll('.scope-repository');
-      heading.el.scrollTop = heading.el.scrollHeight;
+      // Reach the repository itself, not the later observation text below the list.
+      rows[rows.length - 1].scrollIntoView({ block: 'nearest' });
       const lastRect = rows[rows.length - 1].getBoundingClientRect();
       results.push({
         width, height, count, sweeping,
@@ -76,9 +81,11 @@ for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
       app.remove();
     }
   }
+  frame.remove();
 }
 const output = h('pre', { id: 'results' }, JSON.stringify(results));
 document.body.append(output);
+})().catch(error => { document.body.append(h('pre', { id: 'probe-error' }, String(error))); });
 `,
   );
   const bundle = await build({
@@ -118,11 +125,11 @@ document.body.append(output);
     { timeout: 30000, maxBuffer: 4 * 1024 * 1024 },
   );
   const match = stdout.match(/<pre id="results">(.*?)<\/pre>/s);
-  assert.ok(match, 'Browser did not finish the layout probe');
+  assert.ok(match, 'Browser did not finish the layout probe: ' + stdout.slice(-4000));
   const results = JSON.parse(match[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
   assert.equal(results.length, 18);
+  for (const result of results) console.log(JSON.stringify(result));
   for (const result of results) {
-    console.log(JSON.stringify(result));
     const context = JSON.stringify(result);
     assert.ok(result.planHeight > 0, 'Plan disappeared: ' + context);
     assert.ok(result.planWithinApp, 'Plan extended below the application: ' + context);
