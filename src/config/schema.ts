@@ -63,8 +63,17 @@ export type ResolvedReleases =
     };
 
 export interface AppConfig {
-  server: { host: string; port: number; basicAuth: { username: string; password: string } | null };
+  server: {
+    host: string;
+    port: number;
+    publicOrigin: string | null;
+    basicAuth: { username: string; password: string } | null;
+  };
   cache: { ttlSeconds: number };
+  /** Admission pace and opt-in sweeps for project browsing (not named views). */
+  refresh: { sweepHours: number; requestsPerMinute: number; concurrency: number };
+  /** Optional persistent application-account preferences. */
+  preferences: { dir: string | null };
   /** How often the web UI refreshes the open view; 0 turns the timer off. */
   ui: { refreshMinutes: number };
   /** The webhook endpoints are enabled when a secret is configured; null otherwise. */
@@ -116,7 +125,7 @@ function absolutePathProblem(s: string): string | null {
   return null;
 }
 
-const absolutePathSchema = z
+export const absolutePathSchema = z
   .string()
   .min(1)
   .refine((s) => absolutePathProblem(s) === null, {
@@ -149,7 +158,7 @@ export function isLoopbackHost(hostname: string): boolean {
   return ipv4 !== null && ipv4.slice(1).every((part) => Number(part) <= 255);
 }
 
-const publicOriginSchema = z.string().refine((s) => publicOriginProblem(s) === null, {
+export const publicOriginSchema = z.string().refine((s) => publicOriginProblem(s) === null, {
   error: (iss) => `invalid publicOrigin: ${publicOriginProblem(iss.input as string)}`,
 });
 
@@ -344,6 +353,7 @@ export const rawConfigSchema = z
         host: z.string().min(1).optional(),
         port: z.number().int().min(1).max(65535).optional(),
         basicAuth: basicAuthSchema.optional(),
+        publicOrigin: publicOriginSchema.optional(),
       })
       .strict()
       .optional(),
@@ -354,6 +364,15 @@ export const rawConfigSchema = z
       })
       .strict()
       .optional(),
+    refresh: z
+      .object({
+        sweepHours: z.number().int().min(0).max(168).optional(),
+        requestsPerMinute: z.number().int().positive().optional(),
+        concurrency: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    preferences: z.object({ dir: absolutePathSchema.optional() }).strict().optional(),
     ui: z
       .object({ refreshMinutes: z.number().int().min(0).max(MAX_REFRESH_MINUTES).optional() })
       .strict()

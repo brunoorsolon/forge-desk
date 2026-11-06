@@ -181,6 +181,16 @@ describe('plan', () => {
 });
 
 describe('check', () => {
+  it('reports browsing configuration warnings without failing the check', async () => {
+    const configPath = writeProject([{ number: 1, title: 'A' }]);
+    const result = await run(['check', '-c', configPath], {
+      env: { FD_PREFERENCES_DIR: '/preferences', FD_SWEEP_HOURS: '1', FD_CACHE_TTL: '0' },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/preferences.dir:.*login.*unavailable/);
+    expect(result.stderr).toMatch(/refresh.sweepHours:.*sweep will not run/);
+  });
+
   it('reports the demo problems and exits 2', async () => {
     const r = await run(['check', '--config', 'config.demo.yaml']);
     expect(r.code).toBe(2);

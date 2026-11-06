@@ -29,7 +29,7 @@ Rules:
 
 ## Config file reference
 
-The schema is **strict**: an unknown key is an error, and all errors are reported together. Top level keys: `server`, `cache`, `ui`, `webhooks`, `releases`, `sources` (required), `views` (required).
+The schema is **strict**: an unknown key is an error, and all errors are reported together. Top level keys: `server`, `cache`, `ui`, `refresh`, `preferences`, `webhooks`, `releases`, `sources` (required), `views` (required).
 
 ### `server`
 
@@ -42,6 +42,8 @@ The schema is **strict**: an unknown key is an error, and all errors are reporte
 | `server.basicAuth.passwordEnv` | string          | none      | Name of the environment variable that holds the password (recommended). Wins over `password` when the variable is set and not blank.            |
 | `server.basicAuth.password`    | string          | none      | Inline password (discouraged). Used when `passwordEnv` is absent or its variable is unset. One of the two is required, otherwise startup fails. |
 
+`server.publicOrigin` is an optional http(s) origin, default `null`, overridden by `FD_PUBLIC_ORIGIN`. It must have no credentials, path, query or fragment; plain HTTP is allowed only for loopback hosts. Origins are normalized to the browser's serialized form (for example, `https://EXAMPLE.com:443/` becomes `https://example.com`). Once project browsing ships, it supplies the trusted origin for preferences and refresh launches. When absent, those checks use the request Host; configure it behind a proxy that rewrites Host. It does not change `releases.publicOrigin` or release access checks.
+
 ### `cache`
 
 | Key                | Type               | Default | Description                                                                                                                     |
@@ -53,6 +55,24 @@ The schema is **strict**: an unknown key is an error, and all errors are reporte
 | Key                 | Type            | Default | Description                                                                                                                                                                                                                                                        |
 | ------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ui.refreshMinutes` | integer, 0-1440 | `5`     | How often the web UI polls the view it shows, respecting `cache.ttlSeconds`. The Refresh button bypasses that snapshot cache. Switching back to an already shown view uses the tab's snapshot. `0` disables automatic polling. Overridden by `FD_REFRESH_MINUTES`. |
+
+### `refresh`
+
+These settings are accepted now; their consumers ship with project browsing. They do not pace named views, exports or the CLI.
+
+| Key                         | Type             | Default | Description                                                                                                                          |
+| --------------------------- | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `refresh.sweepHours`        | integer 0-168    | `0`     | Background sweep interval, measured in hours after the previous sweep finishes; `0` disables sweeps. Overridden by `FD_SWEEP_HOURS`. |
+| `refresh.requestsPerMinute` | positive integer | `60`    | Per-source request-start pace for project browsing and sweeps. No environment override.                                              |
+| `refresh.concurrency`       | positive integer | `4`     | Per-source simultaneous requests for project browsing and sweeps. No environment override.                                           |
+
+When `refresh.sweepHours > 0` and `cache.ttlSeconds: 0`, loading reports a non-fatal warning, shown by `forge-desk check`, that the sweep will not run. The configured interval is retained.
+
+### `preferences`
+
+`preferences.dir` is an optional normalized absolute path, default `null`, overridden by `FD_PREFERENCES_DIR`. Like `releases.stateDir`, it may not be the root or contain control characters, empty segments, `.` or `..` segments (including a trailing slash). Loading does not check or create the directory.
+
+Once project browsing ships, this is the directory for the application account's favorites and remembered project. With no directory, preferences are unavailable. With a directory but no application login (`server.basicAuth` or `FD_BASIC_AUTH`), loading reports a non-fatal warning, shown by `forge-desk check`, that preferences are unavailable. The configured directory is retained.
 
 ### `webhooks`
 
@@ -156,7 +176,9 @@ Enabled startup then claims release execution for that state directory through a
 
 Empty or blank values are treated as unset.
 
-Before 3.0.1 these variables started with `EV_` instead of `FD_`. An `EV_` name still works until the next major release and still wins over its `FD_` counterpart, so an existing deployment keeps its behavior; startup prints a warning for each one, naming the `FD_` name to rename it to. Rename the variable in `.env` and in the compose file's `environment:` lines together, because Compose passes the container only the names listed there. Variable names you chose yourself in `tokenEnv`, `passwordEnv` or `secretEnv` are read as written.
+The new `FD_PUBLIC_ORIGIN`, `FD_PREFERENCES_DIR` and `FD_SWEEP_HOURS` settings have **no `EV_` aliases**; matching `EV_` names are ignored.
+
+Before 3.0.1 the older variables started with `EV_` instead of `FD_`. An `EV_` name still works until the next major release and still wins over its `FD_` counterpart, so an existing deployment keeps its behavior; startup prints a warning for each one, naming the `FD_` name to rename it to. Rename the variable in `.env` and in the compose file's `environment:` lines together, because Compose passes the container only the names listed there. Variable names you chose yourself in `tokenEnv`, `passwordEnv` or `secretEnv` are read as written.
 
 ### Overrides (apply on top of a config file, and in env-only mode)
 
@@ -168,6 +190,9 @@ Before 3.0.1 these variables started with `EV_` instead of `FD_`. An `EV_` name 
 | `FD_REFRESH_MINUTES` | Overrides `ui.refreshMinutes` (integer 0-1440).                                                                        |
 | `FD_BASIC_AUTH`      | `user:password`. Overrides the whole `server.basicAuth` block. Split at the first colon; both parts must be non-empty. |
 | `FD_WEBHOOK_SECRET`  | The webhook secret. Overrides the whole `webhooks` block and enables the webhook endpoints (also in env-only mode).    |
+| `FD_PUBLIC_ORIGIN`   | Trusted application origin; same validation as `server.publicOrigin`. Default: null.                                   |
+| `FD_PREFERENCES_DIR` | Normalized absolute preference directory; same validation as `preferences.dir`. Default: null.                         |
+| `FD_SWEEP_HOURS`     | Sweep interval, integer 0-168. Default: 0 (disabled).                                                                  |
 | `FD_CONFIG`          | Path of the config file (see the lookup order above).                                                                  |
 | `NO_COLOR`           | When set, the CLI prints no ANSI colours (colours are only used on a terminal anyway).                                 |
 
