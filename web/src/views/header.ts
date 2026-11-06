@@ -167,8 +167,9 @@ export function createHeader(ctx: ViewCtx): View {
     h('span', { class: 'btn-label' }, 'Export'),
   );
   const exportMenu = createMenu(exportBtn, () => {
-    const viewId = effectiveViewId(ctx.store.get());
-    if (viewId === null) return [];
+    const state = ctx.store.get();
+    const destination = state.route.scope ?? effectiveViewId(state);
+    if (destination === null) return [];
     return [
       h('div', { class: 'menu-label' }, 'Download this snapshot'),
       ...EXPORTS.map((ex) =>
@@ -177,7 +178,7 @@ export function createHeader(ctx: ViewCtx): View {
           {
             class: 'menu-item',
             role: 'menuitem',
-            href: exportUrl(viewId, ex.format),
+            href: exportUrl(destination, ex.format),
             target: '_blank',
             rel: 'noopener noreferrer',
           },
@@ -242,6 +243,8 @@ export function createHeader(ctx: ViewCtx): View {
     ],
   );
 
+  const crumbSep = h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/');
+  const viewSwitch = h('div', { class: 'view-switch' }, select, icon('chevron', 13), repos);
   const topbar = h(
     'div',
     { class: 'topbar' },
@@ -251,8 +254,8 @@ export function createHeader(ctx: ViewCtx): View {
       h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('graph', 15)),
       h('span', { class: 'brand-name' }, 'Forge Desk'),
     ),
-    h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/'),
-    h('div', { class: 'view-switch' }, select, icon('chevron', 13), repos),
+    crumbSep,
+    viewSwitch,
     h('div', { class: 'spacer' }),
     freshness,
     refreshError,
@@ -472,6 +475,10 @@ export function createHeader(ctx: ViewCtx): View {
     el,
     update(state: AppState, prev: AppState) {
       const viewId = effectiveViewId(state);
+      const scoped = state.route.scope !== undefined;
+      viewSwitch.hidden = scoped;
+      crumbSep.hidden = scoped;
+      refreshBtn.hidden = scoped;
       const views = state.views ?? [];
       if (lastViews !== state.views) {
         lastViews = state.views;
@@ -508,7 +515,10 @@ export function createHeader(ctx: ViewCtx): View {
       freshness.hidden = snap === null;
 
       refreshBtn.disabled = state.refreshing || viewId === null;
-      exportBtn.disabled = viewId === null;
+      exportBtn.disabled = !scoped && viewId === null;
+      if (state.route.scope !== prev.route.scope || viewId !== effectiveViewId(prev)) {
+        exportMenu.refresh();
+      }
       refreshBtn.classList.toggle('busy', state.refreshing);
       refreshLabel.textContent = state.refreshing ? 'Refreshing' : 'Refresh';
       refreshError.hidden = state.refreshError === null;

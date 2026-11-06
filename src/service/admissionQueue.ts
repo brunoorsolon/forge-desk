@@ -115,6 +115,14 @@ export class AdmissionQueue {
     return promise;
   }
 
+  /** Promote existing work without accidentally starting another completed unit. */
+  promote(key: string): void {
+    const unit = this.units.get(key);
+    if (!unit) return;
+    unit.priority = 'interactive';
+    this.pump();
+  }
+
   wrapFetch(fetch: FetchLike): FetchLike {
     return (input, init) => {
       const unit = this.context.getStore();
