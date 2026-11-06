@@ -10,6 +10,13 @@ import type { AppConfig } from '../config/schema.js';
 import type { Snapshot } from '../core/types.js';
 import { exporters, type ExportFormat } from '../export/index.js';
 import { UnknownViewError, type PlanService } from '../service/planService.js';
+import type { PreferenceRuntime } from '../service/preferenceRuntime.js';
+import type { RequestAuthentication } from './requestProtection.js';
+import {
+  isPreferencePath,
+  INVALID_PREFERENCE_REQUEST,
+  registerPreferenceRoutes,
+} from './preferenceRoutes.js';
 import { packageVersion } from '../version.js';
 import { SESSION_COOKIE, checkBasicAuth, credentialsMatch, sessionToken } from './auth.js';
 import { checkReleaseAccess } from './releaseAccess.js';
@@ -26,6 +33,8 @@ export interface BuildAppOptions {
    * configuration enables releases and this mount is supplied.
    */
   releases?: ReleaseMount;
+  /** Startup-owned preference store; never opened implicitly by buildApp. */
+  preferences?: PreferenceRuntime;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -253,9 +262,27 @@ export function buildApp(
   opts: BuildAppOptions = {},
 ): FastifyInstance {
   const app: FastifyInstance = Fastify({
-    logger: opts.logger ?? false,
+    logger: opts.logger
+      ? {
+          serializers: {
+            req: (request: FastifyRequest) =>
+              isPreferencePath(request.url)
+                ? { method: request.method, url: '/api/preferences' }
+                : {
+                    method: request.method,
+                    url: request.url,
+                    hostname: request.hostname,
+                    remoteAddress: request.ip,
+                    remotePort: request.socket?.remotePort,
+                  },
+          },
+        }
+      : false,
     frameworkErrors(error, request, reply: FastifyReply) {
       // Router-level URL/ID failures bypass application hooks and the normal error handler.
+      if (isPreferencePath(request.url)) {
+        return reply.header('Cache-Control', 'no-store').code(400).send(INVALID_PREFERENCE_REQUEST);
+      }
       if (request.url.startsWith('/api/releases/')) {
         return reply.header('Cache-Control', 'no-store').code(400).send({
           code: 'invalid-request',
@@ -289,6 +316,7 @@ export function buildApp(
     config.releases.enabled && basicAuth !== null && opts.releases !== undefined
       ? opts.releases
       : null;
+  let preferenceAuthentication: RequestAuthentication | null = null;
   if (basicAuth !== null) {
     // ponytail: sessions live in memory, so a restart logs everyone out; sign cookies with a
     // configured secret if that becomes a nuisance.
@@ -297,6 +325,11 @@ export function buildApp(
       const token = sessionToken(cookie);
       const session = token === null ? undefined : sessions.get(token);
       return session !== undefined && session.expires > Date.now() ? session : null;
+    };
+    preferenceAuthentication = {
+      sessionCsrf: (cookie) => liveSession(cookie)?.csrf ?? null,
+      hasSessionCookie: (cookie) => /(?:^|;\s*)ev_session=/.test(cookie ?? ''),
+      headerAuthenticated: (header) => checkBasicAuth(header, basicAuth),
     };
     const hasSession = (request: FastifyRequest): boolean =>
       liveSession(request.headers.cookie) !== null;
@@ -314,6 +347,8 @@ export function buildApp(
 
     app.addHook('onRequest', async (request, reply) => {
       const pathname = pathnameOf(request.url);
+      // Preference routes own their shared access check, including mixed credentials.
+      if (isPreferencePath(pathname)) return;
       if (pathname === '/healthz' || pathname === '/login' || pathname === '/logout') return;
       if (webhooks !== null && request.method === 'POST' && WEBHOOK_PATHS.includes(pathname)) {
         return;
@@ -471,6 +506,8 @@ export function buildApp(
         .send(exporter.render(snapshot));
     },
   );
+
+  registerPreferenceRoutes(app, config, preferenceAuthentication, opts.preferences);
 
   // --- release routes (only with an owned release runtime; otherwise the routes do not exist) ---
   if (releaseMount !== null) registerReleaseRoutes(app, config, releaseMount);

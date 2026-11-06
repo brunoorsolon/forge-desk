@@ -1,5 +1,6 @@
 import type { ProviderKind, Snapshot } from '../../src/core/types.js';
 import type { ReleaseJob, ReleasePlan, ReleasePlanWarning } from '../../src/core/release.js';
+import type { RouteScope } from './route.js';
 
 /** Shape of one entry of `GET /api/views` (ARCHITECTURE section 13/14). */
 export interface ViewSummary {
@@ -175,8 +176,15 @@ export function fetchReleasePlan(planId: string): Promise<ReleasePlan> {
   return request(`${API}/releases/plans/${encodeURIComponent(planId)}`);
 }
 
-export function exportUrl(viewId: string, format: ExportFormat): string {
-  return `${API}/views/${encodeURIComponent(viewId)}/export.${format}`;
+/** Downloads reuse cached data, for both named views and project/source scopes. */
+export function exportUrl(destination: string | RouteScope, format: ExportFormat): string {
+  const segments =
+    typeof destination === 'string'
+      ? ['views', destination]
+      : destination.kind === 'project'
+        ? ['projects', destination.source, destination.owner, destination.repo]
+        : ['sources', destination.source];
+  return `${API}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}/export.${format}`;
 }
 
 export function errorMessage(e: unknown): string {

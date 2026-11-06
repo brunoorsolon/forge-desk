@@ -129,6 +129,27 @@ export interface RefreshJobStatus {
   error: string | null;
 }
 
+/** A scope refresh exposes both repository listings and targeted dependency reads. */
+export type ScopeRefreshUnitStatus = (
+  | { kind: 'repository'; project: ProjectRef }
+  | { kind: 'outside-issue'; source: string; key: IssueKey }
+) & {
+  state: 'queued' | 'checking' | 'checked' | 'failed';
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** The retained successful observation time, including when this attempt failed. */
+  lastCheckedAt: string | null;
+  partial: boolean;
+  error: string | null;
+};
+
+/** Additive scope-job detail; generic consumers may keep using RefreshJobStatus. */
+export interface ScopeRefreshJobStatus extends RefreshJobStatus {
+  scope: Scope;
+  priority: 'interactive' | 'sweep';
+  units: ScopeRefreshUnitStatus[];
+}
+
 export interface ScopeResponse {
   scope: Scope;
   /** Same Snapshot contract. fetchedAt is the oldest contributing repository check. */

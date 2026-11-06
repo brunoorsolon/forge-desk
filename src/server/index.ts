@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { ConfigError, loadConfig } from '../config/load.js';
 import { loadReleaseRuntime } from '../config/releaseRuntime.js';
+import { openPreferenceRuntime, type PreferenceRuntime } from '../service/preferenceRuntime.js';
 import { PlanService } from '../service/planService.js';
 import { acquireReleaseOwnership } from '../service/releaseOwnership.js';
 import { ReleaseStateStore } from '../service/releaseState.js';
@@ -51,7 +52,9 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
       ? null
       : { config, runtime: releaseRuntime, ownership, store: releaseStore };
   const reconciliation = releaseOptions === null ? null : new ReleaseReconciliation(releaseOptions);
+  let preferences: PreferenceRuntime | undefined;
   try {
+    preferences = await openPreferenceRuntime(config);
     if (reconciliation !== null) {
       // Queue read-only recovery before serving new release work; forge outages leave Planning up.
       void reconciliation
@@ -64,6 +67,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
     }
     app = buildApp(config, service, {
       logger: true,
+      preferences,
       ...(opts.webDir !== undefined ? { webDir: opts.webDir } : {}),
       ...(releaseRuntime !== null && ownership !== null
         ? {
@@ -82,10 +86,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
         : {}),
     });
   } catch (error) {
+    await preferences?.close();
     await ownership?.shutdown();
     throw error;
   }
   const server: FastifyInstance = app;
+  server.addHook('onClose', async () => preferences?.close());
   if (releaseRuntime !== null && ownership !== null) {
     // Repository ids are useful; the success path does not log the private state directory or lock paths.
     server.log.info(
