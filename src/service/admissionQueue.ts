@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { requestContext } from '../providers/requestContext.js';
 import type { FetchLike } from '../providers/http.js';
 
 export type AdmissionPriority = 'interactive' | 'sweep';
@@ -26,6 +27,7 @@ interface Unit {
   settled: boolean;
   promise: Promise<unknown>;
   reject: (error: unknown) => void;
+  start: () => void;
 }
 
 interface PendingRequest {
@@ -83,23 +85,31 @@ export class AdmissionQueue {
       resolve = yes;
       reject = no;
     });
-    const unit: Unit = { priority, running: false, settled: false, promise, reject };
+    const unit: Unit = {
+      priority,
+      running: false,
+      settled: false,
+      promise,
+      reject,
+      start: () => {
+        unit.running = true;
+        void this.context.run(unit, () =>
+          requestContext.run(unit, async () => {
+            try {
+              resolve(await work());
+            } catch (error) {
+              reject(error);
+            } finally {
+              unit.settled = true;
+              this.units.delete(key);
+            }
+          }),
+        );
+      },
+    };
     this.units.set(key, unit);
-    // A microtask permits joins/promotions and shutdown before work is admitted.
-    queueMicrotask(() => {
-      if (unit.settled) return;
-      unit.running = true;
-      void this.context.run(unit, async () => {
-        try {
-          resolve(await work());
-        } catch (error) {
-          reject(error);
-        } finally {
-          unit.settled = true;
-          this.units.delete(key);
-        }
-      });
-    });
+    // Permit joins/promotions and shutdown before work is admitted.
+    queueMicrotask(() => this.pump());
     return promise;
   }
 
@@ -195,6 +205,15 @@ export class AdmissionQueue {
     clearTimeout(this.timer);
     this.timer = undefined;
     if (this.closed) return;
+    // Provider cooldown guards run above fetch, so wait before invoking work too.
+    const cooldownEnd = this.status.delayedUntil;
+    if (cooldownEnd !== null) {
+      this.timer = setTimeout(() => this.pump(), Math.min(cooldownEnd - this.now(), 2_147_483_647));
+      return;
+    }
+    for (const unit of this.units.values()) {
+      if (!unit.running && !unit.settled) unit.start();
+    }
     while (
       this.requests.length > 0 &&
       (this.options.fixture || this.active < this.options.concurrency)
@@ -207,6 +226,7 @@ export class AdmissionQueue {
           this.starts.length >= this.options.requestsPerMinute ? this.starts[0]! + 60_000 : 0;
         const waitUntil = Math.max(cooldown, rateEnd);
         if (waitUntil > now) {
+          clearTimeout(this.timer);
           this.timer = setTimeout(() => this.pump(), Math.min(waitUntil - now, 2_147_483_647));
           return;
         }
