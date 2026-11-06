@@ -15,6 +15,7 @@ function source(over: Partial<ResolvedSource>): ResolvedSource {
     webUrl: 'https://github.com',
     token: null,
     path: null,
+    planning: null,
     ...over,
   };
 }

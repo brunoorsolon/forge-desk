@@ -94,6 +94,7 @@ function config(releasesEnabled = true, repositories = [repository()]): AppConfi
     webUrl: 'https://gitea.example.com',
     token: null,
     path: null,
+    planning: null,
   });
   cfg.releases = releasesEnabled
     ? {

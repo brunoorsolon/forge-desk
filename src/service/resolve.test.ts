@@ -90,6 +90,7 @@ const SOURCE: ResolvedSource = {
   webUrl: 'https://web.test',
   token: null,
   path: null,
+  planning: null,
 };
 
 function view(over: Partial<ResolvedView> = {}, deps: Partial<ResolvedView['dependencies']> = {}) {
