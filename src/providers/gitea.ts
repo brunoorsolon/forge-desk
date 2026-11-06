@@ -7,6 +7,7 @@ import type {
   ListOptions,
   PlanWarning,
   RawRelation,
+  RelationCoverage,
   RepoRef,
 } from '../core/types.js';
 import { HttpError, createHttpClient, createLimiter, type FetchLike } from './http.js';
@@ -157,6 +158,16 @@ function normalizeRelations(relations: RawRelation[]): RawRelation[] {
   return sorted.filter((r, i) => i === 0 || compareRelations(sorted[i - 1]!, r) !== 0);
 }
 
+function mapDependencies(items: GtIssue[], repo: RepoRef): RawRelation[] {
+  const relations: RawRelation[] = [];
+  for (const item of items) {
+    if (!isPlainObject(item)) continue;
+    const ref = refFromItem(item, repo);
+    if (ref) relations.push({ kind: 'blocked-by', ref, source: 'native' });
+  }
+  return normalizeRelations(relations);
+}
+
 function isNotFound(err: unknown): boolean {
   return err instanceof HttpError && err.status === 404;
 }
@@ -257,39 +268,66 @@ export function createGiteaProvider(opts: GiteaProviderOptions): IssueProvider {
     issues.sort((a, b) => a.number - b.number);
 
     const warnings: PlanWarning[] = [];
+    const relationCoverage: RelationCoverage = {
+      native: 'not-requested',
+      subIssues: options.subIssues ? 'unsupported' : 'not-requested',
+    };
     if (options.native) {
       const found = await fetchDependencies(repo, issues);
       if (found === null) {
+        relationCoverage.native = 'unsupported';
         warnings.push({
           code: 'native-unsupported',
           message: `Issue dependencies are not available for ${repo.owner}/${repo.repo} (the dependencies endpoint returned 404). Gitea: enable issue dependencies in the repository settings (the exact location varies by Gitea version) or set [service] DEFAULT_ENABLE_DEPENDENCIES = true in app.ini. Native relations are skipped.`,
           issues: [],
         });
       } else {
+        // An isolated 404 still leaves that issue unread, even without a repository warning.
+        relationCoverage.native = found.size === issues.length ? 'complete' : 'unsupported';
         for (const issue of issues) {
-          const relations: RawRelation[] = [];
-          for (const item of found.get(issue.number) ?? []) {
-            if (!isPlainObject(item)) continue;
-            const ref = refFromItem(item, repo);
-            if (ref) relations.push({ kind: 'blocked-by', ref, source: 'native' });
-          }
-          issue.nativeRelations = normalizeRelations(relations);
+          issue.nativeRelations = mapDependencies(found.get(issue.number) ?? [], repo);
         }
       }
     }
-    return { issues, warnings };
+    return { issues, warnings, relationCoverage };
   }
 
-  async function getIssue(repoIn: RepoRef, number: number): Promise<Issue | null> {
+  async function getIssue(
+    repoIn: RepoRef,
+    number: number,
+    options?: ListOptions,
+  ): Promise<Issue | null> {
     const repo = lowerRepo(repoIn);
+    let issue: Issue;
     try {
       const { data } = await client.getJson<GtIssue>(`${repoPath(repo)}/issues/${number}`);
       if (!isPlainObject(data) || data.pull_request) return null;
-      return mapIssue(data, repo);
+      issue = mapIssue(data, repo);
     } catch (err) {
       if (err instanceof HttpError && (err.status === 404 || err.status === 410)) return null;
       throw err;
     }
+    // Preserve the legacy lookup's result shape and single request when no policy is supplied.
+    if (options === undefined) return issue;
+    issue.relationCoverage = {
+      native: 'not-requested',
+      subIssues: options.subIssues ? 'unsupported' : 'not-requested',
+    };
+    if (options.native) {
+      try {
+        const found = await fetchDependencies(repo, [issue]);
+        if (found === null) {
+          issue.relationCoverage.native = 'unsupported';
+        } else {
+          issue.nativeRelations = mapDependencies(found.get(issue.number) ?? [], repo);
+          issue.relationCoverage.native = 'complete';
+        }
+      } catch {
+        // The issue was observed successfully. A failed relation read must not discard it.
+        issue.relationCoverage.native = 'failed';
+      }
+    }
+    return issue;
   }
 
   return { kind: 'gitea', listOpenIssues, getIssue, cooldownUntil: () => client.cooldownUntil() };
