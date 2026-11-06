@@ -120,15 +120,16 @@ function startNext(state: PreferenceState): PreferenceTransition {
 
 function saveFailed(state: PreferenceState, message: string): PreferenceTransition {
   const remember = state.active?.mutation.kind === 'remember-project';
-  // Never retry the failed mutation. Unsent mutations wait for an authoritative reread.
+  // Drop unsent mutations too: a later recovery must never replay offline intent.
   return read(
     display({
       ...state,
       active: null,
+      queue: [],
       reads: [],
       rereadRequired: true,
-      error: remember ? null : message,
-      notice: remember ? message : null,
+      error: remember ? state.error : message,
+      notice: remember ? message : state.notice,
     }),
   );
 }
@@ -147,12 +148,23 @@ export function reducePreferences(
     case 'reload':
       return read(state);
     case 'mutate':
-      if (!canChangeFavorites(state)) return { state, effects: [] };
+      if (!canChangeFavorites(state)) {
+        return {
+          state:
+            event.mutation.kind === 'remember-project'
+              ? {
+                  ...state,
+                  notice: 'Project was not remembered because preferences are not writable.',
+                }
+              : state,
+          effects: [],
+        };
+      }
       return startNext({
         ...state,
         queue: [...state.queue, structuredClone(event.mutation)],
-        error: null,
-        notice: null,
+        error: event.mutation.kind === 'remember-project' ? state.error : null,
+        notice: event.mutation.kind === 'remember-project' ? null : state.notice,
       });
     case 'save-failure':
       return state.active?.id === event.id
@@ -181,6 +193,7 @@ export function reducePreferences(
       const next = {
         ...state,
         reads: state.reads.filter((id) => id !== event.id),
+        queue: [],
         rereadRequired: true,
       };
       return {
@@ -213,6 +226,7 @@ export function reducePreferences(
             ...next,
             view: { status: 'unavailable', reason: response.reason, message: response.message },
             confirmed: null,
+            queue: [],
             rereadRequired: true,
           },
           effects: [],

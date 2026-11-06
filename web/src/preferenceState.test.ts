@@ -119,26 +119,73 @@ describe('preference state', () => {
     },
   );
 
-  it('leaves unsent actions waiting through failed save and reread, without replaying the failed action', () => {
-    const h = harness();
-    h.ready();
-    const [save] = h.send({ type: 'mutate', mutation: { kind: 'add-favorite', project: a } });
-    h.send({ type: 'mutate', mutation: { kind: 'add-favorite', project: b } });
-    const [read] = h.send({ type: 'save-failure', id: save!.id, message: 'Lost response' });
-    h.send({ type: 'read-failure', id: read!.id, message: 'Offline' });
-    expect(h.effects).toEqual([]);
-    expect(h.state.view.status).toBe('unverified');
-    expect(canChangeFavorites(h.state)).toBe(false);
-    const [retry] = h.send({ type: 'tab-return' });
-    const effects = h.send({
-      type: 'read-success',
-      id: retry!.id,
-      response: response(2, [a.repo]),
-    });
-    expect(effects).toMatchObject([
-      { kind: 'save', mutation: { kind: 'add-favorite', project: b } },
-    ]);
-  });
+  it.each(['add-favorite', 'remember-project'] as const)(
+    'discards queued %s through failed save and reread without offline replay',
+    (kind) => {
+      const h = harness();
+      h.ready();
+      const [save] = h.send({ type: 'mutate', mutation: { kind: 'add-favorite', project: a } });
+      h.send({ type: 'mutate', mutation: { kind, project: b } });
+      const [read] = h.send({ type: 'save-failure', id: save!.id, message: 'Lost response' });
+      h.send({ type: 'read-failure', id: read!.id, message: 'Offline' });
+      expect(h.effects).toEqual([]);
+      expect(h.state.view.status).toBe('unverified');
+      expect(canChangeFavorites(h.state)).toBe(false);
+      const [retry] = h.send({ type: 'tab-return' });
+      const effects = h.send({
+        type: 'read-success',
+        id: retry!.id,
+        response: response(2, [a.repo]),
+      });
+      expect(effects).toEqual([]);
+      expect(h.state.queue).toEqual([]);
+      expect(h.state.active).toBeNull();
+      expect(h.state.confirmed?.rememberedProject).toBeNull();
+    },
+  );
+
+  it.each(['add-favorite', 'remember-project'] as const)(
+    'preserves independent feedback after %s fails and the other action fails',
+    (kind) => {
+      const h = harness();
+      h.ready();
+      const other = kind === 'add-favorite' ? 'remember-project' : 'add-favorite';
+      const [first] = h.send({ type: 'mutate', mutation: { kind, project: a } });
+      const [read] = h.send({ type: 'save-failure', id: first!.id, message: kind });
+      h.send({ type: 'read-success', id: read!.id, response: response(2) });
+      const [second] = h.send({ type: 'mutate', mutation: { kind: other, project: b } });
+      h.send({ type: 'save-failure', id: second!.id, message: other });
+      expect(h.state.error).toBe('add-favorite');
+      expect(h.state.notice).toBe('remember-project');
+    },
+  );
+
+  it.each(['not-loaded', 'unverified'] as const)(
+    'explicitly refuses remember-project while %s without retaining or replaying it',
+    (status) => {
+      const h = harness();
+      if (status === 'unverified') {
+        h.ready();
+        const [read] = h.send({ type: 'reload' });
+        h.send({ type: 'read-failure', id: read!.id, message: 'Offline' });
+      }
+      expect(h.state.view.status).toBe(status);
+      expect(
+        h.send({ type: 'mutate', mutation: { kind: 'remember-project', project: a } }),
+      ).toEqual([]);
+      expect(h.state.notice).toBe(
+        'Project was not remembered because preferences are not writable.',
+      );
+      expect(h.state.queue).toEqual([]);
+      const [read] = h.send({ type: 'open' });
+      expect(h.send({ type: 'read-success', id: read!.id, response: response(2) })).toEqual([]);
+      expect(h.state.confirmed?.rememberedProject).toBeNull();
+      // Wiring must dispatch the latest explicit selection after the initial read.
+      expect(
+        h.send({ type: 'mutate', mutation: { kind: 'remember-project', project: b } }),
+      ).toMatchObject([{ kind: 'save', mutation: { kind: 'remember-project', project: b } }]);
+    },
+  );
 
   it('failed remembered-project save yields only a notice and read, never a navigation effect', () => {
     const h = harness();
@@ -226,6 +273,36 @@ describe('preference state', () => {
     ).toMatchObject([{ kind: 'save', mutation: { kind: 'add-favorite', project: b } }]);
   });
 
+  it.each(['failure', 'unavailable'] as const)(
+    'drops unsent intent on background read %s while retaining the active request',
+    (outcome) => {
+      const h = harness();
+      h.ready();
+      const [save] = h.send({ type: 'mutate', mutation: { kind: 'add-favorite', project: a } });
+      h.send({ type: 'mutate', mutation: { kind: 'remember-project', project: b } });
+      const [read] = h.send({ type: 'reload' });
+      h.send(
+        outcome === 'failure'
+          ? { type: 'read-failure', id: read!.id, message: 'Offline' }
+          : {
+              type: 'read-success',
+              id: read!.id,
+              response: { available: false, reason: 'store-locked', message: 'Locked' },
+            },
+      );
+      expect(h.state.queue).toEqual([]);
+      expect(h.state.active?.id).toBe(save!.id);
+      expect(
+        h.send({ type: 'save-success', id: save!.id, response: response(2, [a.repo]) }),
+      ).toEqual([]);
+      const [retry] = h.send({ type: 'tab-return' });
+      expect(
+        h.send({ type: 'read-success', id: retry!.id, response: response(2, [a.repo]) }),
+      ).toEqual([]);
+      expect(h.state.confirmed?.rememberedProject).toBeNull();
+    },
+  );
+
   it('retains the revision floor across unavailable responses and clears it on logout', () => {
     const h = harness();
     h.ready(response(10));
@@ -238,16 +315,15 @@ describe('preference state', () => {
       response: { available: false, reason: 'store-locked', message: 'Locked' },
     });
     expect(h.state.confirmed).toBeNull();
-    expect(h.state.queue).toHaveLength(1);
+    expect(h.state.queue).toEqual([]);
     expect(h.send({ type: 'save-success', id: save!.id, response: response(2) })).toEqual([]);
     expect(h.state.view.status).toBe('unavailable');
     const [reload] = h.send({ type: 'reload' });
     h.send({ type: 'read-success', id: reload!.id, response: response(3) });
     expect(h.state.view.status).toBe('unavailable');
     const [recover] = h.send({ type: 'reload' });
-    expect(h.send({ type: 'read-success', id: recover!.id, response: response(11) })).toMatchObject(
-      [{ kind: 'save', mutation: { kind: 'add-favorite', project: b } }],
-    );
+    expect(h.send({ type: 'read-success', id: recover!.id, response: response(11) })).toEqual([]);
+    expect(h.state.queue).toEqual([]);
     h.send({ type: 'logout' });
     h.ready(response(1));
     expect(h.state.confirmed?.revision).toBe(1);
