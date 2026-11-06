@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DEFAULT_KEYWORDS, type KeywordConfig } from '../core/parser.js';
 import type { OrderingMode, ProviderKind, RepoRef } from '../core/types.js';
+import type { CatalogResponse } from '../core/scope.js';
 
 export { DEFAULT_KEYWORDS };
 export type { KeywordConfig };
@@ -16,21 +17,26 @@ export interface ResolvedSource {
   webUrl: string;
   token: string | null;
   path: string | null;
+  /** Resolved source-wide policy, or null when no views need it or views conflict. */
+  planning: ResolvedPlanningPolicy | null;
 }
 
-export interface ResolvedView {
-  id: string;
-  title: string;
-  source: string;
-  repos: RepoRef[];
+export interface ResolvedPlanningPolicy {
   dependencies: {
     native: boolean;
     body: boolean | 'strict';
     subIssues: boolean;
     keywords: KeywordConfig;
   };
-  scope: { labels: string[]; excludeLabels: string[]; milestones: string[] };
   ordering: { priorityLabels: string[]; mode: OrderingMode };
+}
+
+export interface ResolvedView extends ResolvedPlanningPolicy {
+  id: string;
+  title: string;
+  source: string;
+  repos: RepoRef[];
+  scope: { labels: string[]; excludeLabels: string[]; milestones: string[] };
 }
 
 /** How a release repository's dedicated API token is supplied. Exactly one route, never a fallback. */
@@ -78,6 +84,8 @@ export interface AppConfig {
   ui: { refreshMinutes: number };
   /** The webhook endpoints are enabled when a secret is configured; null otherwise. */
   webhooks: { secret: string } | null;
+  /** Computed once at load time, in source configuration order; contains no credentials. */
+  catalog: CatalogResponse;
   sources: ResolvedSource[];
   views: ResolvedView[];
   /** Opt-in release publication; disabled by default so planning-only setups need nothing new. */
@@ -277,6 +285,24 @@ export const enabledReleasesSchema = z
   })
   .strict();
 
+const dependenciesSchema = z
+  .object({
+    native: z.boolean().optional(),
+    body: z.union([z.boolean(), z.literal('strict')]).optional(),
+    subIssues: z.boolean().optional(),
+    keywords: z.object({ blockedBy: keywordList, blocks: keywordList }).strict().optional(),
+  })
+  .strict();
+
+const orderingSchema = z
+  .object({ priorityLabels: stringList, mode: z.enum(['priority', 'waves']).optional() })
+  .strict();
+
+/** Views and explicit source policies use exactly the same validation and defaults. */
+const planningSchema = z
+  .object({ dependencies: dependenciesSchema.optional(), ordering: orderingSchema.optional() })
+  .strict();
+
 const sourceSchema = z
   .object({
     id: idSchema,
@@ -286,6 +312,7 @@ const sourceSchema = z
     tokenEnv: z.string().min(1).optional(),
     token: z.string().optional(),
     path: z.string().min(1).optional(),
+    planning: planningSchema.optional(),
   })
   .strict()
   .superRefine((s, ctx) => {
@@ -311,23 +338,12 @@ const viewSchema = z
     title: z.string().min(1).optional(),
     source: z.string().min(1),
     repos: z.array(repoSchema).min(1, 'at least one repo is required'),
-    dependencies: z
-      .object({
-        native: z.boolean().optional(),
-        body: z.union([z.boolean(), z.literal('strict')]).optional(),
-        subIssues: z.boolean().optional(),
-        keywords: z.object({ blockedBy: keywordList, blocks: keywordList }).strict().optional(),
-      })
-      .strict()
-      .optional(),
+    dependencies: dependenciesSchema.optional(),
     scope: z
       .object({ labels: stringList, excludeLabels: stringList, milestones: stringList })
       .strict()
       .optional(),
-    ordering: z
-      .object({ priorityLabels: stringList, mode: z.enum(['priority', 'waves']).optional() })
-      .strict()
-      .optional(),
+    ordering: orderingSchema.optional(),
   })
   .strict();
 
@@ -387,3 +403,5 @@ export const rawConfigSchema = z
 export type RawConfig = z.infer<typeof rawConfigSchema>;
 export type RawSource = z.infer<typeof sourceSchema>;
 export type RawView = z.infer<typeof viewSchema>;
+
+export type RawPlanningPolicy = z.infer<typeof planningSchema>;

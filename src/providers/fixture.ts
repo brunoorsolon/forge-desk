@@ -177,14 +177,27 @@ export function createFixtureProvider(opts: FixtureProviderOptions): IssueProvid
         .filter((i) => i.state === 'open' && i.repo.owner === owner && i.repo.repo === name)
         .sort((a, b) => a.number - b.number)
         .map((i) => toIssue(i, options.native));
-      return { issues: open, warnings: [] };
+      return {
+        issues: open,
+        warnings: [],
+        relationCoverage: {
+          native: options.native ? 'complete' : 'not-requested',
+          subIssues: options.subIssues ? 'complete' : 'not-requested',
+        },
+      };
     },
 
     async getIssue(repo: RepoRef, number: number): Promise<Issue | null> {
       const { issues } = await load();
       const key = makeKey(repo, number);
       const found = issues.find((i) => i.key === key);
-      return found ? toIssue(found, true) : null;
+      // Fixture lookups always return their declared relations, regardless of policy options.
+      return found
+        ? {
+            ...toIssue(found, true),
+            relationCoverage: { native: 'complete', subIssues: 'complete' },
+          }
+        : null;
     },
   };
 }
