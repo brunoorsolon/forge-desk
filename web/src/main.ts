@@ -68,14 +68,14 @@ async function loadSnapshot(viewId: string): Promise<void> {
   }
 }
 
-async function refresh(): Promise<void> {
+async function refresh(force = true): Promise<void> {
   const state = store.get();
   const viewId = effectiveViewId(state);
   if (viewId === null || state.refreshing) return;
   const token = ++loadToken;
   store.dispatch({ type: 'refresh-start', viewId });
   try {
-    const snapshot = await refreshSnapshot(viewId);
+    const snapshot = await refreshSnapshot(viewId, force);
     if (token === loadToken) store.dispatch({ type: 'refresh-done', viewId, snapshot });
   } catch (e) {
     if (token === loadToken)
@@ -236,7 +236,7 @@ fetchViews().then(
 
 fetchSettings().then(
   ({ refreshMinutes }) => {
-    if (refreshMinutes > 0) setInterval(() => void refresh(), refreshMinutes * 60_000);
+    if (refreshMinutes > 0) setInterval(() => void refresh(false), refreshMinutes * 60_000);
   },
   () => {}, // no timer; the Refresh button still works
 );

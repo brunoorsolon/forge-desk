@@ -32,6 +32,8 @@ export interface HttpClientOptions {
   now?: () => number;
   /** Retries after the first attempt. Default 3. */
   maxRetries?: number;
+  /** Revalidate cached GET responses and share identical in-flight reads. Default false. */
+  conditionalRequests?: boolean;
 }
 
 export interface JsonResponse<T> {
@@ -50,10 +52,10 @@ export interface HttpClient {
 const RETRY_STATUSES = new Set([429, 502, 503, 504]);
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 10_000;
-const RETRY_AFTER_CAP_MS = 60_000;
 const RATE_LIMIT_MAX_WAIT_MS = 60_000;
 const RATE_LIMIT_MARGIN_MS = 1_000;
 const MAX_PAGES = 1000;
+const MAX_CACHED_RESPONSES = 1000;
 
 export const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -141,11 +143,11 @@ function secretsFrom(headers: Record<string, string>): string[] {
   return [...secrets];
 }
 
-function parseRetryAfterMs(value: string | null): number | null {
+function parseRetryAfterMs(value: string | null, now: number): number | null {
   if (value === null) return null;
   const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  return Math.min(Number(trimmed) * 1000, RETRY_AFTER_CAP_MS);
+  const ms = /^\d+$/.test(trimmed) ? Number(trimmed) * 1000 : Date.parse(trimmed) - now;
+  return Number.isFinite(ms) ? Math.max(0, ms) : null;
 }
 
 async function discardBody(res: Response): Promise<void> {
@@ -164,6 +166,9 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
   const baseUrl = opts.baseUrl.replace(/\/+$/, '');
   const baseOrigin = new URL(baseUrl).origin;
   const secrets = secretsFrom(opts.headers);
+  const cache = new Map<string, JsonResponse<unknown>>();
+  const inFlight = new Map<string, Promise<JsonResponse<unknown>>>();
+  let cooldown: { until: number; status: number } | undefined;
 
   const redact = (text: string): string => {
     let out = text;
@@ -191,16 +196,41 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
   const backoffMs = (retryIndex: number): number =>
     Math.min(BACKOFF_BASE_MS * 2 ** retryIndex, BACKOFF_CAP_MS);
 
-  async function getJson<T>(pathOrUrl: string): Promise<JsonResponse<T>> {
-    const url = resolveUrl(pathOrUrl);
+  function remember(url: string, response: JsonResponse<unknown>): void {
+    cache.delete(url);
+    if (
+      opts.conditionalRequests &&
+      (response.headers.has('etag') || response.headers.has('last-modified')) &&
+      !/\bno-store\b/i.test(response.headers.get('cache-control') ?? '')
+    ) {
+      cache.set(url, response);
+      if (cache.size > MAX_CACHED_RESPONSES) cache.delete(cache.keys().next().value!);
+    }
+  }
+
+  async function requestJson<T>(url: string): Promise<JsonResponse<T>> {
     const safeUrl = redact(sanitizeUrl(url));
     const describe = `GET ${safeUrl}`;
+    const rateLimitError = (): HttpError =>
+      new HttpError(
+        `${describe} failed: rate limit exceeded (status ${cooldown!.status}), resets at ${new Date(cooldown!.until).toISOString()}`,
+        cooldown!.status,
+        safeUrl,
+      );
 
     for (let attempt = 0; ; attempt++) {
+      // Queued work fails locally; only the request that observed a short cooldown waits.
+      if (cooldown !== undefined && now() < cooldown.until) throw rateLimitError();
       const canRetry = attempt < maxRetries;
+      const cached = cache.get(url) as JsonResponse<T> | undefined;
+      const headers = { ...opts.headers };
+      const etag = cached?.headers.get('etag');
+      const modified = cached?.headers.get('last-modified');
+      if (etag) headers['If-None-Match'] = etag;
+      else if (modified) headers['If-Modified-Since'] = modified;
       let res: Response;
       try {
-        res = await fetchFn(url, { method: 'GET', headers: opts.headers });
+        res = await fetchFn(url, { method: 'GET', headers });
       } catch (err) {
         if (err instanceof TypeError) {
           if (canRetry) {
@@ -217,62 +247,82 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
         throw err;
       }
 
-      if (res.status >= 200 && res.status < 300) {
+      const status = res.status;
+      const at = now();
+      const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'), at);
+      const reset = res.headers.get('x-ratelimit-reset');
+      const resetMs = reset !== null && /^\d+$/.test(reset.trim()) ? Number(reset) * 1000 : NaN;
+      const exhausted =
+        res.headers.get('x-ratelimit-remaining')?.trim() === '0' &&
+        Number.isFinite(new Date(resetMs).getTime());
+      const rateLimited =
+        status === 429 || (status === 403 && (exhausted || retryAfterMs !== null));
+      if (exhausted || rateLimited) {
+        const until = Math.max(
+          exhausted ? Math.max(at, resetMs) + RATE_LIMIT_MARGIN_MS : at,
+          rateLimited ? at + (retryAfterMs ?? (exhausted ? 0 : 60_000)) : at,
+        );
+        if (cooldown === undefined || until > cooldown.until) {
+          cooldown = { until, status: status === 429 ? 429 : 403 };
+        }
+      }
+
+      if (status === 304 && cached !== undefined) {
+        const merged = new Headers(cached.headers);
+        res.headers.forEach((value, name) => merged.set(name, value));
+        const response = { data: cached.data, headers: merged, status };
+        remember(url, response);
+        return response;
+      }
+      if (status >= 200 && status < 300) {
         const text = await res.text();
         let data: T;
         try {
           data = (text === '' ? null : JSON.parse(text)) as T;
         } catch {
+          cache.delete(url);
           throw new HttpError(
-            `${describe} returned invalid JSON (status ${res.status})`,
-            res.status,
-            safeUrl,
-          );
-        }
-        return { data, headers: res.headers, status: res.status };
-      }
-
-      const status = res.status;
-      const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
-      const remaining = res.headers.get('x-ratelimit-remaining');
-      const reset = res.headers.get('x-ratelimit-reset');
-      await discardBody(res);
-
-      const rateLimited =
-        (status === 403 || status === 429) &&
-        retryAfterMs === null &&
-        remaining !== null &&
-        remaining.trim() === '0' &&
-        reset !== null &&
-        /^\d+$/.test(reset.trim());
-
-      let waitMs: number | null = null;
-      if (rateLimited) {
-        const resetMs = Number(reset!.trim()) * 1000;
-        const untilReset = resetMs - now();
-        if (untilReset > RATE_LIMIT_MAX_WAIT_MS) {
-          throw new HttpError(
-            `${describe} failed: rate limit exceeded (status ${status}), resets at ${new Date(resetMs).toISOString()}`,
+            `${describe} returned invalid JSON (status ${status})`,
             status,
             safeUrl,
           );
         }
-        waitMs = Math.max(0, untilReset) + RATE_LIMIT_MARGIN_MS;
-      } else if (RETRY_STATUSES.has(status) || (status === 403 && retryAfterMs !== null)) {
-        waitMs = retryAfterMs ?? backoffMs(attempt);
+        const response = { data, headers: res.headers, status };
+        remember(url, response);
+        return response;
       }
 
-      if (waitMs !== null && canRetry) {
+      await discardBody(res);
+      cache.delete(url);
+      if (rateLimited) {
+        const waitMs = Math.max(0, cooldown!.until - now());
+        if (canRetry && waitMs <= RATE_LIMIT_MAX_WAIT_MS + RATE_LIMIT_MARGIN_MS) {
+          await sleep(waitMs);
+          continue;
+        }
+        throw rateLimitError();
+      }
+      const waitMs = RETRY_STATUSES.has(status) ? (retryAfterMs ?? backoffMs(attempt)) : null;
+      if (waitMs !== null && canRetry && waitMs <= RATE_LIMIT_MAX_WAIT_MS) {
         await sleep(waitMs);
         continue;
       }
-      const detail = rateLimited ? ' (rate limit exceeded)' : '';
       const attempts = waitMs !== null ? ` after ${attempt + 1} attempts` : '';
-      throw new HttpError(
-        `${describe} failed with status ${status}${detail}${attempts}`,
-        status,
-        safeUrl,
-      );
+      throw new HttpError(`${describe} failed with status ${status}${attempts}`, status, safeUrl);
+    }
+  }
+
+  async function getJson<T>(pathOrUrl: string): Promise<JsonResponse<T>> {
+    const url = resolveUrl(pathOrUrl);
+    if (!opts.conditionalRequests) return requestJson<T>(url);
+    const running = inFlight.get(url);
+    if (running !== undefined) return running as Promise<JsonResponse<T>>;
+    const promise = requestJson<T>(url);
+    inFlight.set(url, promise);
+    try {
+      return await promise;
+    } finally {
+      inFlight.delete(url);
     }
   }
 

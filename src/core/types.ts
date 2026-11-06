@@ -21,6 +21,14 @@ export interface IssueRef {
 
 export type DependencySource = 'native' | 'body' | 'sub-issue';
 
+/** Coverage of one provider relation kind, not an assertion that no relations exist. */
+export type RelationCoverageStatus = 'complete' | 'unsupported' | 'failed' | 'not-requested';
+
+export interface RelationCoverage {
+  native: RelationCoverageStatus;
+  subIssues: RelationCoverageStatus;
+}
+
 /**
  * A relation declared on an issue.
  * kind 'blocked-by': the issue that declares it cannot start before `ref` is closed.
@@ -51,6 +59,8 @@ export interface Issue {
   updatedAt: string | null;
   /** Relations reported by the provider API (native dependencies, sub-issues). */
   nativeRelations: RawRelation[];
+  /** Absent on legacy reads. Missing coverage must never be treated as complete. */
+  relationCoverage?: RelationCoverage;
 }
 
 /** `from` must be closed before `to` can start. */
@@ -68,7 +78,9 @@ export type WarningCode =
   | 'dangling-reference'
   | 'external-unresolved'
   | 'native-unsupported'
-  | 'fetch-error';
+  | 'fetch-error'
+  | 'stale-data'
+  | 'dependency-provisional';
 
 export interface PlanWarning {
   code: WarningCode;
@@ -210,6 +222,8 @@ export interface Snapshot {
 export interface FetchResult {
   issues: Issue[];
   warnings: PlanWarning[];
+  /** Coverage across this repository listing; absent on legacy providers. */
+  relationCoverage?: RelationCoverage;
 }
 
 export interface ListOptions {
@@ -224,5 +238,7 @@ export interface IssueProvider {
   /** All OPEN issues of the repository (pull requests excluded), sorted by number ascending. */
   listOpenIssues(repo: RepoRef, options: ListOptions): Promise<FetchResult>;
   /** One issue in any state. null when it does not exist, is a pull request, or is not accessible (404/410). Other errors throw. */
-  getIssue(repo: RepoRef, number: number): Promise<Issue | null>;
+  getIssue(repo: RepoRef, number: number, options?: ListOptions): Promise<Issue | null>;
+  /** Source-local provider cooldown end, in epoch milliseconds, or null when not delayed. */
+  cooldownUntil?(): number | null;
 }

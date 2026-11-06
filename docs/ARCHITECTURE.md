@@ -165,7 +165,13 @@ config ─► PlanService.getSnapshot(viewId)
           Snapshot  ─► HTTP API / CLI / exporters / web UI
 ```
 
-## 5. Core types (`src/core/types.ts`), verbatim contract
+## 5. Core types, verbatim contracts
+
+These declarations introduce no routes or runtime behavior. Existing providers may omit
+relation coverage and the cooldown method. Unknown or absent coverage is not proof
+that a dependency has been removed.
+
+### `src/core/types.ts`
 
 ```ts
 export type ProviderKind = 'github' | 'gitea' | 'fixture';
@@ -191,11 +197,19 @@ export interface IssueRef {
 
 export type DependencySource = 'native' | 'body' | 'sub-issue';
 
+/** Coverage of one provider relation kind, not an assertion that no relations exist. */
+export type RelationCoverageStatus = 'complete' | 'unsupported' | 'failed' | 'not-requested';
+
+export interface RelationCoverage {
+  native: RelationCoverageStatus;
+  subIssues: RelationCoverageStatus;
+}
+
 /**
  * A relation declared on an issue.
  * kind 'blocked-by': the issue that declares it cannot start before `ref` is closed.
  * kind 'blocks':     `ref` cannot start before the issue that declares it is closed.
- * kind 'parent':     `ref` is the issue's parent. Hierarchy only: never an edge.
+ * kind 'parent':     the declaring issue's parent (hierarchy only: never an edge).
  */
 export interface RawRelation {
   kind: 'blocked-by' | 'blocks' | 'parent';
@@ -221,6 +235,8 @@ export interface Issue {
   updatedAt: string | null;
   /** Relations reported by the provider API (native dependencies, sub-issues). */
   nativeRelations: RawRelation[];
+  /** Absent on legacy reads. Missing coverage must never be treated as complete. */
+  relationCoverage?: RelationCoverage;
 }
 
 /** `from` must be closed before `to` can start. */
@@ -238,7 +254,9 @@ export type WarningCode =
   | 'dangling-reference'
   | 'external-unresolved'
   | 'native-unsupported'
-  | 'fetch-error';
+  | 'fetch-error'
+  | 'stale-data'
+  | 'dependency-provisional';
 
 export interface PlanWarning {
   code: WarningCode;
@@ -272,9 +290,9 @@ export interface PlanNode {
   blockedBy: IssueKey[];
   /** Keys of open direct dependents, sorted with compareKeys. */
   blocks: IssueKey[];
-  /** Keys of parent issues, sorted with compareKeys. Filled from `Parent:` relation lines. Never a dependency. */
+  /** Keys of issues named by a `Parent:` relation line on this issue, present in the plan and sorted with compareKeys. Hierarchy only: never an edge. */
   parents: IssueKey[];
-  /** Keys of child issues, sorted with compareKeys. The inverse of `parents`. Never a dependency. */
+  /** Keys of issues whose `Parent:` relation line names this issue, present in the plan and sorted with compareKeys. */
   children: IssueKey[];
   /** Index of the first matching entry of ordering.priorityLabels; priorityLabels.length when none match. Lower = more urgent. */
   priority: number;
@@ -347,6 +365,12 @@ export interface Layout {
   edges: LayoutEdge[];
 }
 
+/**
+ * How the linear order is built. `priority`: by (priority, remainingDepth, key), which can
+ * interleave waves. `waves`: wave by wave, and within a wave by the same three criteria.
+ */
+export type OrderingMode = 'priority' | 'waves';
+
 export interface Snapshot {
   viewId: string;
   title: string;
@@ -354,6 +378,19 @@ export interface Snapshot {
   fetchedAt: string;
   /** sha256 hex of canonicalJson({ plan, layout }). */
   contentHash: string;
+  /**
+   * The view's configured priority labels, in rank order (index 0 is the most
+   * urgent). `PlanNode.priority` indexes into this list;
+   * `PlanNode.priority === priorityLabels.length` means no priority label.
+   * Not part of the content hash: a change here already changes the hash through
+   * the `priority` values.
+   */
+  priorityLabels: string[];
+  /**
+   * The view's ordering mode. Not part of the content hash: `plan.order` already reflects it,
+   * so a change of mode changes the hash through the order.
+   */
+  orderingMode: OrderingMode;
   plan: Plan;
   layout: Layout;
 }
@@ -361,6 +398,8 @@ export interface Snapshot {
 export interface FetchResult {
   issues: Issue[];
   warnings: PlanWarning[];
+  /** Coverage across this repository listing; absent on legacy providers. */
+  relationCoverage?: RelationCoverage;
 }
 
 export interface ListOptions {
@@ -375,8 +414,226 @@ export interface IssueProvider {
   /** All OPEN issues of the repository (pull requests excluded), sorted by number ascending. */
   listOpenIssues(repo: RepoRef, options: ListOptions): Promise<FetchResult>;
   /** One issue in any state. null when it does not exist, is a pull request, or is not accessible (404/410). Other errors throw. */
-  getIssue(repo: RepoRef, number: number): Promise<Issue | null>;
+  getIssue(repo: RepoRef, number: number, options?: ListOptions): Promise<Issue | null>;
+  /** Source-local provider cooldown end, in epoch milliseconds, or null when not delayed. */
+  cooldownUntil?(): number | null;
 }
+```
+
+### `src/core/scope.ts`
+
+```ts
+import type {
+  Issue,
+  IssueKey,
+  PlanWarning,
+  ProviderKind,
+  RelationCoverage,
+  Snapshot,
+} from './types.js';
+
+/** One configured repository of one source. The source ID is case-sensitive. */
+export interface ProjectRef {
+  source: string;
+  /** Canonical lowercase owner/repo. Dependency-only and release repositories are not projects. */
+  repo: string;
+}
+
+export type Scope = ({ kind: 'project' } & ProjectRef) | { kind: 'source'; source: string };
+
+/**
+ * Canonical plan IDs: project:<source>/<owner>/<repo> and source:<source>.
+ * Source IDs use the configuration ID grammar; owner/repo are lowercase. Colons are
+ * forbidden in configured view IDs, so these namespaces cannot collide with views.
+ * These are plan IDs, not URL paths: URI encoding belongs to the HTTP/hash router.
+ */
+export type ScopeId = `project:${string}/${string}/${string}` | `source:${string}`;
+
+export interface SourcePolicyConflict {
+  source: string;
+  /** Resolved setting paths that disagree, such as dependencies.native. */
+  differingSettings: string[];
+  /** IDs of the named views involved. */
+  views: string[];
+  explanation: string;
+}
+
+export type SourcePolicyStatus =
+  { status: 'usable' } | { status: 'conflict'; conflict: SourcePolicyConflict };
+
+export interface CatalogSource {
+  id: string;
+  kind: ProviderKind;
+  /** Distinct projects, sorted by canonical owner/repo, including empty repositories. */
+  projects: ProjectRef[];
+  policy: SourcePolicyStatus;
+}
+
+export interface CatalogResponse {
+  /** In configuration order; separate source IDs retain separate project identities. */
+  sources: CatalogSource[];
+}
+
+/** Timestamps in these contracts are ISO 8601 UTC strings, never computation ages. */
+export interface ObservationAttempt {
+  attemptedAt: string;
+  outcome: 'success' | 'partial' | 'failed';
+  error: string | null;
+}
+
+export interface ObservationMetadata {
+  relationCoverage: RelationCoverage;
+  /** Last successful observation of each relation kind; weaker reads retain its age. */
+  relationsCheckedAt: { native: string | null; subIssues: string | null };
+  /** Last successful upstream check, unchanged by failures or plan recomputation. */
+  lastCheckedAt: string | null;
+  /** Null until the first attempt. A failed attempt may coexist with last-good data. */
+  lastAttempt: ObservationAttempt | null;
+  /** Incremented by invalidation; a fetch from an older generation cannot restore freshness. */
+  invalidationGeneration: number;
+}
+
+export interface RepositoryObservation extends ObservationMetadata {
+  project: ProjectRef;
+  /** Last-good open listing, or null before any successful listing. [] means verified empty. */
+  issues: Issue[] | null;
+  warnings: PlanWarning[];
+}
+
+export type OutsideIssueResult =
+  | { status: 'found'; issue: Issue }
+  | { status: 'missing' }
+  | { status: 'unresolved'; error: string };
+
+export interface OutsideIssueObservation extends ObservationMetadata {
+  source: string;
+  key: IssueKey;
+  /** Last-good issue includes state, body and observed relations; null means no result yet. */
+  result: OutsideIssueResult | null;
+}
+
+export type FreshnessState =
+  'fresh' | 'stale' | 'updating' | 'invalidated' | 'delayed' | 'failed' | 'unavailable';
+
+export interface RepositoryFreshness {
+  project: ProjectRef;
+  lastCheckedAt: string | null;
+  state: FreshnessState;
+  /** Partial coverage is distinct from the check's freshness state. */
+  partial: boolean;
+  error: string | null;
+  delayedUntil: string | null;
+}
+
+export interface ScopeFreshness {
+  /** Plan computation time; never substitutes for an upstream lastCheckedAt. */
+  computedAt: string | null;
+  repositories: RepositoryFreshness[];
+  outsideIssues: {
+    count: number;
+    oldestObservedAt: string | null;
+    provisionalCount: number;
+  };
+}
+
+export type RefreshTrigger = 'interactive' | 'scheduled';
+export type RefreshJobState = 'queued' | 'running' | 'completed' | 'partial' | 'failed';
+
+export interface RefreshJobStatus {
+  id: string;
+  scope: Scope | { kind: 'all-sources' };
+  trigger: RefreshTrigger;
+  state: RefreshJobState;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  delayedUntil: string | null;
+  error: string | null;
+}
+
+export interface ScopeResponse {
+  scope: Scope;
+  /** Same Snapshot contract. fetchedAt is the oldest contributing repository check. */
+  snapshot: Snapshot | null;
+  freshness: ScopeFreshness;
+  job: RefreshJobStatus | null;
+}
+
+export interface SweepProjectStatus {
+  project: ProjectRef;
+  state: 'queued' | 'checking' | 'checked' | 'failed';
+  lastCheckedAt: string | null;
+  error: string | null;
+}
+
+export interface SweepSourceStatus {
+  source: string;
+  state: RefreshJobState | 'conflict' | 'delayed';
+  delayedUntil: string | null;
+  error: string | null;
+  policyConflict: SourcePolicyConflict | null;
+  projects: SweepProjectStatus[];
+}
+
+export interface SweepStatus {
+  id: string;
+  trigger: RefreshTrigger;
+  state: RefreshJobState;
+  startedAt: string;
+  finishedAt: string | null;
+  sources: SweepSourceStatus[];
+}
+```
+
+### `src/core/preferences.ts`
+
+```ts
+import type { ProjectRef } from './scope.js';
+
+/** Unknown versions are refused, never silently migrated or replaced. */
+export const PREFERENCES_SCHEMA_VERSION = 1;
+
+/** The one application account's durable profile. Contains no credentials or account name. */
+export interface PreferenceProfile {
+  version: typeof PREFERENCES_SCHEMA_VERSION;
+  /** Non-negative integer, increased only after a durable committed change. */
+  revision: number;
+  /** Unique project references in the order added. */
+  favorites: ProjectRef[];
+  rememberedProject: ProjectRef | null;
+}
+
+export interface Favorite extends ProjectRef {
+  /** Catalog membership, not provider availability. Unavailable favorites remain removable. */
+  inCatalog: boolean;
+}
+
+export interface AvailablePreferences {
+  available: true;
+  revision: number;
+  favorites: Favorite[];
+  rememberedProject: ProjectRef | null;
+}
+
+export type PreferencesUnavailableReason =
+  | 'login-disabled'
+  | 'storage-not-configured'
+  | 'storage-missing'
+  | 'store-locked'
+  | 'unreadable'
+  | 'corrupt'
+  | 'unsupported-version';
+
+export interface UnavailablePreferences {
+  available: false;
+  reason: PreferencesUnavailableReason;
+  message: string;
+}
+
+export type PreferencesResponse = AvailablePreferences | UnavailablePreferences;
+
+export type PreferenceErrorCode =
+  'not-in-catalog' | 'favorites-limit' | 'preferences-unavailable' | 'save-failed';
 ```
 
 ## 6. Helpers (`src/core/keys.ts`, `src/core/hash.ts`)
@@ -740,10 +997,9 @@ Resolution (`resolve.ts`), deterministic:
    Prerequisites that are not in scope are marked external.
 6. `buildPlan`, then `computeLayout`, then `contentHash({ plan, layout })`, then `Snapshot`.
 
-Caching: an in-memory map per view with a TTL of `cache.ttlSeconds`.
-Concurrent `getSnapshot` calls for the same view share one in-flight promise.
-`refresh: true` bypasses the TTL and still shares in-flight work. A failed
-fetch is not cached.
+Caching: an in-memory map per view with a TTL of `cache.ttlSeconds`. Automatic browser polls respect this cache. Concurrent `getSnapshot` calls for the same view share one in-flight promise. An explicit `refresh: true` bypasses the snapshot TTL and still shares in-flight work. A failed rebuild is not cached; a partial snapshot can contain fetch-error warnings.
+
+The GitHub provider also retains up to 1,000 GET responses with ETag or Last-Modified validators per source. Rebuilds revalidate each full URL and reuse the payload and pagination headers only on `304`. Identical in-flight reads share work across views of that source. The HTTP client tracks a source-local cooldown from rate-limit responses and rejects queued or new reads locally until the cooldown expires; already-sent reads can finish.
 
 ## 14. HTTP API (`src/server/*`)
 

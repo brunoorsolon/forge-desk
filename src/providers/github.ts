@@ -172,6 +172,7 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
   const client = createHttpClient({
     baseUrl,
     headers,
+    conditionalRequests: true,
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.now ? { now: opts.now } : {}),

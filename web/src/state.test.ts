@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanNode, Snapshot } from '../../src/core/types.js';
 import type { ViewSummary } from './api.js';
-import { DEFAULT_ROUTE, type Tab } from './route.js';
+import { DEFAULT_ROUTE, parseHash, serializeHash, type Tab } from './route.js';
 import {
   INITIAL_STATE,
   Store,
@@ -10,6 +10,7 @@ import {
   problemCount,
   reducer,
   warningsByCode,
+  withTab,
   type AppState,
 } from './state.js';
 
@@ -224,4 +225,15 @@ describe('snapshot helpers', () => {
     expect([...groups.keys()]).toEqual(['dangling-reference', 'fetch-error']);
     expect(groups.get('dangling-reference')).toHaveLength(2);
   });
+});
+
+describe('scope route compatibility', () => {
+  it.each(['#/project/forge/acme/api', '#/source/forge'])(
+    'keeps the scope when changing tabs on %s',
+    (path) => {
+      const route = parseHash(`${path}/graph?q=bug&sort=updated`);
+      expect(serializeHash(withTab(route, 'problems'))).toBe(`${path}/problems?q=bug&sort=updated`);
+      expect(route.viewId).toBeNull();
+    },
+  );
 });

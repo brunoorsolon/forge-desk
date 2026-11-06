@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   fetchViews,
+  refreshSnapshot,
   fetchReleaseRepositories,
   fetchReleaseJobs,
   fetchReleaseJob,
@@ -14,6 +15,23 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('snapshot refresh', () => {
+  it('uses the shared cache for automatic polls but forces an explicit manual refresh', async () => {
+    const fetch = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(Response.json({ viewId: 'a/b' })));
+    vi.stubGlobal('fetch', fetch);
+    await expect(refreshSnapshot('a/b', false)).resolves.toEqual({ viewId: 'a/b' });
+    await expect(refreshSnapshot('a/b')).resolves.toEqual({ viewId: 'a/b' });
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      'api/views/a%2Fb/snapshot',
+      'api/views/a%2Fb/refresh',
+    ]);
+    expect(fetch.mock.calls[0]?.[1].method).toBeUndefined();
+    expect(fetch.mock.calls[1]?.[1].method).toBe('POST');
+  });
 });
 
 describe('release caller boundary', () => {
