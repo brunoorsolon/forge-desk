@@ -40,6 +40,10 @@ export const WARNING_EXPLANATIONS: Record<string, { title: string; text: string 
     title: 'An issue could not be fetched',
     text: 'It is treated as an open external issue titled "(unavailable)", so its own dependencies are unknown.',
   },
+  'repository-unlisted': {
+    title: 'All projects plan is partial',
+    text: 'These repositories have no successful issue listing yet. The plan uses the available listings and may include referenced dependencies from the unlisted repositories.',
+  },
 };
 
 const STRUCTURAL = new Set(['cycle', 'blocked-by-cycle']);
