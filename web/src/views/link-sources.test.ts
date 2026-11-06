@@ -188,3 +188,25 @@ describe('dependency link sources', () => {
     expect(tags).toContain('native + body'); // #2 -> #1
   });
 });
+
+describe('partial All projects warning', () => {
+  it('shows the explanation and unlisted repository names without needing issue keys', () => {
+    const partial = structuredClone(snapshot);
+    partial.plan.warnings = [
+      {
+        code: 'repository-unlisted',
+        message: 'All projects plan is partial: s/a/other has no successful repository listing',
+        issues: [],
+      },
+    ];
+    const problems = createProblemsView(ctx);
+    problems.update({ ...stateWith(null, 'problems'), snapshot: partial }, INITIAL_STATE);
+    const root = problems.el as unknown as FakeElement;
+    expect(root.textContent).toContain('All projects plan is partial');
+    expect(root.textContent).toContain('These repositories have no successful issue listing yet.');
+    expect(textOfClass(root, 'warn-msg')).toEqual([partial.plan.warnings[0]!.message]);
+    problems.update(stateWith(null, 'problems'), INITIAL_STATE);
+    expect(root.textContent).not.toContain('All projects plan is partial');
+    expect(textOfClass(root, 'warn-msg')).toEqual([]);
+  });
+});

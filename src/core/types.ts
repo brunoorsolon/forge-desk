@@ -79,6 +79,7 @@ export type WarningCode =
   | 'external-unresolved'
   | 'native-unsupported'
   | 'fetch-error'
+  | 'repository-unlisted'
   | 'stale-data'
   | 'dependency-provisional';
 

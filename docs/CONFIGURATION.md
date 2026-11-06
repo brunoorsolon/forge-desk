@@ -137,6 +137,8 @@ If the views disagree, loading still succeeds. The catalog records a policy conf
 
 The loaded configuration exposes `catalog` in the shared `CatalogResponse` shape, with sources in configuration order and each source's policy status (`usable` or `conflict`). `sources[].planning` holds the resolved dependency/ordering values, or `null` for a conflict or an unused source without an explicit policy. Catalog computation is available now; project read routes and scope planning consume it separately.
 
+Scope plan derivation uses the available repository observations. An All projects plan can be partial: each catalog repository without a successful listing produces a `repository-unlisted` warning naming that repository. A successfully listed empty repository still counts as data. With no scoped listings at all, the snapshot stays `null`; an individual project still requires its own listing. Missing listings do not supply a fetch timestamp: `fetchedAt` remains the oldest successful check among contributing repository listings. Once a missing listing arrives, recomputation includes its issues and removes its warning.
+
 ### `views`
 
 A list (at least one). A view is a set of repositories of one source that are planned together: one graph, one order.
