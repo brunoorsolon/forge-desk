@@ -335,7 +335,7 @@ try {
   checks.push('Hidden pause, one return check, completed job stop, unopened projects untouched');
   await visit(fixture, '#/project/alpha/demo/missing/graph');
   await until(
-    () => evaluate(`document.body.textContent.includes('Project not in catalog')`),
+    () => evaluate(`document.body.innerText.includes('Project not in catalog')`),
     'missing project state',
   );
   await shot('missing-project');
@@ -364,7 +364,7 @@ try {
   fixtures.push(conflict);
   await visit(conflict);
   await until(
-    () => evaluate(`document.body.textContent.includes('Planning policy conflict')`),
+    () => evaluate(`document.body.innerText.includes('Planning policy conflict')`),
     'startup policy conflict',
   );
   await expect(
@@ -373,7 +373,7 @@ try {
   );
   await visit(conflict, '#/source/alpha/graph');
   await until(
-    () => evaluate(`document.body.textContent.includes('Planning policy conflict')`),
+    () => evaluate(`document.body.innerText.includes('Planning policy conflict')`),
     'direct policy conflict',
   );
   await shot('policy-conflict');
@@ -381,7 +381,7 @@ try {
   fixtures.push(allConflict);
   await visit(allConflict);
   await until(
-    () => evaluate(`document.body.textContent.includes('Planning policy conflict')`),
+    () => evaluate(`document.body.innerText.includes('Planning policy conflict')`),
     'no usable source state',
   );
   checks.push('Startup and direct conflict branches remain explicit');
@@ -390,11 +390,11 @@ try {
   unavailable.fail({ source: 'alpha', repo: 'demo/one' });
   await visit(unavailable, '#/project/alpha/demo/one/graph');
   await until(
-    () => evaluate(`document.body.textContent.includes('Project data unavailable')`),
+    () => evaluate(`document.body.innerText.includes('Project data unavailable')`),
     'unavailable state',
   );
   await expect(
-    `!document.body.textContent.includes('No open issues')`,
+    `!document.body.innerText.includes('No open issues')`,
     'Unavailable data is not presented as empty',
   );
   await shot('unavailable');
