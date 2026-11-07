@@ -95,14 +95,16 @@ export async function preferencesFixture(
   });
   app.addHook('onSend', async (request, reply, payload) => {
     if (
-      fault === 'lost' &&
+      fault === 'truncated' &&
       request.url.startsWith('/api/preferences/') &&
       request.method !== 'GET' &&
       reply.statusCode === 200
     ) {
-      // Commit the actual durable write, then drop only its response.
+      // The real route committed the durable write. Lose the authoritative JSON payload,
+      // not the connection before headers: Chromium transparently retries idempotent DELETE
+      // after a socket reset, which would turn this case into a successful second response.
       fault = null;
-      reply.raw.destroy();
+      return String(payload).slice(0, -1);
     }
     return payload;
   });

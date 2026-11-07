@@ -68,6 +68,18 @@ describe('preference caller boundary', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects a truncated successful mutation response so the controller can reconcile it', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ username: 'operator', csrfToken: 'proof' }))
+      .mockResolvedValueOnce(new Response('{"available":true,"revision":2', { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      savePreference({ kind: 'remove-favorite', project: { source: 'one', repo: 'o/r' } }),
+    ).rejects.toMatchObject({ status: 200, message: 'The server returned an invalid response.' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('does not send a mutation if logout aborts the pending session read', async () => {
     const controller = new AbortController();
     const fetch = vi.fn(async () => {

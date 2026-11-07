@@ -322,21 +322,21 @@ try {
   await favorites(a, ['alpha / demo/two', 'alpha / demo/one', 'beta / demo/three']);
   checks.push('Failed favorite save restores confirmed order and shows an error');
   await a.shot('favorite-save-failure');
-  const beforeLostRead = reads(shared);
-  shared.failNext('lost');
+  const beforeTruncatedRead = reads(shared);
+  shared.failNext('truncated');
   await a.click('Remove alpha / demo/one from favorites');
-  await until(() => reads(shared) > beforeLostRead, 'lost-response reconciliation GET');
+  await until(() => reads(shared) > beforeTruncatedRead, 'truncated-response reconciliation GET');
   await favorites(a, ['alpha / demo/two', 'beta / demo/three']);
   await a.expect(
     `Boolean(document.querySelector('.preference-error')?.textContent)`,
-    'Lost-response error is visible after reconciliation',
+    'Truncated save-response error is visible after reconciliation',
   );
   assert.deepEqual(
     shared.preferences.read().profile.favorites.map((p) => p.repo),
     ['demo/two', 'demo/three'],
   );
-  checks.push('Lost save response reconciles the committed disk state by a fresh GET');
-  await a.shot('lost-response-recovered');
+  checks.push('Truncated save response reconciles the committed disk state by a fresh GET');
+  await a.shot('truncated-response-recovered');
   shared.failNext('reject');
   await a.click('Open alpha / demo/two');
   await a.wait(
