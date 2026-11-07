@@ -23,6 +23,7 @@ import { checkReleaseAccess } from './releaseAccess.js';
 import { registerReleaseRoutes, releaseRouteError, type ReleaseMount } from './releaseRoutes.js';
 import type { ScopeRuntime } from '../service/scopeRuntime.js';
 import { registerScopeRoutes } from './scopeRoutes.js';
+import { isScopeRefreshPath, registerScopeRefreshRoutes } from './scopeRefreshRoutes.js';
 import type { SweepScheduler } from '../service/sweepScheduler.js';
 import { isSweepLaunchRequest, registerSweepRoutes } from './sweepRoutes.js';
 import { registerWebhooks, WEBHOOK_PATHS } from './webhooks.js';
@@ -357,6 +358,7 @@ export function buildApp(
       const pathname = pathnameOf(request.url);
       // Preference routes own their shared access check, including mixed credentials.
       if (isPreferencePath(pathname)) return;
+      if (opts.scopes && isScopeRefreshPath(request.method, pathname)) return;
       if (opts.sweeps && isSweepLaunchRequest(request.method, pathname)) return;
       if (pathname === '/healthz' || pathname === '/login' || pathname === '/logout') return;
       if (webhooks !== null && request.method === 'POST' && WEBHOOK_PATHS.includes(pathname)) {
@@ -519,6 +521,7 @@ export function buildApp(
   registerPreferenceRoutes(app, config, preferenceAuthentication, opts.preferences);
   if (opts.sweeps) registerSweepRoutes(app, config, preferenceAuthentication, opts.sweeps);
   if (opts.scopes) registerScopeRoutes(app, config, opts.scopes);
+  if (opts.scopes) registerScopeRefreshRoutes(app, config, preferenceAuthentication, opts.scopes);
 
   // --- release routes (only with an owned release runtime; otherwise the routes do not exist) ---
   if (releaseMount !== null) registerReleaseRoutes(app, config, releaseMount);
