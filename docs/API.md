@@ -54,6 +54,50 @@ Returns one summary per configured view:
 
 `kind` is the provider kind of the view's source (`github`, `gitea` or `fixture`).
 
+### Project catalog and scope reads
+
+`GET /api/projects` returns `{ sources: [{ id, kind, projects: [{ source, repo }], policy }] }`.
+Sources retain configuration order; each project's lowercase `owner/repo` is sorted and distinct.
+`policy` is `{ status: "usable" }` or `{ status: "conflict", conflict }`, where `conflict`
+names the source, differing settings, affected views and an explanation. No source tokens are returned.
+
+- `GET /api/projects/:source/:owner/:repo/snapshot`
+- `GET /api/sources/:source/snapshot`
+
+Both return the scope read response `{ scope, snapshot, freshness, job }`. The snapshot is the
+existing snapshot shape, or `null` while loading or unavailable. Its `viewId` is
+`project:<source>/<owner>/<repo>` or `source:<source>` and `fetchedAt` is the oldest contributing
+repository check, not computation time. `freshness` reports `computedAt`, each repository's
+`lastCheckedAt`, state, partial coverage, error and cooldown end, plus outside-issue counts and age.
+`job` is an active refresh job or `null`.
+
+Cached data returns immediately; stale or invalidated data starts a paced background job. A first
+read waits at most 15 seconds, returning a null snapshot and live job when still loading. A known
+provider cooldown is reported immediately. With zero cache TTL the read revalidates instead of
+serving cached observations; a cooldown returns `503` with `code: "source-cooldown"` and
+`delayedUntil`. Scope reads have no `ETag` or `304`: freshness can change independently of plan content.
+
+Unknown sources and projects return `404` with `unknown-source` or `unknown-project`; policy
+conflicts return `409` with `policy-conflict` and the explanation. All these routes use the existing
+planning login when configured, and are open otherwise. Responses are `Cache-Control: no-store`.
+
+### Scope exports
+
+- `GET /api/projects/:source/:owner/:repo/export.:format`
+- `GET /api/sources/:source/export.:format`
+
+Formats are the same `json`, `md`, `mmd` and `dot` as named views. JSON remains a Snapshot, not a
+ScopeResponse. All formats include freshness and dependency coverage warnings. Mermaid and DOT
+include those warnings as line comments; named-view/CLI output is unchanged. Filenames replace
+scope ID separators with hyphens.
+
+A download uses existing observations even when stale, without starting a background refresh.
+A cold download fetches its scope; `?refresh=1` (or `true`) explicitly rechecks first. Zero TTL
+always revalidates. Export revalidation shares providers and observations but is not paced, like
+named-view and CLI traffic; the provider's ordinary cooldown still applies. If no snapshot can be
+returned, the route answers `503` with `code: "scope-unavailable"` and the scope response, never
+an empty fabricated plan. Existing last-good data is retained with warnings on failed revalidation.
+
 ### `GET /api/settings`
 
 Returns the settings the web UI reads at startup:

@@ -24,7 +24,7 @@ export interface ScopeRefreshSource {
   catalog: CatalogSource;
   provider: IssueProvider;
   /** The provider's fetch must already be wrapped by this source's queue. */
-  queue: AdmissionQueue;
+  queue: Pick<AdmissionQueue, keyof AdmissionQueue>;
 }
 
 export class ScopeRefreshError extends Error {
@@ -344,7 +344,18 @@ export class ScopeRefreshJobs {
               missing = issue === null;
             }
           } catch (error) {
-            store.fail(read, messageOf(error));
+            // A source cooldown is a delay, not a failed observation. In particular,
+            // unpaced exports fail locally instead of joining the admission queue;
+            // recording that rejection would suppress later browsing until the TTL.
+            // Read the provider directly: the export lane deliberately does not wait.
+            const cooldown = source.provider.cooldownUntil?.() ?? null;
+            if (
+              !(error instanceof HttpError) ||
+              (error.status !== 429 && error.status !== 403) ||
+              cooldown === null ||
+              cooldown <= this.now().getTime()
+            )
+              store.fail(read, messageOf(error));
             throw error;
           }
           // The missing observation already records its failure and preserves data.

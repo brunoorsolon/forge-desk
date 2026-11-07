@@ -1143,3 +1143,34 @@ not register HTTP routes or change named-view caching.
 
 `src/service/scopeReadService.test.ts` exercises these contracts with real jobs
 and observation storage, fake providers, and a controllable clock.
+
+## Scope HTTP runtime
+
+`createScopeRuntime` creates one provider (and therefore one HTTP client/conditional-response cache
+and cooldown) per configured source. `PlanService` receives those same providers. Each source has
+an `AdmissionQueue` wrapping that provider's fetch with `refresh.concurrency` and
+`refresh.requestsPerMinute`; only new-browsing job contexts are paced. Fixture sources bypass
+pacing. Named views and the CLI keep their existing behavior.
+
+The runtime owns the observation store, scope refresh jobs and cache-first reads. Scope exports
+use a separate coalescing job lane without admission pacing, sharing the same providers and store.
+Export cooldown rejections do not become failed shared observations, so later paced browsing can
+retry when the cooldown expires. A cached export does no I/O. Read services account for both job
+lanes before pruning observations,
+so one lane cannot retire another lane's in-flight observation token. `cached(scope)` reads without
+scheduling work; it still recomputes freshness from the current clock and observations.
+
+`startServer` passes this runtime to `buildApp`, which registers `scopeRoutes`. Other route modules
+retain their existing contracts. The scope module inherits planning authentication and no-store
+headers, maps scope identity/policy/cooldown errors, redacts configured source tokens from returned
+scope errors, and adds warnings to scope exports without changing the existing exporters.
+
+The scope module's `preClose` hook runs before Fastify drains HTTP connections: it closes the read
+services (releasing first-load waiters), stops admission and abandons queued requests immediately.
+It starts the bounded five-second drain of admitted fetches without awaiting it in `preClose`.
+The scope `onClose` hook awaits that same idempotent drain. Fastify runs `onClose` hooks in reverse
+registration order, so startup’s later release-ownership hook starts its own drain while scope
+fetches are still draining, rather than adding another five seconds. Startup failure closes
+the runtime as well. Integration tests use real providers with fake fetch responses to verify
+shared conditional requests/cooldowns, configured pacing, source isolation, unpaced exports and
+named views, and bounded shutdown. Browser integration belongs to the navigation/refresh delivery.

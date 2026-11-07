@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { ConfigError, loadConfig } from '../config/load.js';
 import { loadReleaseRuntime } from '../config/releaseRuntime.js';
 import { openPreferenceRuntime, type PreferenceRuntime } from '../service/preferenceRuntime.js';
-import { PlanService } from '../service/planService.js';
+import { createScopeRuntime } from '../service/scopeRuntime.js';
 import { acquireReleaseOwnership } from '../service/releaseOwnership.js';
 import { ReleaseStateStore } from '../service/releaseState.js';
 import { ReleasePreparation } from '../release/preparation.js';
@@ -30,7 +30,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
   // so a temporary forge outage cannot keep Planning down.
   const releaseRuntime = loadReleaseRuntime(config.releases, config.sources, env);
 
-  const service = new PlanService(config);
+  const scopes = createScopeRuntime(config);
+  const service = scopes.plans;
   // The single-owner gate is claimed before the app can serve release work, so release routes
   // exist only on a runtime that owns its state directory. A second process is refused here.
   let app: FastifyInstance | null = null;
@@ -68,6 +69,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
     app = buildApp(config, service, {
       logger: true,
       preferences,
+      scopes,
       ...(opts.webDir !== undefined ? { webDir: opts.webDir } : {}),
       ...(releaseRuntime !== null && ownership !== null
         ? {
@@ -86,6 +88,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
         : {}),
     });
   } catch (error) {
+    await scopes.close();
     await preferences?.close();
     await ownership?.shutdown();
     throw error;
