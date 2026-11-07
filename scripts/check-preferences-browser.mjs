@@ -46,7 +46,19 @@ async function until(check, description, timeout = 7000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     if (launchError) throw launchError;
-    if (await check()) return;
+    try {
+      if (await check()) return;
+    } catch (error) {
+      // These checks only observe state. A real login/logout navigation can replace the
+      // document during Runtime.evaluate; inspect the new document on the next poll.
+      // Never retry actions (clicks, form submissions or fetch mutations) here.
+      if (
+        !/Inspected target navigated or closed|Execution context was destroyed|Cannot find context with specified id/.test(
+          String(error),
+        )
+      )
+        throw error;
+    }
     await sleep(30);
   }
   throw new Error(`Timed out: ${description}`);

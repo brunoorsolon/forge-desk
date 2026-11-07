@@ -24,8 +24,9 @@ integrations. Local Chromium cannot start under executor socket restrictions and
 is absent; browser and container results are from CI, not local execution.
 
 The final integration commit incorporates main `0403d61b55dbcd063a65e91d4d30822ca061c9f2`
-and these evidence files. Web application and preference browser-test bytes are unchanged
-from the captured candidate. Local merged validation passed 2,636 tests (73 files),
+and these evidence files. Web application bytes are unchanged from the captured candidate.
+The browser harness subsequently gained a polling guard for expected document replacement
+during login/logout; assertions and mutation actions are unchanged. Local merged validation passed 2,636 tests (73 files),
 typecheck, format and build. The PR links the final-head CI and its fresh browser artifact.
 
 ## Recorded checks
