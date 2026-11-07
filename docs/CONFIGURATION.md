@@ -42,41 +42,41 @@ The schema is **strict**: an unknown key is an error, and all errors are reporte
 | `server.basicAuth.passwordEnv` | string          | none      | Name of the environment variable that holds the password (recommended). Wins over `password` when the variable is set and not blank.            |
 | `server.basicAuth.password`    | string          | none      | Inline password (discouraged). Used when `passwordEnv` is absent or its variable is unset. One of the two is required, otherwise startup fails. |
 
-`server.publicOrigin` is an optional http(s) origin, default `null`, overridden by `FD_PUBLIC_ORIGIN`. It must have no credentials, path, query or fragment; plain HTTP is allowed only for loopback hosts. Origins are normalized to the browser's serialized form (for example, `https://EXAMPLE.com:443/` becomes `https://example.com`). Once project browsing ships, it supplies the trusted origin for preferences and refresh launches. When absent, those checks use the request Host; configure it behind a proxy that rewrites Host. It does not change `releases.publicOrigin` or release access checks.
+`server.publicOrigin` is an optional http(s) origin, default `null`, overridden by `FD_PUBLIC_ORIGIN`. It must have no credentials, path, query or fragment; plain HTTP is allowed only for loopback hosts. Origins are normalized to the browser's serialized form (for example, `https://EXAMPLE.com:443/` becomes `https://example.com`). It supplies the trusted origin for preferences and refresh launches. When absent, those checks use the request Host; configure it behind a proxy that rewrites Host. It does not change `releases.publicOrigin` or release access checks.
 
 ### `cache`
 
-| Key                | Type               | Default | Description                                                                                                                     |
-| ------------------ | ------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `cache.ttlSeconds` | integer, 0 or more | `300`   | How long a view's snapshot is served from memory. `0` disables caching (every request refetches). Overridden by `FD_CACHE_TTL`. |
+| Key                | Type               | Default | Description                                                                                                                                    |
+| ------------------ | ------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache.ttlSeconds` | integer, 0 or more | `300`   | TTL for named-view snapshots and project/source observations. `0` requires revalidation and disables sweep work. Overridden by `FD_CACHE_TTL`. |
 
 ### `ui`
 
-| Key                 | Type            | Default | Description                                                                                                                                                                                                                                                        |
-| ------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ui.refreshMinutes` | integer, 0-1440 | `5`     | How often the web UI polls the view it shows, respecting `cache.ttlSeconds`. The Refresh button bypasses that snapshot cache. Switching back to an already shown view uses the tab's snapshot. `0` disables automatic polling. Overridden by `FD_REFRESH_MINUTES`. |
+| Key                 | Type            | Default | Description                                                                                                                                                                                        |
+| ------------------- | --------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui.refreshMinutes` | integer, 0-1440 | `5`     | How often the web UI checks the open scope or named view, respecting `cache.ttlSeconds`. `0` disables periodic polling, not visible scope-job progress checks. Overridden by `FD_REFRESH_MINUTES`. |
 
 ### `refresh`
 
-These settings are accepted now; their consumers ship with project browsing. They do not pace named views, exports or the CLI.
+These settings pace project/source browsing and sweeps. They do not pace named views, exports or the CLI. Each upstream page, relation lookup and retry consumes a request start.
 
-| Key                         | Type             | Default | Description                                                                                                                          |
-| --------------------------- | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `refresh.sweepHours`        | integer 0-168    | `0`     | Background sweep interval, measured in hours after the previous sweep finishes; `0` disables sweeps. Overridden by `FD_SWEEP_HOURS`. |
-| `refresh.requestsPerMinute` | positive integer | `60`    | Per-source request-start pace for project browsing and sweeps. No environment override.                                              |
-| `refresh.concurrency`       | positive integer | `4`     | Per-source simultaneous requests for project browsing and sweeps. No environment override.                                           |
+| Key                         | Type             | Default | Description                                                                                                                                                         |
+| --------------------------- | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refresh.sweepHours`        | integer 0-168    | `0`     | Background sweep interval, measured in hours after the previous sweep finishes; `0` disables automatic sweeps, not manual launches. Overridden by `FD_SWEEP_HOURS`. |
+| `refresh.requestsPerMinute` | positive integer | `60`    | Per-source request-start pace for project browsing and sweeps. No environment override.                                                                             |
+| `refresh.concurrency`       | positive integer | `4`     | Per-source simultaneous requests for project browsing and sweeps. No environment override.                                                                          |
 
-When `refresh.sweepHours > 0` and `cache.ttlSeconds: 0`, loading reports a non-fatal warning, shown by `forge-desk check`, that the sweep will not run. The configured interval is retained.
+When `refresh.sweepHours > 0` and `cache.ttlSeconds: 0`, loading reports a non-fatal warning, shown by `forge-desk check`, that the sweep will not run. The configured interval is retained. With a positive TTL and interval, a sweep runs at server startup and the next starts after the previous finishes plus the interval. With zero TTL, manual launches also report `skipped` (`caching-disabled`) without upstream work.
 
 ### `preferences`
 
 `preferences.dir` is an optional normalized absolute path, default `null`, overridden by `FD_PREFERENCES_DIR`. Like `releases.stateDir`, it may not be the root or contain control characters, empty segments, `.` or `..` segments (including a trailing slash). Loading does not check or create the directory.
 
-Once project browsing ships, this is the directory for the application account's favorites and remembered project. With no directory, preferences are unavailable. With a directory but no application login (`server.basicAuth` or `FD_BASIC_AUTH`), loading reports a non-fatal warning, shown by `forge-desk check`, that preferences are unavailable. The configured directory is retained.
+This is the directory for the application account's favorites and remembered project. With no directory, preferences are unavailable. With a directory but no application login (`server.basicAuth` or `FD_BASIC_AUTH`), loading reports a non-fatal warning, shown by `forge-desk check`, that preferences are unavailable. The configured directory is retained. The server opens it only with login enabled and claims a lifetime single-writer lock. See [preference storage](DEPLOYMENT.md#personal-preferences) for Linux/local-filesystem requirements, permissions and backup/restore.
 
 ### `webhooks`
 
-Optional. Enables the webhook endpoints (`POST /api/webhooks/github` and `POST /api/webhooks/gitea`), which drop the cached snapshot of the views of a repository when the tracker reports an issue or pull-request event. Without a secret the endpoints do not exist (`404`). Setup steps: [DEPLOYMENT.md](DEPLOYMENT.md#webhooks).
+Optional. Enables the webhook endpoints (`POST /api/webhooks/github` and `POST /api/webhooks/gitea`), which invalidate named-view snapshots and project/source observations for the repository when the tracker reports an issue or pull-request event. Scope invalidation applies to every source of the endpoint's provider kind, including external dependency context; delivery starts no refresh. Without a secret the endpoints do not exist (`404`). Setup steps: [DEPLOYMENT.md](DEPLOYMENT.md#webhooks).
 
 | Key                  | Type   | Default | Description                                                                                                                                                                                       |
 | -------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
