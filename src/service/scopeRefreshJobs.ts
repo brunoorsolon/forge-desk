@@ -44,6 +44,12 @@ export interface ScopeRefreshJob {
   readonly completion: Promise<ScopeRefreshJobStatus>;
 }
 
+export interface CompletedScopeRefresh {
+  finishedAt: string;
+  /** Source invalidation epoch captured before the job began. */
+  invalidationVersion: number;
+}
+
 interface Job {
   status: ScopeRefreshJobStatus;
   units: Set<Unit>;
@@ -77,6 +83,7 @@ const isPartial = (coverage: RelationCoverage | undefined): boolean =>
 export class ScopeRefreshJobs {
   private readonly sources = new Map<string, SourceState>();
   private readonly jobs = new Map<string, Job>();
+  private readonly completed = new Map<string, CompletedScopeRefresh>();
   private readonly now: () => Date;
 
   constructor(
@@ -97,6 +104,12 @@ export class ScopeRefreshJobs {
 
   active(scope: Scope): ScopeRefreshJob | null {
     return this.jobs.get(scopeKey(this.canonicalScope(scope)))?.handle ?? null;
+  }
+
+  /** Retained for passive retry pacing, including jobs launched by a sweep. */
+  lastCompleted(scope: Scope): CompletedScopeRefresh | null {
+    const result = this.completed.get(scopeKey(this.canonicalScope(scope)));
+    return result ? { ...result } : null;
   }
 
   /** Repeated opens/checks/refreshes join the same queued or running scope job. */
@@ -149,6 +162,7 @@ export class ScopeRefreshJobs {
       units: [],
     };
     const job: Job = { status, units: new Set(), handle: undefined! };
+    const invalidationVersion = this.options.store.invalidationVersion(scope.source);
     const completion = (async () => {
       try {
         await this.runJob(source, job);
@@ -158,6 +172,7 @@ export class ScopeRefreshJobs {
         status.error = messageOf(error);
       } finally {
         status.finishedAt = this.timestamp();
+        this.completed.set(key, { finishedAt: status.finishedAt, invalidationVersion });
         this.jobs.delete(key);
         for (const unit of job.units) unit.jobs.delete(job);
       }

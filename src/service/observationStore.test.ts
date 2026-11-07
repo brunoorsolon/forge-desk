@@ -90,6 +90,21 @@ function access(store: ObservationStore, kind: 'repository' | 'outside') {
   return { begin, read, data };
 }
 
+it('keeps source-local invalidation epochs through pruning without using clock time', () => {
+  const { store, clock } = setup();
+  expect(store.invalidationVersion('Primary')).toBe(0);
+  store.invalidateRepository(project);
+  expect(store.invalidationVersion('Primary')).toBe(1);
+  expect(store.invalidationVersion('Other')).toBe(0);
+  clock('2026-11-06T09:00:00.000Z');
+  store.invalidateRepository({ source: 'Primary', repo: 'external/unlisted' });
+  store.prune(catalog(project), []);
+  expect(store.readRepository({ source: 'Primary', repo: 'external/unlisted' })).toBeUndefined();
+  expect(store.invalidationVersion('Primary')).toBe(2);
+  store.writeRepository(store.beginRepositoryRead(project), { issues: [], warnings: [] });
+  expect(store.invalidationVersion('Primary')).toBe(2);
+});
+
 describe.each(['repository', 'outside'] as const)('%s observation store', (kind) => {
   it('starts empty, captures state, and accepts sequential and in-order concurrent writes', () => {
     const { store, clock } = setup();

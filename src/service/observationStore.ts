@@ -126,6 +126,7 @@ function snapshot<T extends Observation>(
 export class ObservationStore {
   private readonly repositories = new Map<string, Entry<RepositoryObservation>>();
   private readonly outsideIssues = new Map<string, Entry<OutsideIssueObservation>>();
+  private readonly invalidations = new Map<string, number>();
   private readonly pending = new WeakMap<Read, PendingRead>();
   private nextVersion = 0;
   private nextRead = 0;
@@ -148,6 +149,11 @@ export class ObservationStore {
     return [...this.outsideIssues.values()]
       .filter((entry) => entry.observation.source === source)
       .map((entry) => snapshot(entry)!);
+  }
+
+  /** Source-local invalidation epoch, independent of pruning and wall-clock time. */
+  invalidationVersion(source: string): number {
+    return this.invalidations.get(source) ?? 0;
   }
 
   beginRepositoryRead(project: ProjectRef): RepositoryRead {
@@ -234,6 +240,7 @@ export class ObservationStore {
   /** Retains data and invalidates the listing plus outside lookups in this source/repository. */
   invalidateRepository(project: ProjectRef): void {
     const canonical = projectRef(project);
+    this.invalidations.set(canonical.source, this.invalidationVersion(canonical.source) + 1);
     this.invalidate(this.repository(canonical));
     for (const entry of this.outsideIssues.values()) {
       const { source, key } = entry.observation;

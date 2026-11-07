@@ -99,6 +99,131 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it('settles capped dependency work for one TTL, then retries or honors explicit refresh', async () => {
+    const f = fixture();
+    f.list.mockResolvedValue(
+      listing([
+        issue(
+          'o/a#1',
+          `Depends on ${Array.from({ length: 201 }, (_, n) => `ext/r#${n + 1}`).join(', ')}`,
+        ),
+      ]),
+    );
+    f.lookup.mockImplementation(async (_repo, number) => issue(`ext/r#${number}`, '', 'closed'));
+    const first = await f.service.get(project());
+    expect(first.job).toBeNull();
+    expect(first.freshness.outsideIssues).toMatchObject({ count: 201, provisionalCount: 1 });
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      const read = await f.service.get(project());
+      expect(read.job).toBeNull();
+      expect(read.freshness.outsideIssues.provisionalCount).toBe(1);
+      expect(read.snapshot?.plan.warnings.some((w) => w.code === 'dependency-provisional')).toBe(
+        true,
+      );
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.lookup).toHaveBeenCalledTimes(200);
+    vi.advanceTimersByTime(50_001);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    expect(f.list).toHaveBeenCalledTimes(2);
+    expect(f.lookup).toHaveBeenCalledTimes(400);
+    await f.service.refresh(project());
+    expect(f.list).toHaveBeenCalledTimes(3);
+    expect(f.lookup).toHaveBeenCalledTimes(600);
+  });
+
+  it('settles unvisited transitive dependencies behind a failed sibling lookup', async () => {
+    const f = fixture();
+    f.seed('o/b', [issue('o/b#1', 'Depends on ext/r#2')]);
+    vi.advanceTimersByTime(61_000);
+    f.seed('o/a', [issue('o/a#1', 'Depends on o/b#1')]);
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on o/b#1')]));
+    f.lookup.mockResolvedValue(null);
+    await f.service.refresh(project());
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      const read = await f.service.get(project());
+      expect(read.job).toBeNull();
+      expect(read.freshness.outsideIssues).toMatchObject({ count: 2, provisionalCount: 2 });
+      expect(read.snapshot?.plan.nodes.find((i) => i.key === 'o/a#1')?.status).toBe('blocked');
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.lookup.mock.calls.map(([r, n]) => `${r.owner}/${r.repo}#${n}`)).toEqual(['o/b#1']);
+  });
+
+  it('counts the retry TTL from completion rather than the start of a long partial job', async () => {
+    const f = fixture();
+    const blocked = gate();
+    f.seed('o/a');
+    f.list.mockImplementation(async () => {
+      await blocked.promise;
+      return {
+        ...listing([issue('o/a#1')]),
+        relationCoverage: { native: 'failed', subIssues: 'complete' },
+      };
+    });
+    const job = f.jobs.refresh(project());
+    await tick();
+    vi.advanceTimersByTime(70_000);
+    blocked.resolve();
+    await job.completion;
+    vi.advanceTimersByTime(59_000);
+    expect((await f.service.get(project('O/A'))).job).toBeNull();
+    expect(f.list).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1001);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    expect(f.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not defer invalidation that arrived during a job, and does not leak pacing across scopes', async () => {
+    const f = fixture();
+    const blocked = gate();
+    const ref = { source: 'gh', repo: 'o/a' };
+    f.seed('o/a');
+    f.list.mockImplementationOnce(async () => {
+      await blocked.promise;
+      return listing([issue('o/a#1')]);
+    });
+    const refresh = f.service.refresh(project());
+    await tick();
+    f.store.invalidateRepository(ref);
+    blocked.resolve();
+    await refresh;
+    expect(f.store.readRepository(ref)?.invalidated).toBe(true);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    expect((await f.service.get(project())).job).toBeNull();
+    expect(f.list).toHaveBeenCalledTimes(2);
+    await f.service.get(project('o/b'));
+    expect(f.list).toHaveBeenCalledTimes(3);
+    expect(f.list.mock.calls[2]?.[0]).toEqual({ owner: 'o', repo: 'b' });
+  });
+
+  it('paces completed partial relation reads from completion, including externally launched jobs', async () => {
+    const f = fixture();
+    f.seed('o/a', [issue('o/a#1')]);
+    vi.advanceTimersByTime(61_000);
+    f.list.mockResolvedValue({
+      ...listing([issue('o/a#1')]),
+      relationCoverage: { native: 'failed', subIssues: 'complete' },
+    });
+    await f.jobs.refresh(project(), { priority: 'sweep' }).completion;
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      const read = await f.service.get(project());
+      expect(read.job).toBeNull();
+      expect(read.freshness.repositories[0]).toMatchObject({ state: 'stale', partial: true });
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(50_001);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    expect(f.list).toHaveBeenCalledTimes(2);
+  });
+
   it('serves verified empty and populated fresh data with no upstream work', async () => {
     const f = fixture();
     f.seed('o/a');

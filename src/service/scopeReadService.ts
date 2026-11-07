@@ -248,6 +248,17 @@ export class ScopeReadService {
 
   private needsRefresh(response: ScopeResponse, source: ScopeRefreshSource): boolean {
     const scope = response.scope;
+    const completed = this.options.jobs.lastCompleted(scope);
+    // A finished scope job can leave observations stale or absent: partial
+    // relation reads, the lookup cap, and unreachable transitive dependencies.
+    // Do not restart that same work at the page's polling rate. A new invalidation
+    // bypasses the guard even when it arrived during the previous job.
+    if (
+      completed &&
+      !this.expired(completed.finishedAt) &&
+      completed.invalidationVersion === this.options.store.invalidationVersion(scope.source)
+    )
+      return false;
     const plan = this.derive(scope, source);
     if (
       source.catalog.projects.some(

@@ -1103,6 +1103,13 @@ not register HTTP routes or change named-view caching.
   data, per-repository check times, partial coverage and errors. A failed attempt
   is retried after its TTL rather than on every passive read; an explicit refresh
   can retry immediately. Failed/unavailable states remain visible during that wait.
+- A completed scope job also bounds passive retries for one TTL from completion,
+  including partial relation reads, capped lookups and dependencies the job could
+  not reach. Stale/provisional data stays visible. Jobs started outside the read
+  service use the same guard. An invalidation in the source after the job began
+  bypasses it, including invalidations during the job; explicit refresh and zero
+  TTL always bypass it. Invalidation epochs survive observation pruning and do
+  not depend on wall-clock ordering.
 - First-load and explicit refresh reads wait at most 15 seconds. Missing data
   remains a null snapshot; a successful empty listing is a real empty plan.
 - Zero TTL always waits for revalidation and only derives from that job's
