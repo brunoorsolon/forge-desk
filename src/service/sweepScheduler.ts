@@ -5,6 +5,7 @@ import type {
   SweepSourceStatus,
   SweepStatus,
 } from '../core/scope.js';
+import type { ObservationStore } from './observationStore.js';
 import type { ScopeRefreshJob, ScopeRefreshJobs } from './scopeRefreshJobs.js';
 
 export interface SweepJob {
@@ -38,6 +39,7 @@ export class SweepScheduler {
     private readonly options: {
       sources: CatalogSource[];
       jobs: Pick<ScopeRefreshJobs, 'refresh'>;
+      store: Pick<ObservationStore, 'readRepository'>;
       sweepHours: number;
       ttlSeconds: number;
       now?: () => Date;
@@ -154,7 +156,8 @@ export class SweepScheduler {
             projects: source.projects.map((project) => ({
               project: { ...project },
               state: 'queued',
-              lastCheckedAt: null,
+              lastCheckedAt:
+                this.options.store.readRepository(project)?.observation.lastCheckedAt ?? null,
               error: null,
             })),
           }));
@@ -169,8 +172,8 @@ export class SweepScheduler {
     return run.handle;
   }
 
-  /** Terminal: cancel the timer and reject new sweeps. Already admitted source jobs
-   * settle normally; the server separately closes its shared admission queues. */
+  /** Terminal: cancel the timer and reject new sweeps. Already launched source jobs
+   * finish, including queued reads; server shutdown separately closes shared queues. */
   stop(): void {
     this.stopped = true;
     this.cancelTimer();

@@ -262,7 +262,11 @@ export class ScopeRefreshJobs {
           state: 'queued',
           startedAt: null,
           finishedAt: null,
-          lastCheckedAt: null,
+          lastCheckedAt:
+            (ref.kind === 'repository'
+              ? this.options.store.readRepository(ref.project)
+              : this.options.store.readOutsideIssue({ source: ref.source, key: ref.key })
+            )?.observation.lastCheckedAt ?? null,
           partial: false,
           error: null,
         },

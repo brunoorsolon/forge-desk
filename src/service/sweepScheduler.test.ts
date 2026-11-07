@@ -73,6 +73,7 @@ function fixture(sources = [source()], options: { sweepHours?: number; ttlSecond
   const scheduler = new SweepScheduler({
     sources: sources.map((s) => s.catalog),
     jobs,
+    store,
     sweepHours: 1,
     ttlSeconds: 300,
     ...options,
@@ -167,17 +168,37 @@ describe('SweepScheduler', () => {
       if (fail && repo === 'owner/b') throw new Error('provider unavailable');
       if (fail) await hold.promise;
     });
-    const { scheduler } = fixture([a]);
+    const { scheduler, jobs } = fixture([a]);
     await scheduler.start()!.completion;
     const checkedAt = scheduler.status!.finishedAt;
     fail = true;
     await vi.advanceTimersByTimeAsync(10);
+    const refresh = vi.spyOn(jobs, 'refresh');
     const run = scheduler.sweep();
-    await tick();
-    expect(run.status.sources[0]!.projects.map((p) => p.state)).toEqual(['checking', 'checking']);
-    hold.resolve();
+    try {
+      // Route callers can read status synchronously, before source jobs exist.
+      expect(refresh).not.toHaveBeenCalled();
+      expect(run.status.sources[0]!.projects).toMatchObject([
+        { state: 'queued', lastCheckedAt: checkedAt, error: null },
+        { state: 'queued', lastCheckedAt: checkedAt, error: null },
+      ]);
+      expect(scheduler.status).toEqual(run.status);
+      await tick();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(run.status.sources[0]!.projects).toMatchObject([
+        { state: 'checking', lastCheckedAt: checkedAt, error: null },
+        { state: 'checking', lastCheckedAt: checkedAt, error: null },
+      ]);
+    } finally {
+      hold.resolve();
+    }
     const result = await run.completion;
     expect(result.state).toBe('partial');
+    expect(result.sources[0]!.projects[0]).toMatchObject({
+      state: 'checked',
+      lastCheckedAt: '2026-11-06T00:00:00.010Z',
+      error: null,
+    });
     expect(result.sources[0]!.projects[1]).toMatchObject({
       state: 'failed',
       lastCheckedAt: checkedAt,
@@ -241,13 +262,21 @@ describe('SweepScheduler', () => {
     });
     queues.push(queue);
     slow.config.queue = queue;
-    const { scheduler } = fixture([slow, good]);
+    const { scheduler, store } = fixture([slow, good]);
+    const project = { source: 'slow', repo: 'owner/a' };
+    store.writeRepository(store.beginRepositoryRead(project), { issues: [], warnings: [] });
+    const checkedAt = store.readRepository(project)!.observation.lastCheckedAt;
+    vi.setSystemTime(Date.now() + 10);
     const run = scheduler.start()!;
     await tick();
     expect(run.status.sources[0]).toMatchObject({
       state: 'delayed',
       delayedUntil: new Date(until).toISOString(),
     });
+    expect(run.status.sources[0]!.projects).toMatchObject([
+      { state: 'queued', lastCheckedAt: checkedAt },
+      { state: 'queued', lastCheckedAt: null },
+    ]);
     expect(good.calls).toHaveLength(2);
     expect(slow.calls).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(60_000);
@@ -301,23 +330,35 @@ describe('SweepScheduler', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('stops before queued startup work and does not rearm after an in-flight sweep settles', async () => {
+  it('stops before queued startup work', async () => {
     const a = source();
     const first = fixture([a]).scheduler;
     const cancelled = first.start()!;
     first.stop();
     expect((await cancelled.completion).state).toBe('failed');
     expect(a.calls).toEqual([]);
+  });
+
+  it('lets launched source jobs and joined interactive work finish queued reads after stop', async () => {
     const hold = gate(),
-      b = source('other', ['owner/a'], () => hold.promise);
-    const second = fixture([b]).scheduler;
-    const running = second.start()!;
+      a = source('gh', ['owner/a', 'owner/b', 'owner/c', 'owner/d'], () => hold.promise);
+    const { scheduler, jobs } = fixture([a]);
+    const close = vi.spyOn(a.config.queue, 'close');
+    const running = scheduler.start()!;
     await tick();
-    second.stop();
+    expect(a.calls).toEqual(['owner/a']);
+    const interactive = jobs.refresh({ kind: 'project', source: 'gh', repo: 'owner/b' });
+    scheduler.stop();
+    expect(close).not.toHaveBeenCalled();
+    expect(() => scheduler.sweep()).toThrow('stopped');
     hold.resolve();
-    await running.completion;
+    const results = await Promise.all([running.completion, interactive.completion]);
+    expect(results.every((result) => result.state === 'completed')).toBe(true);
+    expect(a.calls).toEqual(['owner/a', 'owner/b', 'owner/c', 'owner/d']);
+    // Stopping the scheduler does not take ownership of the shared queue.
+    await jobs.refresh({ kind: 'project', source: 'gh', repo: 'owner/a' }).completion;
     await vi.advanceTimersByTimeAsync(5 * HOUR);
-    expect(b.calls).toHaveLength(1);
+    expect(a.calls).toEqual(['owner/a', 'owner/b', 'owner/c', 'owner/d', 'owner/a']);
     expect(vi.getTimerCount()).toBe(0);
   });
 
