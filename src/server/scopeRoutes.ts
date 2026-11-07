@@ -123,6 +123,13 @@ export function registerScopeRoutes(
         }),
     );
   }
-  // preClose runs before Fastify waits for active HTTP requests to finish.
-  app.addHook('preClose', async () => runtime.close());
+  // Stop admission and release HTTP waiters before Fastify drains connections, but
+  // do not hold preClose open for the scope drain. Startup's release onClose hook
+  // must start its own bounded drain immediately, not after another five seconds.
+  app.addHook('preClose', async () => {
+    void runtime.close();
+  });
+  // Fastify runs onClose hooks in reverse registration order: startup's later
+  // release hook runs first, while the idempotent scope close is already draining.
+  app.addHook('onClose', async () => runtime.close());
 }

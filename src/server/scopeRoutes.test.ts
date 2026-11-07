@@ -640,6 +640,57 @@ describe('scope route authentication and runtime ownership', () => {
     expect(fetch).toHaveBeenCalledTimes(5);
   });
 
+  it.each([false, true])(
+    'keeps browsing delayed after every export format during cooldown (invalidated: %s)',
+    async (invalidated) => {
+      const appConfig = config();
+      appConfig.cache.ttlSeconds = 300;
+      appConfig.views[0]!.repos = [{ owner: 'o', repo: 'a' }];
+      appConfig.sources[0]!.planning!.dependencies.native = false;
+      appConfig.sources[0]!.planning!.dependencies.subIssues = false;
+      let throttled = false;
+      const fetch = vi.fn<FetchLike>(async () =>
+        throttled
+          ? new Response('', { status: 429, headers: { 'Retry-After': '120' } })
+          : new Response('[]'),
+      );
+      const f = setup({ config: appConfig, fetch });
+      if (invalidated) {
+        expect((await f.app.inject(`${PROJECT}/snapshot`)).statusCode).toBe(200);
+        f.runtime.store.invalidateRepository({ source: 'gh', repo: 'o/a' });
+      }
+      throttled = true;
+      await expect(f.runtime.plans.getSnapshot('roadmap')).rejects.toThrow('rate limit');
+      const calls = fetch.mock.calls.length;
+      for (const format of ['json', 'md', 'mmd', 'dot']) {
+        const downloaded = await f.app.inject(
+          `${PROJECT}/export.${format}${invalidated ? '?refresh=1' : ''}`,
+        );
+        expect(downloaded.statusCode).toBe(invalidated ? 200 : 503);
+        if (invalidated) expect(downloaded.body).toContain('stale-data');
+        else expect(downloaded.json()).toMatchObject({ code: 'scope-unavailable', snapshot: null });
+      }
+      const browsing = await f.app.inject(`${PROJECT}/snapshot`);
+      expect(browsing.statusCode).toBe(200);
+      expect(browsing.json()).toMatchObject({
+        job: { state: 'queued', delayedUntil: '2026-01-01T00:02:00.000Z' },
+        freshness: {
+          repositories: [{ state: 'delayed', delayedUntil: '2026-01-01T00:02:00.000Z' }],
+        },
+      });
+      expect(fetch).toHaveBeenCalledTimes(calls);
+      throttled = false;
+      await vi.advanceTimersByTimeAsync(120_000);
+      const refreshed = await f.app.inject(`${PROJECT}/snapshot`);
+      expect(refreshed.json()).toMatchObject({
+        snapshot: { viewId: 'project:gh/o/a' },
+        job: null,
+        freshness: { repositories: [{ state: 'fresh' }] },
+      });
+      expect(fetch).toHaveBeenCalledTimes(calls + 1);
+    },
+  );
+
   it('closes admission from app.close before draining a stalled request and bounds shutdown', async () => {
     const appConfig = config();
     appConfig.sources[0]!.planning!.dependencies.native = false;

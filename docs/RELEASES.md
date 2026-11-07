@@ -106,7 +106,7 @@ Planning-only containers take no lock and can run as many replicas as you like a
 
 ## Shutdown, restart and recovery
 
-`SIGTERM` (a normal `docker compose stop` or `docker stop`) stops admitting release work, waits up to five seconds for accepted work, then releases the locks. Work that outlives that bound keeps both locks until it ends; the container's stop grace period must outlast that drain (the default 10 s does; a shorter `stop_grace_period` may force termination). A forced termination leaves the durable intent as the record the next start reconciles, and the logs report the work that was still running.
+`SIGTERM` (a normal `docker compose stop` or `docker stop`) stops admitting release work, waits up to five seconds for accepted work, then releases the locks. Work that outlives that bound keeps both locks until it ends; the container's stop grace period must outlast that drain (the default 10 s does; a shorter `stop_grace_period` may force termination). Scope fetches drain concurrently with release work, rather than adding a separate five-second wait before release shutdown. A forced termination leaves the durable intent as the record the next start reconciles, and the logs report the work that was still running.
 
 On restart:
 

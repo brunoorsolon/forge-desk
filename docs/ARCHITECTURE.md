@@ -1154,7 +1154,9 @@ pacing. Named views and the CLI keep their existing behavior.
 
 The runtime owns the observation store, scope refresh jobs and cache-first reads. Scope exports
 use a separate coalescing job lane without admission pacing, sharing the same providers and store.
-A cached export does no I/O. Read services account for both job lanes before pruning observations,
+Export cooldown rejections do not become failed shared observations, so later paced browsing can
+retry when the cooldown expires. A cached export does no I/O. Read services account for both job
+lanes before pruning observations,
 so one lane cannot retire another lane's in-flight observation token. `cached(scope)` reads without
 scheduling work; it still recomputes freshness from the current clock and observations.
 
@@ -1164,8 +1166,11 @@ headers, maps scope identity/policy/cooldown errors, redacts configured source t
 scope errors, and adds warnings to scope exports without changing the existing exporters.
 
 The scope module's `preClose` hook runs before Fastify drains HTTP connections: it closes the read
-services (releasing first-load waiters), stops admission, abandons queued requests and waits up to
-five seconds for admitted fetches in flight. Repeated close is idempotent. Startup failure closes
+services (releasing first-load waiters), stops admission and abandons queued requests immediately.
+It starts the bounded five-second drain of admitted fetches without awaiting it in `preClose`.
+The scope `onClose` hook awaits that same idempotent drain. Fastify runs `onClose` hooks in reverse
+registration order, so startup’s later release-ownership hook starts its own drain while scope
+fetches are still draining, rather than adding another five seconds. Startup failure closes
 the runtime as well. Integration tests use real providers with fake fetch responses to verify
 shared conditional requests/cooldowns, configured pacing, source isolation, unpaced exports and
 named views, and bounded shutdown. Browser integration belongs to the navigation/refresh delivery.
