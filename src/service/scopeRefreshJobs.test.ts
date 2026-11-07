@@ -142,6 +142,29 @@ describe('scope refresh jobs', () => {
     vi.useRealTimers();
   });
 
+  it('retains a detached set of completed unit keys, including failed lookups', async () => {
+    const f = fixture((path) =>
+      path === '/repos/owner/a'
+        ? json(listing([issue('owner/a#1', 'Depends on other/lib#1')]))
+        : path === '/repos/owner/b'
+          ? json(listing())
+          : json(null),
+    );
+    const { jobs } = service(f.input);
+    expect(jobs.lastCompleted(project())).toBeNull();
+    await jobs.refresh(project()).completion;
+    const completed = jobs.lastCompleted(project())!;
+    expect(completed.unitKeys).toEqual(['repository:owner/a', 'outside-issue:other/lib#1']);
+    completed.unitKeys.length = 0;
+    expect(jobs.lastCompleted(project())?.unitKeys).toEqual([
+      'repository:owner/a',
+      'outside-issue:other/lib#1',
+    ]);
+    await jobs.refresh(project('owner/b')).completion;
+    expect(jobs.lastCompleted(project('owner/b'))?.unitKeys).toEqual(['repository:owner/b']);
+    expect(jobs.lastCompleted(project())?.unitKeys).toHaveLength(2);
+  });
+
   it('lists only the project and resolves outside dependencies breadth-first with policy options', async () => {
     const first = issue('other/lib#1', 'Blocked by: other/lib#3');
     first.nativeRelations = [

@@ -46,6 +46,8 @@ export interface ScopeRefreshJob {
 
 export interface CompletedScopeRefresh {
   finishedAt: string;
+  /** Source-local unit keys attempted by this job, including joined work. */
+  unitKeys: string[];
 }
 
 interface Job {
@@ -107,7 +109,7 @@ export class ScopeRefreshJobs {
   /** Retained for passive retry pacing, including jobs launched by a sweep. */
   lastCompleted(scope: Scope): CompletedScopeRefresh | null {
     const result = this.completed.get(scopeKey(this.canonicalScope(scope)));
-    return result ? { ...result } : null;
+    return result ? { ...result, unitKeys: [...result.unitKeys] } : null;
   }
 
   /** Repeated opens/checks/refreshes join the same queued or running scope job. */
@@ -169,7 +171,10 @@ export class ScopeRefreshJobs {
         status.error = messageOf(error);
       } finally {
         status.finishedAt = this.timestamp();
-        this.completed.set(key, { finishedAt: status.finishedAt });
+        this.completed.set(key, {
+          finishedAt: status.finishedAt,
+          unitKeys: [...job.units].map((unit) => unit.key),
+        });
         this.jobs.delete(key);
         for (const unit of job.units) unit.jobs.delete(job);
       }

@@ -1,5 +1,7 @@
 import type {
   ObservationMetadata,
+  RepositoryObservation,
+  OutsideIssueObservation,
   Scope,
   ScopeResponse,
   RepositoryFreshness,
@@ -249,7 +251,9 @@ export class ScopeReadService {
   private needsRefresh(response: ScopeResponse, source: ScopeRefreshSource): boolean {
     const scope = response.scope;
     const plan = this.derive(scope, source);
-    const records: (StoredObservation<ObservationMetadata> | undefined)[] = source.catalog.projects
+    const records: (
+      StoredObservation<RepositoryObservation | OutsideIssueObservation> | undefined
+    )[] = source.catalog.projects
       .filter((project) => scope.kind === 'source' || project.repo.toLowerCase() === scope.repo)
       .map((project) => this.options.store.readRepository(project));
     for (const key of plan.contextIssues) {
@@ -275,11 +279,18 @@ export class ScopeReadService {
     // that work, but never mistake joining a pre-webhook read for checking the
     // invalidation. Only this scope's roots and effective context can bypass the
     // guard; unrelated repository webhooks must not restart its capped work.
-    const uncheckedInvalidation = records.some(
-      (record) =>
-        record?.invalidated &&
-        record.failedGeneration !== record.observation.invalidationGeneration,
-    );
+    // Only attempted units can demand an immediate recheck. A capped or
+    // unreachable dependency cannot be cleared by repeating that same job.
+    const attempted = new Set(completed?.unitKeys);
+    const uncheckedInvalidation = records.some((record) => {
+      if (!record?.invalidated) return false;
+      const observation = record.observation;
+      const key =
+        'project' in observation
+          ? `repository:${observation.project.repo}`
+          : `outside-issue:${observation.key}`;
+      return attempted.has(key) && record.failedGeneration !== observation.invalidationGeneration;
+    });
     if (completed && !this.expired(completed.finishedAt) && !uncheckedInvalidation) return false;
     return records.some((record) => this.retryDue(record, source));
   }

@@ -99,6 +99,83 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it('paces an invalidated transitive target unreachable behind a failed lookup', async () => {
+    const f = fixture();
+    f.list.mockImplementation(async ({ repo }) =>
+      listing([issue(`o/${repo}#1`, repo === 'a' ? 'Depends on o/b#1' : 'Depends on ext/r#2')]),
+    );
+    f.lookup.mockImplementation(async (repo, number) =>
+      repo.owner === 'ext' ? issue(`ext/r#${number}`, '', 'closed') : null,
+    );
+    await f.service.refresh(project('o/b'));
+    await f.service.refresh(project());
+    expect(f.lookup.mock.calls.map(([r, n]) => `${r.owner}/${r.repo}#${n}`)).toEqual([
+      'ext/r#2',
+      'o/b#1',
+    ]);
+    f.store.invalidateRepository({ source: 'gh', repo: 'ext/r' });
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      const read = await f.service.get(project());
+      expect(read.job).toBeNull();
+      expect(read.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+        'blocked',
+      );
+      expect(read.freshness.outsideIssues.provisionalCount).toBeGreaterThan(0);
+    }
+    expect(f.list).toHaveBeenCalledTimes(2);
+    expect(f.lookup).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(50_001);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      expect((await f.service.get(project())).job).toBeNull();
+    }
+    expect(f.list).toHaveBeenCalledTimes(3);
+    expect(f.lookup).toHaveBeenCalledTimes(3);
+    expect(f.store.readOutsideIssue({ source: 'gh', key: 'ext/r#2' })?.invalidated).toBe(true);
+    await f.service.refresh(project());
+    expect(f.list).toHaveBeenCalledTimes(4);
+    expect(f.lookup).toHaveBeenCalledTimes(4);
+    expect((await f.service.get(project())).job).toBeNull();
+  });
+
+  it('settles an invalidated dependency beyond the lookup cap until the next TTL', async () => {
+    const f = fixture();
+    const dependencies = Array.from({ length: 201 }, (_, n) => `ext/r#${n + 1}`).join(', ');
+    f.list.mockImplementation(async ({ repo }) =>
+      listing([issue(`o/${repo}#1`, `Depends on ${repo === 'a' ? dependencies : 'ext/r#201'}`)]),
+    );
+    f.lookup.mockImplementation(async (_repo, number) => issue(`ext/r#${number}`, '', 'closed'));
+    await f.service.refresh(project('o/b'));
+    await f.service.refresh(project());
+    expect(f.lookup).toHaveBeenCalledTimes(201);
+    f.store.invalidateRepository({ source: 'gh', repo: 'ext/r' });
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      expect((await f.service.get(project())).job).toBeNull();
+    }
+    expect(f.list).toHaveBeenCalledTimes(3);
+    expect(f.lookup).toHaveBeenCalledTimes(401);
+    expect(f.store.readOutsideIssue({ source: 'gh', key: 'ext/r#201' })?.invalidated).toBe(true);
+    expect(f.store.readOutsideIssue({ source: 'gh', key: 'ext/r#1' })?.invalidated).toBe(false);
+    vi.advanceTimersByTime(50_001);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    expect((await f.service.get(project())).job).toBeNull();
+    expect(f.list).toHaveBeenCalledTimes(4);
+    expect(f.lookup).toHaveBeenCalledTimes(601);
+    // A new webhook on a reachable target still bypasses pacing immediately.
+    f.store.invalidateRepository({ source: 'gh', repo: 'ext/r' });
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await f.jobs.active(project())?.completion;
+    expect((await f.service.get(project())).job).toBeNull();
+    expect(f.lookup).toHaveBeenCalledTimes(801);
+  });
+
   it.each(['success', 'failed'] as const)(
     'rechecks invalidated listings joined after the webhook, despite an old %s result',
     async (outcome) => {

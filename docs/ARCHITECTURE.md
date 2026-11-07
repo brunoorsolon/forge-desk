@@ -1110,11 +1110,14 @@ not register HTTP routes or change named-view caching.
   including partial relation reads, capped lookups and dependencies the job could
   not reach. Stale/provisional data stays visible. Jobs started outside the read
   service use the same guard. An unchecked invalidation in the scope's own
-  repository observations or effective dependency context bypasses it, including
-  when a job joined a read that began before the webhook. A failed check in the
-  current invalidation generation remains paced; a newer invalidation retries
-  immediately. Unrelated repository webhooks do not bypass this scope's guard.
-  Explicit refresh and zero TTL always bypass it.
+  repository observations or effective dependency context bypasses it only if the
+  completed job attempted that unit, including when it joined a read that began
+  before the webhook. Capped or unreachable invalidated dependencies wait for the
+  normal one-TTL retry instead of repeatedly restarting work that cannot clear
+  them. A failed check in the current invalidation generation remains paced; a
+  newer invalidation of an attempted unit retries immediately. Unrelated repository
+  webhooks do not bypass this scope's guard. Explicit refresh and zero TTL always
+  bypass it.
 - First-load and explicit refresh reads wait at most 15 seconds. Missing data
   remains a null snapshot; a successful empty listing is a real empty plan.
 - Zero TTL always waits for revalidation and only derives from that job's
