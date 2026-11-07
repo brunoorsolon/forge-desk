@@ -1174,3 +1174,30 @@ fetches are still draining, rather than adding another five seconds. Startup fai
 the runtime as well. Integration tests use real providers with fake fetch responses to verify
 shared conditional requests/cooldowns, configured pacing, source isolation, unpaced exports and
 named views, and bounded shutdown. Browser integration belongs to the navigation/refresh delivery.
+
+## Project-first web navigation
+
+`web/src/main.ts` loads `/api/projects` and mounts the project sidebar, scope heading and scope
+state panels alongside the existing planning views. Bare visits use `resolveStartup`; until
+preference wiring supplies an authenticated read, an explicit unavailable preference result
+selects the configured source fallback and leaves stars read-only. Explicit named-view and
+release links keep their previous endpoints and behavior. Catalog failures do not prevent
+opening a named view.
+
+Scope requests use the project/source snapshot endpoints. `scope-navigation.ts` owns one lane
+for the open scope, coalesces pending reads and rejects late responses after navigation, including
+a return to the same scope. Active jobs repeat a read two seconds after each response. The
+configured `ui.refreshMinutes` schedules freshness reads for the open scope, with zero disabling
+that periodic timer. Hidden tabs and the Releases area suspend scope checks; returning checks
+once and resumes the active-job/periodic schedule. No unopened project is polled.
+
+Scope switching clears the query and selection while retaining tab/sort. Repeated selection
+of the current scope is inert. A no-data scope gets its explicit loading, delayed, unavailable,
+missing-catalog or policy-conflict panel; last-good data remains visible on a transient failure.
+Only a successfully loaded zero-node snapshot is presented as an empty scope. Preference saves
+and refresh mutations are separate wiring tasks, so no control implies those operations work yet.
+
+`scope-navigation.test.ts` covers request scheduling, races, hidden-tab recovery and panel mapping.
+`scripts/check-navigation-browser.mjs` drives the built app in Chromium against real HTTP scope
+routes and controlled upstream fixtures, recording desktop/narrow PNGs and its assertions in the
+CI `navigation-browser-evidence` artifact. It does not contact a live forge or publish releases.
