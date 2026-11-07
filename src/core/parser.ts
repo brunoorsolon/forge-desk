@@ -69,8 +69,8 @@ function buildKeywords(config: KeywordConfig): KeywordEntry[] {
 
 interface AllowedWebRoot {
   host: string;
-  /** Lowercased path prefix without leading/trailing `/`, or `null` when any path prefix is allowed. */
-  subpath: string | null;
+  /** Lowercased path prefix without leading/trailing `/`; empty for a root-hosted source. */
+  subpath: string;
 }
 
 function parseWebRoots(webHosts: readonly string[] | undefined): AllowedWebRoot[] {
@@ -93,7 +93,7 @@ function parseWebRoots(webHosts: readonly string[] | undefined): AllowedWebRoot[
     if (trimmed === '') continue;
     const slash = trimmed.indexOf('/');
     if (slash < 0) {
-      out.push({ host: trimmed, subpath: null });
+      out.push({ host: trimmed, subpath: '' });
     } else {
       const host = trimmed.slice(0, slash);
       const subpath = trimmed.slice(slash + 1).replace(/^\/+/, '');
@@ -110,12 +110,24 @@ function matchesWebRoot(
 ): boolean {
   const host = rawHost.toLowerCase();
   const subpath = (rawSubpath ?? '').replace(/^\/+|\/+$/g, '').toLowerCase();
-  return roots.some((r) => r.host === host && (r.subpath === null || r.subpath === subpath));
+  return roots.some((r) => r.host === host && r.subpath === subpath);
 }
 
 interface LineState {
   inComment: boolean;
   codeSpanEnd: { line: number; col: number } | null;
+}
+
+/** Markdown indentation uses four-column tab stops, including inside list containers. */
+function bodyLines(body: string): string[] {
+  return body.split(/\r\n|\r|\n/).map((line) => {
+    let column = 0;
+    return line.replace(/[^\t]+|\t/g, (part) => {
+      const width = part === '\t' ? 4 - (column % 4) : part.length;
+      column += width;
+      return part === '\t' ? ' '.repeat(width) : part;
+    });
+  });
 }
 
 function findBacktickClose(line: string, start: number, length: number): number {
@@ -142,22 +154,49 @@ function isFenceOpenLine(raw: string): { char: string; length: number } | null {
   return { char: marker[0]!, length: marker.length };
 }
 
+function listItemContent(raw: string): {
+  text: string;
+  listIndent: number;
+  itemIndent: number | null;
+} {
+  let text = raw;
+  let listIndent = 0;
+  let itemIndent: number | null = null;
+  for (;;) {
+    const item = INLINE_LIST_ITEM_RE.exec(text);
+    if (item === null) break;
+    itemIndent = listIndent + item[1]!.length;
+    listIndent += item[0].length;
+    text = text.slice(item[0].length);
+  }
+  return { text, listIndent, itemIndent };
+}
+
 function isInlineBlockBoundary(raw: string, openingLine: string): boolean {
+  const openingItem = listItemContent(openingLine);
+  // Markdown block indentation is relative to the containing list item.
+  const block = raw.startsWith(' '.repeat(openingItem.listIndent))
+    ? raw.slice(openingItem.listIndent)
+    : raw;
   const nextItem = INLINE_LIST_ITEM_RE.exec(raw);
-  const openingItem = INLINE_LIST_ITEM_RE.exec(openingLine);
+  const nestedItem = INLINE_LIST_ITEM_RE.exec(block);
   // A sibling item ends an existing list paragraph regardless of its number.
   // To interrupt ordinary paragraph text, a new ordered list must start at 1
   // and its first item (like a bullet item) must have nonblank content.
   const listBoundary =
-    nextItem !== null &&
-    ((openingItem !== null && nextItem[1]!.length <= openingItem[1]!.length) ||
-      ((nextItem[2] === undefined || Number(nextItem[2]) === 1) &&
-        /\S/.test(raw.slice(nextItem[0].length))));
+    (nextItem !== null &&
+      openingItem.itemIndent !== null &&
+      nextItem[1]!.length <= openingItem.itemIndent) ||
+    (nestedItem !== null &&
+      (nestedItem[2] === undefined || Number(nestedItem[2]) === 1) &&
+      /\S/.test(block.slice(nestedItem[0].length)));
   return (
-    /^\s*$/.test(raw) ||
-    isFenceOpenLine(raw) !== null ||
-    /^\s*>/.test(raw) ||
-    HEADING_RE.test(raw) ||
+    /^\s*$/.test(block) ||
+    isFenceOpenLine(block) !== null ||
+    /^\s*>/.test(block) ||
+    HEADING_RE.test(block) ||
+    THEMATIC_BREAK_RE.test(block) ||
+    SETEXT_UNDERLINE_RE.test(block) ||
     listBoundary
   );
 }
@@ -255,6 +294,26 @@ const HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]+(.*))?$/;
 const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
 /** List items for inline block boundaries, including CommonMark's 1–9 digit limit. */
 const INLINE_LIST_ITEM_RE = /^( {0,3})(?:[-*+]|(\d{1,9})[.)])(?:[ \t]+|$)/;
+const THEMATIC_BREAK_RE = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/;
+const SETEXT_UNDERLINE_RE = /^ {0,3}(?:=+|-+)[ \t]*$/;
+
+/** Fences and quotes may start at the content of one or more nested list items. */
+function closingBlockContent(
+  lines: readonly string[],
+  lineIndex: number,
+): { text: string; listIndent: number } {
+  const raw = lines[lineIndex]!;
+  const content = listItemContent(raw);
+  // Ordinary prose/list text needs no paragraph lookbehind here.
+  if (content.listIndent === 0 || !/^\s*(?:>|`{3,}|~{3,})/.test(content.text)) {
+    return { text: raw, listIndent: 0 };
+  }
+  const openingLine = inlineParagraphOpeningLine(lines, lineIndex);
+  if (isInlineBlockBoundary(raw, openingLine)) {
+    return content;
+  }
+  return { text: raw, listIndent: 0 };
+}
 
 /**
  * A relation line: `Blocked by: [...]` or `Parent: [...]`, optionally after a list
@@ -338,7 +397,7 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
   const lineState: LineState = { inComment: false, codeSpanEnd: null };
   let fence: { char: string; length: number } | null = null;
   let section: Kind | null = null;
-  const lines = body.split(/\r\n|\r|\n/);
+  const lines = bodyLines(body);
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const raw = lines[lineIndex]!;
@@ -420,20 +479,26 @@ export function parseClosingIssues(body: string, options: ClosingParseOptions = 
 
   const found = new Map<string, IssueRef>();
   const lineState: LineState = { inComment: false, codeSpanEnd: null };
-  let fence: { char: string; length: number } | null = null;
-  const lines = body.split(/\r\n|\r|\n/);
+  let fence: { char: string; length: number; listIndent: number } | null = null;
+  const lines = bodyLines(body);
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const raw = lines[lineIndex]!;
+    // A list-contained code block ends with its item, even without a closing fence.
+    if (fence && raw.trim() !== '' && /^ */.exec(raw)![0].length < fence.listIndent) {
+      fence = null;
+    }
     if (fence) {
-      const close = FENCE_CLOSE_RE.exec(raw);
+      const close = FENCE_CLOSE_RE.exec(raw.slice(fence.listIndent));
       if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
       continue;
     }
     if (!lineState.inComment && lineState.codeSpanEnd === null) {
-      const opened = isFenceOpenLine(raw);
+      const block = closingBlockContent(lines, lineIndex);
+      if (/^\s*>/.test(block.text)) continue;
+      const opened = isFenceOpenLine(block.text);
       if (opened) {
-        fence = opened;
+        fence = { ...opened, listIndent: block.listIndent };
         continue;
       }
     }

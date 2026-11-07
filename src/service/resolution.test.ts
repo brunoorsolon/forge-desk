@@ -260,7 +260,7 @@ describe('pure resolution', () => {
       webUrl: 'https://example.com/gitea',
     };
     const input = resolvePlanInput(
-      [root],
+      [root, issue(2, 'Blocked by: [https://example.com/gitea/a/r/issues/1]')],
       new Map(),
       subpathSettings,
       [],
@@ -293,6 +293,49 @@ describe('pure resolution', () => {
           url: 'https://example.com/gitea/a/r/pulls/10',
         },
       },
+    ]);
+    expect(input.edges).toEqual([{ from: 'a/r#1', to: 'a/r#2', sources: ['body'] }]);
+  });
+
+  it.each(['---', '***', '___', '===', '=', '-'])(
+    'retains prerequisite edges after a %s Markdown block boundary',
+    (boundary) => {
+      const dependent = issue(2, ['Note `a', boundary, 'Blocked by: [#1]', 'b` end'].join('\n'));
+      const plan = buildPlan(
+        resolvePlanInput([issue(1), dependent], new Map(), {
+          ...settings,
+          dependencies: { ...settings.dependencies, body: 'strict' },
+        }),
+      );
+      expect(plan.edges).toEqual([{ from: 'a/r#1', to: 'a/r#2', sources: ['body'] }]);
+      expect(plan.nodes.find((node) => node.key === 'a/r#2')?.status).toBe('blocked');
+    },
+  );
+
+  it('rejects extra URL path prefixes for both dependencies and closing PRs on root-hosted sources', () => {
+    const invalidUrl = 'https://web.test/x/y/a/r/issues/1';
+    const plan = buildPlan(
+      resolvePlanInput(
+        [issue(1), issue(2, `Blocked by: [${invalidUrl}]`)],
+        new Map(),
+        settings,
+        [],
+        [
+          {
+            key: 'a/r#10',
+            repo: { owner: 'a', repo: 'r' },
+            number: 10,
+            title: 'An unrelated URL',
+            url: 'https://web.test/a/r/pull/10',
+            body: `Closes ${invalidUrl}`,
+          },
+        ],
+      ),
+    );
+    expect(plan.edges).toEqual([]);
+    expect(plan.nodes.map((node) => [node.key, node.status, node.closingPullRequests])).toEqual([
+      ['a/r#1', 'ready', []],
+      ['a/r#2', 'ready', []],
     ]);
   });
 });

@@ -944,6 +944,93 @@ describe('parseClosingIssues', () => {
     expect(parseClosingIssues(body, HOSTS)).toEqual(['#2'].map(issueRef));
   });
 
+  it.each(['-', '*', '+', '1.', '2.', '1)', '- 1.', '1. -'])(
+    'ignores fenced code and blockquotes after the %s list marker',
+    (marker) => {
+      const indent = ' '.repeat(marker.length + 1);
+      for (const fence of ['```', '~~~']) {
+        const body = [
+          `${marker} ${fence}`,
+          `${indent}Closes #1`,
+          `${indent}${fence}`,
+          '',
+          'Fixes #2',
+        ].join('\n');
+        expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+      }
+      expect(parseClosingIssues(`${marker} > Closes #1\n\nFixes #2`, HOSTS)).toEqual([
+        issueRef('#2'),
+      ]);
+    },
+  );
+
+  it('ends a list-contained fence when the containing item ends', () => {
+    expect(parseClosingIssues('- ```\n  Closes #1\n- Fixes #2', HOSTS)).toEqual([issueRef('#2')]);
+    expect(parseClosingIssues('1. ~~~\n   Closes #1\n\nFixes #2', HOSTS)).toEqual([issueRef('#2')]);
+  });
+
+  it.each([
+    { marker: '-\t', indent: '\t' },
+    { marker: '1.\t', indent: '\t' },
+    { marker: '-\t-\t', indent: '\t\t' },
+  ])('uses Markdown tab stops for the $marker list container', ({ marker, indent }) => {
+    for (const fence of ['```', '~~~']) {
+      const body = [
+        `${marker}${fence}`,
+        `${indent}Closes #1`,
+        `${indent}${fence}`,
+        '',
+        'Fixes #2',
+      ].join('\n');
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    }
+    const dependencyBody = [
+      `${marker}Note \`a`,
+      `${indent}---`,
+      `${indent}Blocked by: [#1]`,
+      `${indent}b\` end`,
+    ].join('\n');
+    expect(parseBodyRelations(dependencyBody, { strict: true })).toEqual([rel('b:#1')]);
+  });
+
+  it.each(['---', '***', '___', '* * *', '_ _ _', '- - -', '===', '=', '-', '  --  '])(
+    'does not pair backticks across the %s thematic break or setext underline',
+    (boundary) => {
+      const closingBody = ['`a', boundary, 'Closes #1 b`', 'Fixes #2'].join('\n');
+      expect(parseClosingIssues(closingBody, HOSTS)).toEqual(['#1', '#2'].map(issueRef));
+      const dependencyBody = ['Note `a', boundary, 'Blocked by: [#1]', 'b` end'].join('\n');
+      expect(parseBodyRelations(dependencyBody, { strict: true })).toEqual([rel('b:#1')]);
+    },
+  );
+
+  it.each(['    ---', '    ===', '**', '__', '= = =', '-_-'])(
+    'retains %s paragraph continuation inside a multiline inline code span',
+    (continuation) => {
+      const body = ['`a', continuation, 'Closes #1 b`', 'Fixes #2'].join('\n');
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    },
+  );
+
+  it.each(['- -', '1. -', '10. 1.'])(
+    'recognizes thematic breaks and setext underlines relative to the %s list container',
+    (marker) => {
+      const indent = ' '.repeat(marker.length + 1);
+      for (const boundary of ['---', '***', '___', '===', '=', '-']) {
+        const body = [
+          `${marker} Note \`a`,
+          `${indent}${boundary}`,
+          `${indent}Closes #1 b\``,
+          '',
+          'Fixes #2',
+        ].join('\n');
+        expect(parseClosingIssues(body, HOSTS)).toEqual(['#1', '#2'].map(issueRef));
+        expect(
+          parseBodyRelations(body.replace('Closes #1', 'Blocked by: [#1]'), { strict: true }),
+        ).toEqual([rel('b:#1')]);
+      }
+    },
+  );
+
   it.each(['2.', '2)', '0.', '42.', '0002.', '1234567890.', '    1.'])(
     'keeps %s continuation text inside a multiline inline code span',
     (marker) => {
@@ -992,12 +1079,12 @@ describe('parseClosingIssues', () => {
     expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
   });
 
-  it('recognizes issue URLs on subpath-hosted forges for both bare hosts and configured prefixes', () => {
+  it('recognizes subpath-hosted issue URLs only for their configured prefix', () => {
     expect(
       parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
         webHosts: ['example.com'],
       }),
-    ).toEqual([issueRef('a/r#1')]);
+    ).toEqual([]);
     expect(
       parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
         webHosts: ['example.com/gitea'],
@@ -1024,4 +1111,29 @@ describe('parseClosingIssues', () => {
       }),
     ).toEqual([]);
   });
+
+  it.each(['example.com', 'https://example.com', 'example.com/'])(
+    'accepts only root issue URLs when the configured web root is %s',
+    (webRoot) => {
+      const options = { webHosts: [webRoot] };
+      expect(parseClosingIssues('Closes https://example.com/a/r/issues/1', options)).toEqual([
+        issueRef('a/r#1'),
+      ]);
+      expect(parseClosingIssues('Closes https://example.com/x/y/a/r/issues/1', options)).toEqual(
+        [],
+      );
+      expect(
+        parseBodyRelations('Blocked by: [https://example.com/x/y/a/r/issues/1]', {
+          ...options,
+          strict: true,
+        }),
+      ).toEqual([]);
+      expect(
+        parseBodyRelations('Blocked by: [https://example.com/a/r/issues/1]', {
+          ...options,
+          strict: true,
+        }),
+      ).toEqual([rel('b:a/r#1')]);
+    },
+  );
 });
