@@ -139,6 +139,8 @@ Same response as the snapshot endpoint (always `200` with a body, `ETag` header)
 
 Receivers for the tracker's webhooks: a verified delivery drops the cached snapshot of every view whose repositories include the repository named in the payload, so the next request refetches. They exist only when a webhook secret is configured (`webhooks` in the config, or `FD_WEBHOOK_SECRET`); otherwise they answer `404` like any unknown path. Setup: [DEPLOYMENT.md](DEPLOYMENT.md#webhooks).
 
+For project/source browsing, the delivery also invalidates the repository's observations in every configured source of the endpoint's provider kind (GitHub or Gitea/Forgejo), including targeted outside issues. Derived plans using those observations, including All projects and external dependency context, show stale data until rechecked. Delivery itself starts no upstream work; the next read of an affected scope refreshes it. A fetch started before the delivery cannot clear its invalidation. The response's `invalidated` list still contains only named-view IDs, and named-view matching is unchanged.
+
 - **Authentication** is the signature, not basic auth: these two `POST` paths (and nothing else) are exempt from basic auth. The signature is the HMAC-SHA256 of the raw request body, keyed with the secret, compared in constant time.
   - `/api/webhooks/github`: header `X-Hub-Signature-256: sha256=<hex>`.
   - `/api/webhooks/gitea`: header `X-Gitea-Signature: <hex>` or `X-Forgejo-Signature: <hex>` (plain hex, no prefix), or `X-Hub-Signature-256: sha256=<hex>` (Gitea and Forgejo send that one too). One valid signature is enough.

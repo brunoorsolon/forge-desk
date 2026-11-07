@@ -524,7 +524,7 @@ export function buildApp(
   if (releaseMount !== null) registerReleaseRoutes(app, config, releaseMount);
 
   // --- webhooks (only with a configured secret; otherwise the routes do not exist) ---
-  if (webhooks !== null) registerWebhooks(app, webhooks.secret, service);
+  if (webhooks !== null) registerWebhooks(app, webhooks.secret, service, opts.scopes);
 
   // --- static UI ---
   // Files are resolved per request (wildcard), so a rebuilt `dist/web` with new hashed asset names
