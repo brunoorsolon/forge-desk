@@ -31,7 +31,35 @@ Construct `SweepScheduler` with the configured catalog, the shared
 The optional clock and timer allow deterministic service tests. The default
 one-shot timer is unreferenced and never keeps a process alive on its own.
 
-This module is the scheduler service from issue #187. Server startup/shutdown and
-GET/POST sweep route wiring belong to issue #191 and are not installed by this
-module. Service tests exercise the real scope jobs, observation store and queues
-with fake provider fetches; they do not claim browser or live-forge validation.
+## HTTP routes and server lifecycle
+
+`startServer` constructs one scheduler using the shared scope runtime, then starts
+it after the HTTP listener succeeds. A positive `refresh.sweepHours` starts an
+immediate sweep without a browser; zero disables scheduled sweeps but leaves
+manual launches available. Closing the app stops the scheduler before the shared
+scope queues stop admission and finish their bounded drain. `buildApp` accepts an
+optional startup-owned `sweeps` instance and does not start it implicitly.
+
+- `POST /api/refresh` returns `200` with the newly started or joined sweep status.
+  It never waits for a sweep to finish or for a provider cooldown. Concurrent
+  launches join the current sweep with its original ID, trigger and start time.
+- `GET /api/refresh` returns `200` with the current or most recent sweep status,
+  or JSON `null` before any sweep. It includes start/finish times, each source's
+  status, conflicts and cooldowns, and project states, check times and errors.
+- Reads use ordinary planning authentication. Launches use the shared
+  `refresh-launch` protection: `x-forge-desk-request: 1` for every caller, a
+  matching Origin when supplied, and the configured planning login when enabled.
+  Session callers also need an Origin and their session's `x-csrf-token` from
+  `/api/session`. Basic scripts send no session cookie. A configured
+  `server.publicOrigin` takes precedence over Host behind a proxy.
+- Without login, launches still require the launch header and reject foreign
+  Origins or mixed session/Authorization credentials. Rejections use `401`
+  `unauthenticated` or `403` `forbidden-origin`, `missing-csrf`, `invalid-csrf`,
+  `mixed-credentials` or `missing-launch-header`. Rejected launches start no work.
+- Both routes use `Cache-Control: no-store`, redact configured provider tokens
+  from status errors, and send no CORS headers.
+
+Service and HTTP injection tests exercise the real scope jobs, observation store,
+queues and scheduler with controlled providers and clocks. Startup tests run the
+actual listener and fixture provider, including interval scheduling and close.
+These tests do not claim browser or live-forge validation.

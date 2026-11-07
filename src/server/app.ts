@@ -24,6 +24,8 @@ import { registerReleaseRoutes, releaseRouteError, type ReleaseMount } from './r
 import type { ScopeRuntime } from '../service/scopeRuntime.js';
 import { registerScopeRoutes } from './scopeRoutes.js';
 import { isScopeRefreshPath, registerScopeRefreshRoutes } from './scopeRefreshRoutes.js';
+import type { SweepScheduler } from '../service/sweepScheduler.js';
+import { isSweepLaunchRequest, registerSweepRoutes } from './sweepRoutes.js';
 import { registerWebhooks, WEBHOOK_PATHS } from './webhooks.js';
 
 export interface BuildAppOptions {
@@ -40,6 +42,8 @@ export interface BuildAppOptions {
   preferences?: PreferenceRuntime;
   /** Startup-owned shared planning and scope services. */
   scopes?: ScopeRuntime;
+  /** Startup-owned all-source scheduler; buildApp never starts it implicitly. */
+  sweeps?: SweepScheduler;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -355,6 +359,7 @@ export function buildApp(
       // Preference routes own their shared access check, including mixed credentials.
       if (isPreferencePath(pathname)) return;
       if (opts.scopes && isScopeRefreshPath(request.method, pathname)) return;
+      if (opts.sweeps && isSweepLaunchRequest(request.method, pathname)) return;
       if (pathname === '/healthz' || pathname === '/login' || pathname === '/logout') return;
       if (webhooks !== null && request.method === 'POST' && WEBHOOK_PATHS.includes(pathname)) {
         return;
@@ -514,6 +519,7 @@ export function buildApp(
   );
 
   registerPreferenceRoutes(app, config, preferenceAuthentication, opts.preferences);
+  if (opts.sweeps) registerSweepRoutes(app, config, preferenceAuthentication, opts.sweeps);
   if (opts.scopes) registerScopeRoutes(app, config, opts.scopes);
   if (opts.scopes) registerScopeRefreshRoutes(app, config, preferenceAuthentication, opts.scopes);
 
