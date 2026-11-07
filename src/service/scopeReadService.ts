@@ -248,27 +248,11 @@ export class ScopeReadService {
 
   private needsRefresh(response: ScopeResponse, source: ScopeRefreshSource): boolean {
     const scope = response.scope;
-    const completed = this.options.jobs.lastCompleted(scope);
-    // A finished scope job can leave observations stale or absent: partial
-    // relation reads, the lookup cap, and unreachable transitive dependencies.
-    // Do not restart that same work at the page's polling rate. A new invalidation
-    // bypasses the guard even when it arrived during the previous job.
-    if (
-      completed &&
-      !this.expired(completed.finishedAt) &&
-      completed.invalidationVersion === this.options.store.invalidationVersion(scope.source)
-    )
-      return false;
     const plan = this.derive(scope, source);
-    if (
-      source.catalog.projects.some(
-        (project) =>
-          (scope.kind === 'source' || project.repo.toLowerCase() === scope.repo) &&
-          this.retryDue(this.options.store.readRepository(project), source),
-      )
-    )
-      return true;
-    return plan.contextIssues.some((key) => {
+    const records: (StoredObservation<ObservationMetadata> | undefined)[] = source.catalog.projects
+      .filter((project) => scope.kind === 'source' || project.repo.toLowerCase() === scope.repo)
+      .map((project) => this.options.store.readRepository(project));
+    for (const key of plan.contextIssues) {
       const targeted = this.options.store.readOutsideIssue({ source: scope.source, key });
       const repo = key.slice(0, key.lastIndexOf('#'));
       const listing = source.catalog.projects.some((p) => p.repo.toLowerCase() === repo)
@@ -284,8 +268,20 @@ export class ScopeReadService {
             (cached.observation.lastCheckedAt ?? ''))
           ? targeted
           : cached;
-      return this.retryDue(latest, source);
-    });
+      records.push(latest);
+    }
+    const completed = this.options.jobs.lastCompleted(scope);
+    // A finished job can leave partial, capped or unreachable observations. Pace
+    // that work, but never mistake joining a pre-webhook read for checking the
+    // invalidation. Only this scope's roots and effective context can bypass the
+    // guard; unrelated repository webhooks must not restart its capped work.
+    const uncheckedInvalidation = records.some(
+      (record) =>
+        record?.invalidated &&
+        record.failedGeneration !== record.observation.invalidationGeneration,
+    );
+    if (completed && !this.expired(completed.finishedAt) && !uncheckedInvalidation) return false;
+    return records.some((record) => this.retryDue(record, source));
   }
 
   private repositoryFreshness(

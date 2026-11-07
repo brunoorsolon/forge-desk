@@ -46,8 +46,6 @@ export interface ScopeRefreshJob {
 
 export interface CompletedScopeRefresh {
   finishedAt: string;
-  /** Source invalidation epoch captured before the job began. */
-  invalidationVersion: number;
 }
 
 interface Job {
@@ -162,7 +160,6 @@ export class ScopeRefreshJobs {
       units: [],
     };
     const job: Job = { status, units: new Set(), handle: undefined! };
-    const invalidationVersion = this.options.store.invalidationVersion(scope.source);
     const completion = (async () => {
       try {
         await this.runJob(source, job);
@@ -172,7 +169,7 @@ export class ScopeRefreshJobs {
         status.error = messageOf(error);
       } finally {
         status.finishedAt = this.timestamp();
-        this.completed.set(key, { finishedAt: status.finishedAt, invalidationVersion });
+        this.completed.set(key, { finishedAt: status.finishedAt });
         this.jobs.delete(key);
         for (const unit of job.units) unit.jobs.delete(job);
       }

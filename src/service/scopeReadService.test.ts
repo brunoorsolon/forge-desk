@@ -99,6 +99,96 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it.each(['success', 'failed'] as const)(
+    'rechecks invalidated listings joined after the webhook, despite an old %s result',
+    async (outcome) => {
+      const f = fixture();
+      const blocked = gate();
+      const ref = { source: 'gh', repo: 'o/a' };
+      f.seed('o/a', [issue('o/a#1')]);
+      f.seed('o/b');
+      f.list.mockImplementation(async ({ repo }) => listing(repo === 'a' ? [issue('o/a#2')] : []));
+      f.list.mockImplementationOnce(async () => {
+        await blocked.promise;
+        if (outcome === 'failed') throw new Error('old failure');
+        return listing([issue('o/a#1')]);
+      });
+      const sweep = f.jobs.refresh(all, { priority: 'sweep' });
+      await tick();
+      f.store.invalidateRepository(ref);
+      const joined = await f.service.get(project());
+      expect(joined.job).not.toBeNull();
+      const projectJob = f.jobs.active(project())!;
+      expect(f.list).toHaveBeenCalledTimes(2);
+      blocked.resolve();
+      await Promise.all([sweep.completion, projectJob.completion]);
+      expect(f.store.readRepository(ref)?.invalidated).toBe(true);
+      expect((await f.service.get(project())).job).not.toBeNull();
+      await f.jobs.active(project())?.completion;
+      const settled = await f.service.get(project());
+      expect(settled.job).toBeNull();
+      expect(settled.freshness.repositories[0]?.state).toBe('fresh');
+      expect(settled.snapshot?.plan.nodes.map((n) => n.key)).toEqual(['o/a#2']);
+      expect(f.list).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each(['success', 'failed'] as const)(
+    'rechecks invalidated outside context joined after the webhook, despite an old %s result',
+    async (outcome) => {
+      const f = fixture();
+      const blocked = gate();
+      const body = 'Depends on ext/r#1';
+      f.seed('o/a', [issue('o/a#1', body)]);
+      f.seed('o/b', [issue('o/b#1', body)]);
+      f.list.mockImplementation(async ({ repo }) => listing([issue(`o/${repo}#1`, body)]));
+      f.lookup.mockResolvedValue(issue('ext/r#1', '', 'closed'));
+      f.lookup.mockImplementationOnce(async () => {
+        await blocked.promise;
+        return outcome === 'failed' ? null : issue('ext/r#1');
+      });
+      const other = f.jobs.refresh(project('o/b'));
+      await tick();
+      f.store.invalidateRepository({ source: 'gh', repo: 'ext/r' });
+      const joined = f.jobs.refresh(project());
+      await tick();
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      blocked.resolve();
+      await Promise.all([other.completion, joined.completion]);
+      expect(f.store.readOutsideIssue({ source: 'gh', key: 'ext/r#1' })?.invalidated).toBe(true);
+      expect((await f.service.get(project())).job).not.toBeNull();
+      await f.jobs.active(project())?.completion;
+      const settled = await f.service.get(project());
+      expect(settled.job).toBeNull();
+      expect(settled.snapshot?.plan.nodes.find((n) => n.key === 'o/a#1')?.status).toBe('ready');
+      expect(f.lookup).toHaveBeenCalledTimes(2);
+      expect(f.list.mock.calls.map(([r]) => r.repo)).toEqual(['b', 'a', 'a']);
+    },
+  );
+
+  it('ignores unrelated repository webhooks while capped scope work is paced', async () => {
+    const f = fixture();
+    f.list.mockResolvedValue(
+      listing([
+        issue(
+          'o/a#1',
+          `Depends on ${Array.from({ length: 201 }, (_, n) => `ext/r#${n + 1}`).join(', ')}`,
+        ),
+      ]),
+    );
+    f.lookup.mockImplementation(async (_repo, number) => issue(`ext/r#${number}`, '', 'closed'));
+    await f.service.get(project());
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      f.store.invalidateRepository({ source: 'gh', repo: 'o/b' });
+      const read = await f.service.get(project());
+      expect(read.job).toBeNull();
+      expect(read.freshness.outsideIssues).toMatchObject({ count: 201, provisionalCount: 1 });
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.lookup).toHaveBeenCalledTimes(200);
+  });
+
   it('settles capped dependency work for one TTL, then retries or honors explicit refresh', async () => {
     const f = fixture();
     f.list.mockResolvedValue(
