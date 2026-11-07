@@ -2,6 +2,7 @@ import type { DependencySource, IssueKey, PlanNode } from '../../../src/core/typ
 import type { AppState, Store } from '../state.js';
 import {
   displayStatus,
+  isInProgress,
   sourceLabel,
   statusLabel,
   workflowStatus,
@@ -41,12 +42,15 @@ export function statusBadges(node: PlanNode): HTMLElement {
   const badge = (status: DisplayStatus): HTMLElement =>
     h('span', { class: `badge st-${status}` }, statusLabel(status));
   const shown = displayStatus(node);
-  const workflow = workflowStatus(node.labels);
+  const workflow = workflowStatus(node.labels, node.closingPullRequests);
+  const showInProgress =
+    shown !== 'in-progress' && workflow !== 'in-progress' && isInProgress(node);
   return h(
     'span',
     { class: 'status-badges' },
     badge(shown),
     workflow !== null && workflow !== shown ? badge(workflow) : null,
+    showInProgress ? badge('in-progress') : null,
   );
 }
 

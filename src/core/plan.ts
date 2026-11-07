@@ -1,11 +1,13 @@
 import { canonicalJson } from './hash.js';
 import { compareKeys } from './keys.js';
 import type {
+  ClosingPullRequest,
   DependencyEdge,
   DependencySource,
   Issue,
   IssueKey,
   NodeStatus,
+  OpenPullRequest,
   OrderingMode,
   Plan,
   PlanNode,
@@ -22,6 +24,8 @@ export interface PlanInput {
   edges: DependencyEdge[];
   /** `Parent` hierarchies between keys of `issues`. Links referencing unknown keys are dropped. Never an edge. */
   parentLinks?: ParentLink[];
+  /** Open pull requests that close keys of `issues`. Links referencing unknown keys are dropped. Never an edge. */
+  closingPullRequests?: ClosingPullRequestLink[];
   /** Warnings collected upstream; merged into the plan's warnings. */
   warnings: PlanWarning[];
   priorityLabels: string[];
@@ -33,6 +37,12 @@ export interface PlanInput {
 export interface ParentLink {
   parent: IssueKey;
   child: IssueKey;
+}
+
+/** An open pull request that declares it closes an issue of the plan. */
+export interface ClosingPullRequestLink {
+  issue: IssueKey;
+  pullRequest: ClosingPullRequest;
 }
 
 /** Plain code-unit comparison (never localeCompare). */
@@ -47,6 +57,67 @@ function safeCompareKeys(a: IssueKey, b: IssueKey): number {
   } catch {
     return cmp(a, b);
   }
+}
+
+export function normalizeOpenPullRequests(prs: readonly OpenPullRequest[]): OpenPullRequest[] {
+  if (prs.length === 0) return [];
+  const items = prs
+    .map((pr) => ({
+      pr: {
+        key: pr.key,
+        repo: { owner: pr.repo.owner, repo: pr.repo.repo },
+        number: pr.number,
+        title: pr.title,
+        url: pr.url,
+        body: pr.body,
+      },
+      tie: '',
+    }))
+    .sort((a, b) => safeCompareKeys(a.pr.key, b.pr.key));
+  for (let i = 0; i < items.length;) {
+    let j = i + 1;
+    while (j < items.length && items[j]!.pr.key === items[i]!.pr.key) j++;
+    if (j - i > 1) {
+      const group = items.slice(i, j);
+      for (const g of group) g.tie = canonicalJson(g.pr);
+      group.sort((a, b) => cmp(a.tie, b.tie));
+      for (let k = 0; k < group.length; k++) items[i + k] = group[k]!;
+    }
+    i = j;
+  }
+  const out: OpenPullRequest[] = [];
+  for (const { pr } of items) {
+    if (out.length > 0 && out[out.length - 1]!.key === pr.key) continue;
+    out.push(pr);
+  }
+  return out;
+}
+
+function normalizeClosingPullRequests(prs: readonly ClosingPullRequest[]): ClosingPullRequest[] {
+  if (prs.length === 0) return [];
+  const items = prs
+    .map((pr) => ({
+      pr: { key: pr.key, number: pr.number, title: pr.title, url: pr.url },
+      tie: '',
+    }))
+    .sort((a, b) => safeCompareKeys(a.pr.key, b.pr.key));
+  for (let i = 0; i < items.length;) {
+    let j = i + 1;
+    while (j < items.length && items[j]!.pr.key === items[i]!.pr.key) j++;
+    if (j - i > 1) {
+      const group = items.slice(i, j);
+      for (const g of group) g.tie = canonicalJson(g.pr);
+      group.sort((a, b) => cmp(a.tie, b.tie));
+      for (let k = 0; k < group.length; k++) items[i + k] = group[k]!;
+    }
+    i = j;
+  }
+  const out: ClosingPullRequest[] = [];
+  for (const { pr } of items) {
+    if (out.length > 0 && out[out.length - 1]!.key === pr.key) continue;
+    out.push(pr);
+  }
+  return out;
 }
 
 function compareWarnings(a: PlanWarning, b: PlanWarning): number {
@@ -218,6 +289,20 @@ export function buildPlan(input: PlanInput): Plan {
     let children = childIndices.get(parent);
     if (children === undefined) childIndices.set(parent, (children = new Set()));
     children.add(child);
+  }
+
+  // Closing pull requests per node.
+  const closingByNode = new Map<number, ClosingPullRequest[]>();
+  for (let i = 0; i < n; i++) {
+    const attached = issues[i]!.closingPullRequests;
+    if (attached && attached.length > 0) closingByNode.set(i, [...attached]);
+  }
+  for (const link of input.closingPullRequests ?? []) {
+    const target = indexOf.get(link.issue);
+    if (target === undefined) continue;
+    let list = closingByNode.get(target);
+    if (list === undefined) closingByNode.set(target, (list = []));
+    list.push(link.pullRequest);
   }
 
   // Normalize edges. Node indices follow key order, so index order is compareKeys order.
@@ -444,6 +529,7 @@ export function buildPlan(input: PlanInput): Plan {
       blocks: succ[i]!.map(keyOf),
       parents: [...(parentIndices.get(i) ?? [])].sort((a, b) => a - b).map(keyOf),
       children: [...(childIndices.get(i) ?? [])].sort((a, b) => a - b).map(keyOf),
+      closingPullRequests: normalizeClosingPullRequests(closingByNode.get(i) ?? []),
       priority: priority[i]!,
       remainingDepth: isSchedulable ? depth[i]! : 0,
     });

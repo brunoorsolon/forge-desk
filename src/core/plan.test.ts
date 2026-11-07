@@ -109,6 +109,7 @@ describe('buildPlan', () => {
       blocks: [],
       parents: [],
       children: [],
+      closingPullRequests: [],
       priority: 0,
       remainingDepth: 1,
     });
@@ -184,6 +185,74 @@ describe('buildPlan', () => {
       parentLinks: [{ parent: K(1), child: K(2) }],
     });
     expect(contentHash(withParent)).not.toBe(contentHash(without));
+  });
+
+  it('attaches sorted, deduplicated closingPullRequests without changing status, edges, waves, or order', () => {
+    const keys = [K(1), K(2)];
+    const base = buildPlan(input(keys, [edge(K(1), K(2))]));
+    const withPrs = buildPlan({
+      ...input(keys, [edge(K(1), K(2))]),
+      closingPullRequests: [
+        {
+          issue: K(1),
+          pullRequest: {
+            key: 'o/r#20',
+            number: 20,
+            title: 'Second PR',
+            url: 'https://example.test/o/r/pull/20',
+          },
+        },
+        {
+          issue: K(1),
+          pullRequest: {
+            key: 'o/r#10',
+            number: 10,
+            title: 'First PR',
+            url: 'https://example.test/o/r/pull/10',
+          },
+        },
+        {
+          issue: K(1),
+          pullRequest: {
+            key: 'o/r#10',
+            number: 10,
+            title: 'First PR',
+            url: 'https://example.test/o/r/pull/10',
+          },
+        },
+        {
+          issue: K(99),
+          pullRequest: {
+            key: 'o/r#30',
+            number: 30,
+            title: 'Unknown issue PR',
+            url: 'https://example.test/o/r/pull/30',
+          },
+        },
+      ],
+    });
+    expect(withPrs.edges).toEqual(base.edges);
+    expect(withPrs.order).toEqual(base.order);
+    expect(withPrs.waves).toEqual(base.waves);
+    expect(withPrs.criticalPath).toEqual(base.criticalPath);
+    expect(withPrs.stats).toEqual(base.stats);
+    expect(node(withPrs, K(1)).status).toBe('ready');
+    expect(node(withPrs, K(1)).closingPullRequests).toEqual([
+      {
+        key: 'o/r#10',
+        number: 10,
+        title: 'First PR',
+        url: 'https://example.test/o/r/pull/10',
+      },
+      {
+        key: 'o/r#20',
+        number: 20,
+        title: 'Second PR',
+        url: 'https://example.test/o/r/pull/20',
+      },
+    ]);
+    expect(node(withPrs, K(2)).closingPullRequests).toEqual([]);
+    expect(contentHash(withPrs)).not.toBe(contentHash(base));
   });
 
   it('puts independent nodes in wave 0 in key order', () => {

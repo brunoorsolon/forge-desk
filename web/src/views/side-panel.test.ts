@@ -148,6 +148,7 @@ function node(key: string, extra: Partial<PlanNode> = {}): PlanNode {
     blocks: [],
     parents: [],
     children: [],
+    closingPullRequests: [],
     priority: 0,
     remainingDepth: 1,
     ...extra,
@@ -164,8 +165,31 @@ const snapshot: Snapshot = {
   plan: {
     viewId: 'v',
     nodes: [
-      node('o/r#1', { title: 'Map', children: ['o/r#2'] }),
-      node('o/r#2', { title: 'Child work', parents: ['o/r#1'] }),
+      node('o/r#1', {
+        title: 'Map',
+        labels: ['wayfinder:map', 'agent:claimed'],
+        children: ['o/r#2'],
+        closingPullRequests: [
+          {
+            key: 'o/r#10',
+            number: 10,
+            title: 'Update map',
+            url: 'https://x/o/r/pull/10',
+          },
+        ],
+      }),
+      node('o/r#2', {
+        title: 'Child work',
+        parents: ['o/r#1'],
+        closingPullRequests: [
+          {
+            key: 'o/r#11',
+            number: 11,
+            title: 'Implement child work',
+            url: 'https://x/o/r/pull/11',
+          },
+        ],
+      }),
       node('o/r#3', { title: 'Standalone' }),
     ],
     edges: [],
@@ -234,7 +258,33 @@ describe('details panel hierarchy', () => {
     panel.update(stateWith('o/r#3'), INITIAL_STATE);
 
     const rels = relations(el);
+    expect(section(rels, 'In progress')).toMatchObject({ keys: [], empty: true });
     expect(section(rels, 'Parent')).toMatchObject({ keys: [], empty: true });
     expect(section(rels, 'Children')).toMatchObject({ keys: [], empty: true });
+  });
+
+  it('lists open closing pull requests and agent:claimed labels in the In progress section', () => {
+    const panel = panelWith(() => {});
+    const el = panel.el as unknown as FakeElement;
+
+    panel.update(stateWith('o/r#2'), INITIAL_STATE);
+    const childInProgress = section(relations(el), 'In progress')!;
+    expect(childInProgress.keys).toEqual(['#11']);
+    expect(childInProgress.entries[0]?.tagName).toBe('a');
+    expect(childInProgress.entries[0]?.getAttribute('href')).toBe('https://x/o/r/pull/11');
+    expect(childInProgress.entries[0]?.textContent).toContain('Implement child work');
+    expect(childInProgress.entries[0]?.textContent).toContain('closes');
+
+    panel.update(stateWith('o/r#1'), INITIAL_STATE);
+    const mapInProgress = section(relations(el), 'In progress')!;
+    expect(mapInProgress.keys).toEqual(['agent:claimed', '#10']);
+    expect(mapInProgress.entries[0]?.textContent).toContain('label');
+    expect(mapInProgress.entries[1]?.getAttribute('href')).toBe('https://x/o/r/pull/10');
+    const topBadges = descendants(el, (e) => e.getAttribute('class') === 'badges')[0]!;
+    const badges = descendants(
+      topBadges,
+      (e) => e.getAttribute('class')?.startsWith('badge ') ?? false,
+    ).map((e) => e.textContent);
+    expect(badges).toEqual(['Map', 'In progress']);
   });
 });

@@ -1,12 +1,19 @@
 import type { ResolvedSource, ResolvedView } from '../config/schema.js';
 import { parseKey } from '../core/keys.js';
 import type { PlanInput } from '../core/plan.js';
-import type { Issue, IssueKey, IssueProvider, PlanWarning } from '../core/types.js';
+import type {
+  Issue,
+  IssueKey,
+  IssueProvider,
+  OpenPullRequest,
+  PlanWarning,
+} from '../core/types.js';
 import { createLimiter } from '../providers/http.js';
 import {
   MAX_EXTERNAL_FETCHES,
   pendingOutsideIssueKeys,
   resolvePlanInput,
+  webHostsOf,
   type OutsideIssueLookup,
 } from './resolution.js';
 
@@ -20,15 +27,6 @@ export interface ResolveResult {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function webHostsOf(webUrl: string): string[] {
-  if (webUrl === '') return [];
-  try {
-    return [new URL(webUrl).host.toLowerCase()];
-  } catch {
-    return [];
-  }
 }
 
 /** Fetch named-view observations, then resolve them without further I/O. */
@@ -45,6 +43,7 @@ export async function resolveView(
     return left < right ? -1 : left > right ? 1 : 0;
   });
   const nodes = new Map<IssueKey, Issue>();
+  const openPullRequests: OpenPullRequest[] = [];
   for (const repo of repos) {
     const result = await provider.listOpenIssues(repo, {
       native: view.dependencies.native,
@@ -54,6 +53,7 @@ export async function resolveView(
     for (const issue of result.issues) {
       if (issue.state === 'open' && !nodes.has(issue.key)) nodes.set(issue.key, issue);
     }
+    openPullRequests.push(...(result.pullRequests ?? []));
   }
   const openIssues = [...nodes.values()];
   const lookups = new Map<IssueKey, OutsideIssueLookup>();
@@ -89,5 +89,5 @@ export async function resolveView(
       }
     }
   }
-  return { input: resolvePlanInput(openIssues, lookups, settings, warnings) };
+  return { input: resolvePlanInput(openIssues, lookups, settings, warnings, openPullRequests) };
 }

@@ -1,4 +1,9 @@
-import type { DependencySource, IssueKey, NodeStatus } from '../../src/core/types.js';
+import type {
+  ClosingPullRequest,
+  DependencySource,
+  IssueKey,
+  NodeStatus,
+} from '../../src/core/types.js';
 
 /** Display order of a link's declared sources, most authoritative first. */
 const SOURCE_ORDER: readonly DependencySource[] = ['native', 'body', 'sub-issue'];
@@ -69,6 +74,27 @@ export function isClaimed(labels: readonly string[]): boolean {
   return hasLabel(labels, 'agent', 'claimed');
 }
 
+/** Labels on an issue that mark it as claimed (`agent:claimed` or `agent/claimed`). */
+export function claimedLabels(labels: readonly string[]): string[] {
+  return labels.filter((label) => {
+    const lower = label.toLowerCase();
+    return lower === 'agent:claimed' || lower === 'agent/claimed';
+  });
+}
+
+export function hasClosingPullRequest(
+  closingPullRequests?: readonly ClosingPullRequest[],
+): boolean {
+  return (closingPullRequests?.length ?? 0) > 0;
+}
+
+export function isInProgress(node: {
+  labels: readonly string[];
+  closingPullRequests?: readonly ClosingPullRequest[];
+}): boolean {
+  return isClaimed(node.labels) || hasClosingPullRequest(node.closingPullRequests);
+}
+
 /** Work an agent stopped on carries `agent:blocked` or `agent/blocked`. */
 export function isBlocked(labels: readonly string[]): boolean {
   return hasLabel(labels, 'agent', 'blocked');
@@ -85,31 +111,34 @@ export function isMap(labels: readonly string[]): boolean {
 }
 
 /**
- * The workflow status a label implies, most specific first: Blocked wins over
- * Spec and Map, which take precedence over In progress. Null when no workflow
- * label applies.
+ * The workflow status a label or open closing pull request implies, most
+ * specific first: Blocked wins over Spec and Map, which take precedence over
+ * In progress. Null when no workflow status applies.
  */
 export function workflowStatus(
   labels: readonly string[],
+  closingPullRequests?: readonly ClosingPullRequest[],
 ): 'blocked' | 'in-progress' | 'spec' | 'map' | null {
   if (isBlocked(labels)) return 'blocked';
   if (isSpec(labels)) return 'spec';
   if (isMap(labels)) return 'map';
-  if (isClaimed(labels)) return 'in-progress';
+  if (isClaimed(labels) || hasClosingPullRequest(closingPullRequests)) return 'in-progress';
   return null;
 }
 
 /**
- * Workflow labels change presentation, not the planner's dependency status:
- * blocked and cycle statuses stay visible. Blocked, Spec and Map hide Ready,
- * and Blocked takes precedence over Spec, Map and In progress.
+ * Workflow labels and open closing pull requests change presentation, not the
+ * planner's dependency status: blocked and cycle statuses stay visible.
+ * Blocked, Spec and Map hide Ready, and Blocked takes precedence over Spec,
+ * Map and In progress.
  */
 export function displayStatus(node: {
   status: NodeStatus;
   labels: readonly string[];
+  closingPullRequests?: readonly ClosingPullRequest[];
 }): DisplayStatus {
   if (node.status !== 'ready') return node.status;
-  return workflowStatus(node.labels) ?? 'ready';
+  return workflowStatus(node.labels, node.closingPullRequests) ?? 'ready';
 }
 
 export function statusLabel(status: DisplayStatus): string {

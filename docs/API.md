@@ -16,25 +16,25 @@ Contents:
 
 ## Endpoints
 
-| Method | Path                                  | Description                                                              | Success                                  |
-| ------ | ------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------- |
-| GET    | `/healthz`                            | Liveness check. **No authentication.**                                   | `200` `{"status":"ok"}`                  |
-| GET    | `/api/views`                          | The configured views                                                     | `200` array of view summaries            |
-| GET    | `/api/settings`                       | Settings for the web UI and the running version                          | `200` `{"refreshMinutes":5,...}`         |
-| GET    | `/api/views/:id/snapshot`             | The plan and layout of a view                                            | `200` snapshot with `ETag`, or `304`     |
-| POST   | `/api/views/:id/refresh`              | Force a refetch from the tracker, ignoring the cache                     | `200` snapshot with `ETag`               |
-| GET    | `/api/views/:id/export.:format`       | The snapshot rendered as a file: `json`, `md`, `mmd` (Mermaid) or `dot`  | `200` text with `Content-Disposition`    |
-| POST   | `/api/webhooks/github`                | Webhook receiver for GitHub issue events (only with a secret)            | `202` `{"invalidated":[...]}`            |
-| POST   | `/api/webhooks/gitea`                 | Webhook receiver for Gitea / Forgejo issue events (only with a secret)   | `202` `{"invalidated":[...]}`            |
-| GET    | `/api/session`                        | The signed-in user and session CSRF token (only with a login configured) | `200` `{"username","csrfToken"}`         |
-| GET    | `/api/releases/repositories`          | Configured release repositories and their capability (releases only)     | `200` array of capabilities              |
-| POST   | `/api/releases/plans/:planId/publish` | Approve a stored plan digest and start publication (releases only)       | `202` durable job and `statusUrl`        |
-| POST   | `/api/releases/jobs/:jobId/reconcile` | Inspect a publication through reads only (releases only)                 | `202` reconciliation job and `statusUrl` |
-| GET    | `/api/releases/jobs/:jobId/receipt`   | Human-readable publication evidence (releases only)                      | `200` plain text                         |
-| GET    | `/login`                              | The login page (only with a login configured). **No authentication.**    | `200` HTML                               |
-| POST   | `/login`                              | Form login: `username` and `password`, form-encoded                      | `303` to the UI, with session cookie     |
-| POST   | `/logout`                             | Ends the session and clears the cookie                                   | `303` to the login page                  |
-| GET    | `/` and other paths                   | The web UI (static files)                                                | `200` HTML/JS/CSS                        |
+| Method | Path                                  | Description                                                                             | Success                                  |
+| ------ | ------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------- |
+| GET    | `/healthz`                            | Liveness check. **No authentication.**                                                  | `200` `{"status":"ok"}`                  |
+| GET    | `/api/views`                          | The configured views                                                                    | `200` array of view summaries            |
+| GET    | `/api/settings`                       | Settings for the web UI and the running version                                         | `200` `{"refreshMinutes":5,...}`         |
+| GET    | `/api/views/:id/snapshot`             | The plan and layout of a view                                                           | `200` snapshot with `ETag`, or `304`     |
+| POST   | `/api/views/:id/refresh`              | Force a refetch from the tracker, ignoring the cache                                    | `200` snapshot with `ETag`               |
+| GET    | `/api/views/:id/export.:format`       | The snapshot rendered as a file: `json`, `md`, `mmd` (Mermaid) or `dot`                 | `200` text with `Content-Disposition`    |
+| POST   | `/api/webhooks/github`                | Webhook receiver for GitHub issue and pull-request events (only with a secret)          | `202` `{"invalidated":[...]}`            |
+| POST   | `/api/webhooks/gitea`                 | Webhook receiver for Gitea / Forgejo issue and pull-request events (only with a secret) | `202` `{"invalidated":[...]}`            |
+| GET    | `/api/session`                        | The signed-in user and session CSRF token (only with a login configured)                | `200` `{"username","csrfToken"}`         |
+| GET    | `/api/releases/repositories`          | Configured release repositories and their capability (releases only)                    | `200` array of capabilities              |
+| POST   | `/api/releases/plans/:planId/publish` | Approve a stored plan digest and start publication (releases only)                      | `202` durable job and `statusUrl`        |
+| POST   | `/api/releases/jobs/:jobId/reconcile` | Inspect a publication through reads only (releases only)                                | `202` reconciliation job and `statusUrl` |
+| GET    | `/api/releases/jobs/:jobId/receipt`   | Human-readable publication evidence (releases only)                                     | `200` plain text                         |
+| GET    | `/login`                              | The login page (only with a login configured). **No authentication.**                   | `200` HTML                               |
+| POST   | `/login`                              | Form login: `username` and `password`, form-encoded                                     | `303` to the UI, with session cookie     |
+| POST   | `/logout`                             | Ends the session and clears the cookie                                                  | `303` to the login page                  |
+| GET    | `/` and other paths                   | The web UI (static files)                                                               | `200` HTML/JS/CSS                        |
 
 ### `GET /api/views`
 
@@ -99,7 +99,7 @@ Receivers for the tracker's webhooks: a verified delivery drops the cached snaps
   - `/api/webhooks/github`: header `X-Hub-Signature-256: sha256=<hex>`.
   - `/api/webhooks/gitea`: header `X-Gitea-Signature: <hex>` or `X-Forgejo-Signature: <hex>` (plain hex, no prefix), or `X-Hub-Signature-256: sha256=<hex>` (Gitea and Forgejo send that one too). One valid signature is enough.
 - **Body:** JSON only (`Content-Type: application/json`); other content types answer `415`. The limit is 1 MiB (`413` above it). Configure GitHub webhooks with content type `application/json`, not `application/x-www-form-urlencoded`.
-- **Events:** a `ping` (`X-GitHub-Event`, `X-Gitea-Event` or `X-Forgejo-Event` equal to `ping`) answers `200` `{"ok":true}` and invalidates nothing. Any other event reads `repository.full_name` (compared in lower case), invalidates the matching views and answers `202` `{"invalidated":["<viewId>", ...]}` with the ids sorted. An unknown repository, or a payload without `repository.full_name`, answers `202` `{"invalidated":[]}`. The event type is not otherwise inspected, so subscribe only to the issue events you need.
+- **Events:** a `ping` (`X-GitHub-Event`, `X-Gitea-Event` or `X-Forgejo-Event` equal to `ping`) answers `200` `{"ok":true}` and invalidates nothing. Any other event reads `repository.full_name` (compared in lower case), invalidates the matching views and answers `202` `{"invalidated":["<viewId>", ...]}` with the ids sorted. An unknown repository, or a payload without `repository.full_name`, answers `202` `{"invalidated":[]}`. The event type is not otherwise inspected, so subscribe to the issue and pull-request events needed to keep the plan and **In progress** status current (see the deployment guide).
 
 | Status | When                                           | Body                            |
 | ------ | ---------------------------------------------- | ------------------------------- |
@@ -228,7 +228,7 @@ A snapshot is the JSON document returned by the snapshot, refresh and `export.js
 | `warnings`      | `{ code, message, issues }`. Codes: `cycle`, `blocked-by-cycle`, `self-reference`, `dangling-reference`, `external-unresolved`, `native-unsupported`, `fetch-error` ([meaning and fixes](PREREQUISITES.md#warning-codes)) |
 | `stats`         | `total`, `ready`, `blocked`, `unschedulable`, `external`, `edges`, `waves`                                                                                                                                                |
 
-A node has: `key` (`owner/repo#number`, lowercase), `repo`, `number`, `title`, `url`, `labels`, `assignees`, `milestone` (or `null`), `updatedAt` (the issue's last-update timestamp, or `null` when the provider does not report one), `external` (boolean), `status` (`ready`, `blocked`, `in-cycle` or `blocked-by-cycle`), `wave` and `order` (0-based, `null` when unschedulable), `blockedBy` and `blocks` (keys of open direct prerequisites and dependents), `parents` and `children` (keys of the `Parent:` hierarchy; never dependencies), `priority` (index in `priorityLabels`, or `priorityLabels.length`) and `remainingDepth`.
+A node has: `key` (`owner/repo#number`, lowercase), `repo`, `number`, `title`, `url`, `labels`, `assignees`, `milestone` (or `null`), `updatedAt` (the issue's last-update timestamp, or `null` when the provider does not report one), `external` (boolean), `status` (`ready`, `blocked`, `in-cycle` or `blocked-by-cycle`), `wave` and `order` (0-based, `null` when unschedulable), `blockedBy` and `blocks` (keys of open direct prerequisites and dependents), `parents` and `children` (keys of the `Parent:` hierarchy; never dependencies), `closingPullRequests` (`{ key, number, title, url }[]`, open pull requests that declare a closing keyword for this issue, sorted by `key`), `priority` (index in `priorityLabels`, or `priorityLabels.length`) and `remainingDepth`.
 
 ### `layout`
 
@@ -265,6 +265,7 @@ Abridged real output (a five-issue view):
         "blocks": ["acme/app#5"],
         "parents": [],
         "children": [],
+        "closingPullRequests": [],
         "priority": 3,
         "remainingDepth": 2
       }
@@ -309,12 +310,12 @@ curl -sI http://localhost:8080/api/views/demo/snapshot
 Conditional request: only download when the plan changed. When the `ETag` still matches, the server answers `304` with no body (use the `ETag` of your own last response):
 
 ```sh
-curl -s -o /dev/null -D - -H 'If-None-Match: "1f532dbcf53112168cfe1903885c9b0bb3836b2ec6e75ae955ddaee5ecc6fae3"' http://localhost:8080/api/views/demo/snapshot
+curl -s -o /dev/null -D - -H 'If-None-Match: "1181a20e638836c9b73543250bb11eaf0a77e5b0735529275c36d30e8acb2d21"' http://localhost:8080/api/views/demo/snapshot
 ```
 
 ```text
 HTTP/1.1 304 Not Modified
-etag: "1f532dbcf53112168cfe1903885c9b0bb3836b2ec6e75ae955ddaee5ecc6fae3"
+etag: "1181a20e638836c9b73543250bb11eaf0a77e5b0735529275c36d30e8acb2d21"
 cache-control: no-store
 ```
 

@@ -144,6 +144,7 @@ function node(key: IssueKey, extra: Partial<PlanNode> = {}): PlanNode {
     blocks: [],
     parents: [],
     children: [],
+    closingPullRequests: [],
     priority: 0,
     remainingDepth: 1,
     ...extra,

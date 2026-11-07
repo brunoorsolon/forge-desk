@@ -1,10 +1,12 @@
 import { compareRefs, makeKey } from '../core/keys.js';
+import { normalizeOpenPullRequests } from '../core/plan.js';
 import type {
   FetchResult,
   Issue,
   IssueProvider,
   IssueRef,
   ListOptions,
+  OpenPullRequest,
   PlanWarning,
   RawRelation,
   RelationCoverage,
@@ -113,6 +115,26 @@ function mapIssue(raw: GtIssue, repo: RepoRef): Issue {
     milestone,
     updatedAt,
     nativeRelations: [],
+  };
+}
+
+function mapPullRequest(raw: GtIssue, repo: RepoRef): OpenPullRequest | null {
+  if (raw.state === 'closed') return null;
+  if (isPlainObject(raw.pull_request) && raw.pull_request.merged === true) return null;
+  if (
+    typeof raw.number !== 'number' ||
+    !Number.isSafeInteger(raw.number) ||
+    typeof raw.title !== 'string'
+  ) {
+    throw new Error(`Unexpected Gitea issue payload in ${repo.owner}/${repo.repo}`);
+  }
+  return {
+    key: makeKey(repo, raw.number),
+    repo,
+    number: raw.number,
+    title: raw.title,
+    url: typeof raw.html_url === 'string' ? raw.html_url : '',
+    body: typeof raw.body === 'string' ? raw.body : '',
   };
 }
 
@@ -258,14 +280,21 @@ export function createGiteaProvider(opts: GiteaProviderOptions): IssueProvider {
 
   async function listOpenIssues(repoIn: RepoRef, options: ListOptions): Promise<FetchResult> {
     const repo = lowerRepo(repoIn);
-    const rawItems = await getPaged<GtIssue>(`${repoPath(repo)}/issues?state=open&type=issues`);
+    const rawItems = await getPaged<GtIssue>(`${repoPath(repo)}/issues?state=open`);
 
     const issues: Issue[] = [];
+    const rawPullRequests: OpenPullRequest[] = [];
     for (const raw of rawItems) {
-      if (!isPlainObject(raw) || raw.pull_request) continue;
+      if (!isPlainObject(raw)) continue;
+      if (raw.pull_request) {
+        const pr = mapPullRequest(raw, repo);
+        if (pr) rawPullRequests.push(pr);
+        continue;
+      }
       issues.push(mapIssue(raw, repo));
     }
     issues.sort((a, b) => a.number - b.number);
+    const pullRequests = normalizeOpenPullRequests(rawPullRequests);
 
     const warnings: PlanWarning[] = [];
     const relationCoverage: RelationCoverage = {
@@ -289,7 +318,12 @@ export function createGiteaProvider(opts: GiteaProviderOptions): IssueProvider {
         }
       }
     }
-    return { issues, warnings, relationCoverage };
+    return {
+      issues,
+      ...(pullRequests.length > 0 ? { pullRequests } : {}),
+      warnings,
+      relationCoverage,
+    };
   }
 
   async function getIssue(

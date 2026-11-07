@@ -257,7 +257,7 @@ The password crosses the network in clear text on the login form and with basic 
 
 ## Webhooks
 
-By default a view is refetched when its cache entry expires (`cache.ttlSeconds`, 300 s) or when someone presses Refresh. With webhooks, GitHub, Gitea or Forgejo tells the app when an issue changes, and the app drops the cached snapshot of the views that include that repository; the next page load or API call refetches. The app does not refetch by itself.
+By default a view is refetched when its cache entry expires (`cache.ttlSeconds`, 300 s) or when someone presses Refresh. With webhooks, GitHub, Gitea or Forgejo tells the app when an issue or pull request changes, and the app drops the cached snapshot of the views that include that repository; the next page load or API call refetches. The app does not refetch by itself.
 
 The UI labels below may vary between versions of GitHub, Gitea and Forgejo.
 
@@ -276,13 +276,15 @@ or, in the config file, `webhooks.secretEnv: FD_WEBHOOK_SECRET` (the name of an 
 | GitHub           | `https://ev.example.com/api/webhooks/github` |
 | Gitea or Forgejo | `https://ev.example.com/api/webhooks/gitea`  |
 
-GitHub: repository **Settings → Webhooks → Add webhook**. Set the payload URL, content type `application/json`, and the secret. Under events choose **Let me select individual events** and tick **Issues**, plus **Issue dependencies** and **Sub-issues** when they are offered (they carry dependency and sub-issue changes). Keep the webhook **Active**. GitHub sends a `ping` when you save it; it should show a green tick (`200`).
+GitHub: repository **Settings → Webhooks → Add webhook**. Set the payload URL, content type `application/json`, and the secret. Under events choose **Let me select individual events** and tick **Issues** and **Pull requests**, plus **Issue dependencies** and **Sub-issues** when they are offered (they carry dependency and sub-issue changes). Keep the webhook **Active**. GitHub sends a `ping` when you save it; it should show a green tick (`200`).
 
-Gitea or Forgejo: repository **Settings → Webhooks → Add webhook**, then choose **Gitea** (on Forgejo: **Forgejo**). Set the target URL, HTTP method `POST`, content type `application/json`, and the secret. Trigger on issue events (for example **Custom events** with the issue events selected: issue opened, edited, closed, labeled, assigned, milestoned, and so on; a dependency change is an issue edit on the tracker side, so include whatever issue events are offered). Gitea and Forgejo sign deliveries with `X-Gitea-Signature` / `X-Forgejo-Signature` (and `X-Hub-Signature-256`); any of them is accepted. The **Test delivery** button (if your version has one) sends a sample event; any correctly signed delivery is accepted, and it invalidates the views of the repository unless it is a `ping`.
+Gitea or Forgejo: repository **Settings → Webhooks → Add webhook**, then choose **Gitea** (on Forgejo: **Forgejo**). Set the target URL, HTTP method `POST`, content type `application/json`, and the secret. Trigger on both issue and pull-request events (for example **Custom events** with the issue and pull-request events selected). Include opening, editing, closing and reopening for both, as well as the other issue events offered (labeled, assigned, milestoned, and so on; a dependency change is an issue edit on the tracker side). Gitea and Forgejo sign deliveries with `X-Gitea-Signature` / `X-Forgejo-Signature` (and `X-Hub-Signature-256`); any of them is accepted. The **Test delivery** button (if your version has one) sends a sample event; any correctly signed delivery is accepted, and it invalidates the views of the repository unless it is a `ping`.
+
+Pull-request events keep **In progress** current when a closing PR opens, its closing references are edited, or it closes or reopens. Select these events even if you already receive issue events.
 
 Only JSON is accepted. Organization-level or system-level webhooks also work if they send repository events, since only `repository.full_name` is read.
 
-**3. Check it:** in the tracker's webhook page, look at the recent deliveries (`202` with an `invalidated` list of view ids is the expected answer for an issue event; `401` means the secret does not match; `404` means the app has no secret configured). The app logs each accepted delivery at info level (event, repository, invalidated views), and never logs the secret or the signature.
+**3. Check it:** in the tracker's webhook page, look at the recent deliveries (`202` with an `invalidated` list of view ids is the expected answer for an issue or pull-request event; `401` means the secret does not match; `404` means the app has no secret configured). The app logs each accepted delivery at info level (event, repository, invalidated views), and never logs the secret or the signature.
 
 Reverse proxy notes:
 

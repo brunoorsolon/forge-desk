@@ -143,6 +143,25 @@ describe('compileFilter', () => {
     expect(claimed.status).toBe('ready');
   });
 
+  it('treats an issue with an open closing pull request as in-progress in status filters', () => {
+    const closingPr = {
+      key: 'acme/api#20',
+      number: 20,
+      title: 'Implement schema',
+      url: 'https://github.com/acme/api/pull/20',
+    };
+    const withPr = issue('acme/api#5', 'PR work', [], {
+      status: 'ready',
+      closingPullRequests: [closingPr],
+    });
+    expect(compileFilter('status:ready')!(withPr)).toBe(false);
+    expect(compileFilter('status:in-progress')!(withPr)).toBe(true);
+    expect(compileFilter('is:in-progress')!(withPr)).toBe(true);
+    expect(compileFilter('-status:in-progress')!(withPr)).toBe(false);
+    expect(compileFilter('status:blocked')!({ ...withPr, status: 'blocked' })).toBe(true);
+    expect(compileFilter('status:in-progress')!({ ...withPr, status: 'blocked' })).toBe(false);
+  });
+
   it('separates agent-blocked work from ready work in both label forms', () => {
     for (const label of ['agent:blocked', 'AGENT/BLOCKED']) {
       const blocked = issue('acme/api#8', 'Blocked work', [label], { status: 'ready' });

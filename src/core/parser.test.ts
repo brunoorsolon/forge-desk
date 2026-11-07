@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_KEYWORDS, parseBodyRelations, type ParseOptions } from './parser.js';
-import type { RawRelation } from './types.js';
+import {
+  DEFAULT_KEYWORDS,
+  parseBodyRelations,
+  parseClosingIssues,
+  type ParseOptions,
+} from './parser.js';
+import type { IssueRef, RawRelation } from './types.js';
 
 /** Compact relation notation: "b:#12", "k:o/r#3", "p:#7" (b = blocked-by, k = blocks, p = parent). */
 function rel(spec: string): RawRelation {
@@ -466,6 +471,18 @@ describe('rule 4: ignored regions', () => {
       expected: ['b:#1'],
     },
   ]);
+
+  it.each([
+    'Note `a\nBlocked by: [#1]\n<details>\nb` end',
+    'Note `a\nBlocked by: [#1]\n<!-- see `x` -->',
+    'Note `a\nBlocked by: [#1]\n<div>b` end</div>',
+    '- ```\n  b`\nBlocked by: [#1]\nb`',
+    '`a\nBlocked by: [#1]\nb`',
+  ])('preserves single-line dependency code spans in %s', (body) => {
+    // Dependency parsing predates closing PRs and must retain main's edge semantics.
+    expect(parseBodyRelations(body, { strict: true })).toEqual([rel('b:#1')]);
+    expect(parseBodyRelations(body)).toEqual([rel('b:#1')]);
+  });
 });
 
 describe('rule 5: prose is ignored', () => {
@@ -865,4 +882,280 @@ describe('realistic bodies', () => {
       ['b:#1', 'b:acme/api#3', 'b:acme/web#2', 'k:#10', 'k:acme/docs#11'].map(rel),
     );
   });
+});
+
+function issueRef(spec: string): IssueRef {
+  const m = /^(?:([^#/]+)\/([^#/]+))?#(\d+)$/.exec(spec);
+  if (!m) throw new Error(`bad ref ${spec}`);
+  return {
+    owner: m[1] ?? null,
+    repo: m[2] ?? null,
+    number: Number(m[3]),
+  };
+}
+
+describe('parseClosingIssues', () => {
+  it('extracts all nine closing keywords case-insensitively across #N, owner/repo#N, and web-host URLs', () => {
+    const body = [
+      'close #1, closes #2, closed #3',
+      'Fix o/r#4; FIXES O/R#5, fixed #6',
+      'resolve https://github.com/Acme/Web/issues/7',
+      'Resolves: #8 and **Resolved**: [acme/api#9](https://github.com/acme/api/issues/9)',
+      '__Closes__ #10 and *Fixes:* #11',
+    ].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual(
+      [
+        '#1',
+        '#2',
+        '#3',
+        '#6',
+        '#8',
+        '#10',
+        '#11',
+        'acme/api#9',
+        'acme/web#7',
+        'o/r#4',
+        'o/r#5',
+      ].map(issueRef),
+    );
+  });
+
+  it('ignores non-closing keywords, unknown hosts, pull URLs, and word-boundary false positives', () => {
+    const body = [
+      'Depends on #1',
+      'Part of #2',
+      'disclose #3, prefix #4, unfixed #5, closes_not #6, foo_closes #7',
+      'Closes https://other.example/o/r/issues/8',
+      'Closes https://github.com/o/r/pull/9',
+      'Closes #0',
+    ].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual([]);
+    expect(parseClosingIssues('', HOSTS)).toEqual([]);
+  });
+
+  it('ignores fenced code blocks, inline code spans, HTML comments, and blockquotes', () => {
+    const body = [
+      '```',
+      'Closes #1',
+      '```',
+      '~~~',
+      'Fixes #2',
+      '~~~',
+      '`Resolves #3` and Closes `#4`',
+      '<!-- Closes #5',
+      'Fixes #6 --> Closes #7',
+      '> Closes #8',
+      '  > Fixes #9',
+      'Resolves #2, fixes #7',
+    ].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual(['#2', '#7'].map(issueRef));
+  });
+
+  it('ignores multiline inline code spans while keeping closing references after the span', () => {
+    const body = ['`example starts', 'Closes #1', 'example ends`', 'Fixes #2'].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual(['#2'].map(issueRef));
+  });
+
+  it.each([
+    ['one backtick per line', '`\n'.repeat(32_760)],
+    ['quoted ordered list items', '2. >\n'.repeat(13_104)],
+    ['paired multiline prose', 'text `a\nb` text\n'.repeat(4_000)],
+  ])('handles a large body with %s and preserves the following reference', (_name, prefix) => {
+    const body = `${prefix}\nFixes #2`;
+    expect(body.length).toBeLessThanOrEqual(65_536);
+    expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    expect(parseBodyRelations(`${prefix}\nBlocked by: [#2]`, { strict: true })).toEqual([
+      rel('b:#2'),
+    ]);
+  });
+
+  it.each(['-', '*', '+', '1.', '2.', '1)', '- 1.', '1. -'])(
+    'ignores fenced code and blockquotes after the %s list marker',
+    (marker) => {
+      const indent = ' '.repeat(marker.length + 1);
+      for (const fence of ['```', '~~~']) {
+        const body = [
+          `${marker} ${fence}`,
+          `${indent}Closes #1`,
+          `${indent}${fence}`,
+          '',
+          'Fixes #2',
+        ].join('\n');
+        expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+      }
+      expect(parseClosingIssues(`${marker} > Closes #1\n\nFixes #2`, HOSTS)).toEqual([
+        issueRef('#2'),
+      ]);
+    },
+  );
+
+  it('ends a list-contained fence when the containing item ends', () => {
+    expect(parseClosingIssues('- ```\n  Closes #1\n- Fixes #2', HOSTS)).toEqual([issueRef('#2')]);
+    expect(parseClosingIssues('1. ~~~\n   Closes #1\n\nFixes #2', HOSTS)).toEqual([issueRef('#2')]);
+  });
+
+  it.each([
+    { marker: '-\t', indent: '\t' },
+    { marker: '1.\t', indent: '\t' },
+    { marker: '-\t-\t', indent: '\t\t' },
+  ])('uses Markdown tab stops for the $marker list container', ({ marker, indent }) => {
+    for (const fence of ['```', '~~~']) {
+      const body = [
+        `${marker}${fence}`,
+        `${indent}Closes #1`,
+        `${indent}${fence}`,
+        '',
+        'Fixes #2',
+      ].join('\n');
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    }
+    const dependencyBody = [
+      `${marker}Note \`a`,
+      `${indent}---`,
+      `${indent}Blocked by: [#1]`,
+      `${indent}b\` end`,
+    ].join('\n');
+    expect(parseBodyRelations(dependencyBody, { strict: true })).toEqual([rel('b:#1')]);
+  });
+
+  it.each(['---', '***', '___', '* * *', '_ _ _', '- - -', '===', '=', '-', '  --  '])(
+    'does not pair backticks across the %s thematic break or setext underline',
+    (boundary) => {
+      const closingBody = ['`a', boundary, 'Closes #1 b`', 'Fixes #2'].join('\n');
+      expect(parseClosingIssues(closingBody, HOSTS)).toEqual(['#1', '#2'].map(issueRef));
+      const dependencyBody = ['Note `a', boundary, 'Blocked by: [#1]', 'b` end'].join('\n');
+      expect(parseBodyRelations(dependencyBody, { strict: true })).toEqual([rel('b:#1')]);
+    },
+  );
+
+  it.each(['    ---', '    ===', '**', '__', '= = =', '-_-'])(
+    'retains %s paragraph continuation inside a multiline inline code span',
+    (continuation) => {
+      const body = ['`a', continuation, 'Closes #1 b`', 'Fixes #2'].join('\n');
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    },
+  );
+
+  it.each(['- -', '1. -', '10. 1.'])(
+    'recognizes thematic breaks and setext underlines relative to the %s list container',
+    (marker) => {
+      const indent = ' '.repeat(marker.length + 1);
+      for (const boundary of ['---', '***', '___', '===', '=', '-']) {
+        const body = [
+          `${marker} Note \`a`,
+          `${indent}${boundary}`,
+          `${indent}Closes #1 b\``,
+          '',
+          'Fixes #2',
+        ].join('\n');
+        expect(parseClosingIssues(body, HOSTS)).toEqual(['#1', '#2'].map(issueRef));
+        expect(
+          parseBodyRelations(body.replace('Closes #1', 'Blocked by: [#1]'), { strict: true }),
+        ).toEqual([rel('b:#1')]);
+      }
+    },
+  );
+
+  it.each(['2.', '2)', '0.', '42.', '0002.', '1234567890.', '    1.'])(
+    'keeps %s continuation text inside a multiline inline code span',
+    (marker) => {
+      const body = ['`example starts', `${marker} Closes #1`, 'example ends`', 'Fixes #2'].join(
+        '\n',
+      );
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    },
+  );
+
+  it.each(['-', '*', '+', '1.', '1)', '01.', '   1.'])(
+    'does not pair backticks across a paragraph-interrupting %s list item',
+    (marker) => {
+      const body = ['Note with `unmatched opener', `${marker} Closes #1`, 'another ` opener'].join(
+        '\n',
+      );
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
+    },
+  );
+
+  it.each([
+    '1. Note with `unmatched opener',
+    '1. Introduction\n   Note with `unmatched opener',
+    '2. Introduction\n   Note with `unmatched opener',
+  ])('does not pair backticks across sibling numbered list items after %s', (opening) => {
+    const body = [opening, '3. Closes #1', '4. Another ` opener'].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
+    expect(
+      parseBodyRelations(body.replace('Closes #1', 'Blocked by: [#1]'), { strict: true }),
+    ).toEqual([rel('b:#1')]);
+  });
+
+  it('does not pair unmatched backticks across paragraph or block boundaries', () => {
+    const body = [
+      'Note with `unmatched opener',
+      '',
+      'Blocked by: [#1]',
+      'Closes #1',
+      '',
+      'Another paragraph with `unmatched opener',
+    ].join('\n');
+    expect(parseBodyRelations(body, { strict: true })).toEqual(['b:#1'].map(rel));
+    expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
+  });
+
+  it('recognizes subpath-hosted issue URLs only for their configured prefix', () => {
+    expect(
+      parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
+        webHosts: ['example.com'],
+      }),
+    ).toEqual([]);
+    expect(
+      parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([issueRef('a/r#1')]);
+    expect(
+      parseClosingIssues('Closes https://example.com/gitea/a/r/issues/1', {
+        webHosts: ['https://example.com/gitea'],
+      }),
+    ).toEqual([issueRef('a/r#1')]);
+    expect(
+      parseClosingIssues('Closes https://example.com/other/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([]);
+    expect(
+      parseClosingIssues('Closes https://example.com/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([]);
+    expect(
+      parseClosingIssues('Closes https://other.example/gitea/a/r/issues/1', {
+        webHosts: ['example.com/gitea'],
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(['example.com', 'https://example.com', 'example.com/'])(
+    'accepts only root issue URLs when the configured web root is %s',
+    (webRoot) => {
+      const options = { webHosts: [webRoot] };
+      expect(parseClosingIssues('Closes https://example.com/a/r/issues/1', options)).toEqual([
+        issueRef('a/r#1'),
+      ]);
+      expect(parseClosingIssues('Closes https://example.com/x/y/a/r/issues/1', options)).toEqual(
+        [],
+      );
+      expect(
+        parseBodyRelations('Blocked by: [https://example.com/x/y/a/r/issues/1]', {
+          ...options,
+          strict: true,
+        }),
+      ).toEqual([]);
+      expect(
+        parseBodyRelations('Blocked by: [https://example.com/a/r/issues/1]', {
+          ...options,
+          strict: true,
+        }),
+      ).toEqual([rel('b:a/r#1')]);
+    },
+  );
 });
