@@ -98,6 +98,18 @@ case "$md" in
   *) fail "export.md does not start with '# ': ${md:0:80}" ;;
 esac
 
+# The actual startup path mounts scopes and shares the fixture provider with named views.
+projects="$(curl -fsS "$BASE/api/projects" | json_eval 'd.sources[0].projects.map(p=>p.repo).join(",")')"
+[ "$projects" = "acme/api,acme/web" ] || fail "unexpected project catalog: $projects"
+project_id="$(curl -fsS "$BASE/api/projects/demo/acme/api/snapshot" | json_eval 'd.snapshot.viewId')"
+[ "$project_id" = "project:demo/acme/api" ] || fail "project snapshot was not served: $project_id"
+source_id="$(curl -fsS "$BASE/api/sources/demo/snapshot" | json_eval 'd.snapshot.viewId')"
+[ "$source_id" = "source:demo" ] || fail "source snapshot was not served: $source_id"
+for format in json md mmd dot; do
+  curl -fsS -o /dev/null "$BASE/api/sources/demo/export.$format" || fail "scope $format export failed"
+done
+echo "ok: project catalog, scope snapshots and every scope export format"
+
 # "/" must be the built web UI: HTML naming the app and loading a built asset.
 curl -sS -D "$TMP_DIR/root.headers" -o "$TMP_DIR/root.body" "$BASE/" || fail "GET / failed"
 grep -qi '^content-type: *text/html' "$TMP_DIR/root.headers" || fail "GET / is not text/html: $(cat "$TMP_DIR/root.headers")"
