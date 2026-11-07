@@ -2160,6 +2160,17 @@ button.issue-pill:hover {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+/* Scope status panels leave project navigation available. */
+.scope-state .box {
+  overflow-wrap: anywhere;
+}
+.scope-state[hidden] {
+  display: none;
+}
+.scope-state time {
+  font-variant-numeric: tabular-nums;
+}
+
 .skeleton {
   padding: 12px 16px;
 }

@@ -1,4 +1,5 @@
 import { append, clear, h, icon } from '../dom.js';
+import { absoluteTime } from '../format.js';
 import type { AppState } from '../state.js';
 import type { View, ViewCtx } from './shared.js';
 
@@ -101,4 +102,98 @@ export function createStates(ctx: ViewCtx): StatesView {
       el.hidden = banner.hidden && skeleton.hidden && empty.hidden;
     },
   };
+}
+
+/** Rendering-only input: startup and scope loaders can supply these outcomes independently. */
+export type ScopePanelState =
+  | { kind: 'ready' }
+  | { kind: 'loading'; message?: string }
+  | { kind: 'unavailable'; message: string }
+  | { kind: 'delayed'; message: string; expectedEnd: string }
+  | { kind: 'policy-conflict'; conflict: import('../../../src/core/scope.js').SourcePolicyConflict }
+  | { kind: 'not-in-catalog'; source: string; repo?: string }
+  | { kind: 'preference-error'; reason: string; message: string }
+  | { kind: 'empty-catalog' };
+
+export interface ScopeStatesView {
+  el: HTMLElement;
+  update(state: ScopePanelState): void;
+}
+
+/** Scope-only panels. This view never hides or disables the separate project sidebar. */
+export function createScopeStates(options: { chooseProject?: () => void } = {}): ScopeStatesView {
+  const el = h('section', { class: 'state-center scope-state', 'aria-live': 'polite' });
+  function update(state: ScopePanelState): void {
+    clear(el);
+    el.hidden = state.kind === 'ready';
+    el.setAttribute('aria-busy', String(state.kind === 'loading'));
+    if (state.kind === 'ready') return;
+    let title: string;
+    let message: string;
+    const details: HTMLElement[] = [];
+    switch (state.kind) {
+      case 'loading':
+        title = 'Loading project data';
+        message = state.message ?? 'Waiting for scope data. This is not an empty project.';
+        break;
+      case 'unavailable':
+        title = 'Project data unavailable';
+        message = state.message;
+        break;
+      case 'delayed':
+        title = 'Refresh delayed';
+        message = state.message;
+        details.push(
+          h(
+            'p',
+            null,
+            'Provider cooldown ends at ',
+            h('time', { datetime: state.expectedEnd }, absoluteTime(state.expectedEnd)),
+            '.',
+          ),
+        );
+        break;
+      case 'policy-conflict':
+        title = 'Planning policy conflict';
+        message = state.conflict.explanation;
+        details.push(
+          h('p', null, `Source: ${state.conflict.source}`),
+          h('p', null, `Differing settings: ${state.conflict.differingSettings.join(', ')}`),
+          h('p', null, `Views involved: ${state.conflict.views.join(', ')}`),
+          h(
+            'p',
+            null,
+            'Configure a sources[].planning block for this source to resolve the conflict.',
+          ),
+        );
+        break;
+      case 'not-in-catalog':
+        title = 'Project not in catalog';
+        message = `${state.source}${state.repo === undefined ? '' : ` / ${state.repo}`} is not in the configured catalog. Choose another project from the sidebar.`;
+        break;
+      case 'preference-error':
+        title = 'Couldn’t read preferences';
+        message = state.message;
+        details.push(
+          h('p', null, `Reason: ${state.reason}`),
+          h('p', null, 'Choose a project manually from the sidebar to continue.'),
+        );
+        if (options.chooseProject)
+          details.push(
+            h(
+              'button',
+              { class: 'btn', type: 'button', onclick: options.chooseProject },
+              'Choose a project',
+            ),
+          );
+        break;
+      case 'empty-catalog':
+        title = 'No projects configured';
+        message = 'Add projects to the server configuration, then reload.';
+        break;
+    }
+    el.append(h('div', { class: 'box' }, h('h2', null, title), h('p', null, message), ...details));
+  }
+  update({ kind: 'loading' });
+  return { el, update };
 }
