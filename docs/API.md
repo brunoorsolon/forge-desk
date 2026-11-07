@@ -127,7 +127,9 @@ serving cached observations; a cooldown returns `503` with `code: "source-cooldo
 `delayedUntil`. Scope reads have no `ETag` or `304`: freshness can change independently of plan content.
 
 Unknown sources and projects return `404` with `unknown-source` or `unknown-project`; policy
-conflicts return `409` with `policy-conflict` and the explanation. All these routes use the existing
+conflicts return `409` with `policy-conflict` and the explanation. The same code applies if
+a source has no resolved planning policy (for example an unused source with no explicit policy).
+All these routes use the existing
 planning login when configured, and are open otherwise. Responses are `Cache-Control: no-store`, with no CORS headers. Scope errors use
 `{ code, error }`; a cooldown also includes `delayedUntil`. Closing the runtime returns
 `503` with `code: "server-closing"`.

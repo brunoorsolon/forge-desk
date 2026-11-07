@@ -1141,8 +1141,9 @@ The GitHub provider also retains up to 1,000 GET responses with ETag or Last-Mod
 
 ## 14. HTTP API (`src/server/*`)
 
-`buildApp(config, service, { webDir?: string }): FastifyInstance`, plus
-`index.ts` to start it.
+`buildApp(config, service, options)` returns a `FastifyInstance`; its
+`BuildAppOptions` in `src/server/app.ts` accepts the web directory and injected
+scope, sweep, preference and release runtimes. `index.ts` owns server startup.
 
 | Method | Path                                         | Response                                                                       |
 | ------ | -------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -1246,7 +1247,9 @@ case-insensitive sets; priority labels compare in rank order. View `scope` filte
 for this comparison and are not applied to project/source browsing. A disagreement leaves the
 source policy unresolved and publishes a `SourcePolicyConflict` with the differing setting
 paths, view IDs and explanation. Scope routes refuse that source with `409 policy-conflict`;
-other sources and named views keep working. An empty source needs no inferred policy.
+other sources and named views keep working. An empty source needs no inferred policy at
+configuration load; if it has none, a direct scope read/refresh also returns `409 policy-conflict`
+with the explanation that the source has no planning policy.
 
 The catalog contains identities and policy status, never source credentials. Preferences use
 catalog membership rather than availability or policy usability to validate adds and remembers.
@@ -1268,8 +1271,9 @@ cannot make the observation fresh, even if its payload is accepted as last-good 
 
 `deriveScopePlan` (`src/service/scopePlan.ts`) is pure: it consumes those observations and the
 source's planning policy, reuses dependency resolution, `buildPlan`, layout and hashing, and
-returns the snapshot, freshness and referenced outside keys. Project derivation lists no sibling
-repositories; it follows required outside issues as context. A source scope includes its complete
+returns the snapshot, computation time, contributing repositories and pending/referenced
+outside keys. The read service builds freshness from these observations. Project refresh lists
+no sibling repositories; it looks up required outside issues as context. A source scope includes its complete
 catalog, including empty projects. Cross-scope changes take effect through shared observations
 and recomputation, without fetching unrelated repositories. Latest targeted observations can
 supersede an older sibling listing as dependency context, and vice versa.
