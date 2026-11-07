@@ -20,6 +20,7 @@ import {
 } from './scope-navigation.js';
 import { createProjectSidebar } from './views/project-sidebar.js';
 import { createScopeHeading } from './views/scope-heading.js';
+import { createSweepRefresh, type SweepRefreshState } from './sweep-refresh.js';
 import { h } from './dom.js';
 import { parseHash, serializeHash, type Route, type Tab } from './route.js';
 import { parseReleaseHash } from './release-route.js';
@@ -47,7 +48,7 @@ applyTheme(loadTheme());
 const store = new Store({ ...INITIAL_STATE, route: parseHash(location.hash) });
 
 // ------------------------------------------ project-first navigation wiring
-// Preference reads/saves and refresh mutations are wired by their own tickets.
+// Preference reads/saves are wired by their own ticket.
 const startupPreferences: StartupPreferences = {
   available: false,
   reason: 'storage-not-configured',
@@ -124,6 +125,25 @@ function resolveLocation(): void {
   const hash = serializeHash(store.get().route);
   if (location.hash !== hash) history.replaceState(null, '', hash);
   render();
+}
+
+// -------------------------------------------------------- explicit refresh wiring
+let sweepState: SweepRefreshState = { sweep: null, error: null };
+const sweepRefresh = createSweepRefresh(
+  (state) => {
+    sweepState = state;
+    render();
+  },
+  () => void scopeNavigation.check(),
+);
+function syncRefreshVisibility(): void {
+  sweepRefresh.setVisible(
+    !document.hidden &&
+      parseReleaseHash(location.hash) === null &&
+      resolved &&
+      navigationPanel === null &&
+      store.get().route.scope !== undefined,
+  );
 }
 
 // ---------------------------------------------------------------- navigation
@@ -221,7 +241,12 @@ const sidebar = createProjectSidebar({
   },
   toggleFavorite: () => {}, // unavailable until preference wiring supplies persistence
 });
-const heading = createScopeHeading({ toggleFavorite: () => {} });
+const heading = createScopeHeading({
+  toggleFavorite: () => {},
+  refreshProject: (project) => void scopeNavigation.refresh({ kind: 'project', ...project }),
+  refreshSource: (source) => void scopeNavigation.refresh({ kind: 'source', source }),
+  refreshAllSources: () => void sweepRefresh.refresh(),
+});
 const scopeStates = createScopeStates();
 const scopeEmpty = h(
   'section',
@@ -264,6 +289,7 @@ function syncArea(): void {
   const route = parseReleaseHash(location.hash);
   planning.hidden = route !== null;
   scopeNavigation.setVisible(!document.hidden && route === null);
+  syncRefreshVisibility();
   planningLink.setAttribute('aria-current', route === null ? 'page' : 'false');
   releasesLink.setAttribute('aria-current', route === null ? 'false' : 'page');
   if (route !== null) {
@@ -326,7 +352,13 @@ store.subscribe((state) => {
 
 function updateNavigation(state: ReturnType<Store['get']>): void {
   sidebar.update(state, preferences, catalog);
-  heading.update(state, preferences);
+  heading.update(
+    sweepState.error === null
+      ? state
+      : { ...state, refreshError: `All sources refresh: ${sweepState.error}` },
+    preferences,
+    sweepState.sweep,
+  );
   const scoped = state.route.scope !== undefined;
   const blocked = navigationPanel !== null;
   const panelState =
@@ -338,6 +370,7 @@ function updateNavigation(state: ReturnType<Store['get']>): void {
   scopeEmpty.hidden =
     blocked || !scoped || state.status !== 'ready' || state.snapshot?.plan.nodes.length !== 0;
   scopeNavigation.open(resolved && !blocked ? scopeFromRoute(state.route) : null);
+  syncRefreshVisibility();
 }
 
 function titleFor(state: ReturnType<Store['get']>): string {
@@ -401,6 +434,7 @@ fetchViews().then(
 document.addEventListener('visibilitychange', () => {
   const visible = !document.hidden && parseReleaseHash(location.hash) === null;
   scopeNavigation.setVisible(visible);
+  syncRefreshVisibility();
   if (visible && resolved && navigationPanel === null && store.get().route.scope === undefined)
     void refresh(false);
 });

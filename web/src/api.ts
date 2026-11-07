@@ -1,7 +1,7 @@
 import type { ProviderKind, Snapshot } from '../../src/core/types.js';
 import type { ReleaseJob, ReleasePlan, ReleasePlanWarning } from '../../src/core/release.js';
 import type { RouteScope } from './route.js';
-import type { CatalogResponse, Scope, ScopeResponse } from '../../src/core/scope.js';
+import type { CatalogResponse, Scope, ScopeResponse, SweepStatus } from '../../src/core/scope.js';
 
 /** Shape of one entry of `GET /api/views` (ARCHITECTURE section 13/14). */
 export interface ViewSummary {
@@ -98,6 +98,38 @@ export function fetchScopeSnapshot(scope: Scope): Promise<ScopeResponse> {
       ? ['sources', scope.source]
       : ['projects', scope.source, ...scope.repo.split('/')];
   return request(`${API}/${segments.map(encodeURIComponent).join('/')}/snapshot`);
+}
+
+/** Launch proof works with both an anonymous app and a session-authenticated app. */
+async function refreshHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'x-forge-desk-request': '1' };
+  try {
+    const { csrfToken } = await fetchSession();
+    if (csrfToken !== null) headers['x-csrf-token'] = csrfToken;
+  } catch (error) {
+    // Only the documented no-login response permits a launch without a session read.
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
+  }
+  return headers;
+}
+
+export async function refreshScope(scope: Scope): Promise<ScopeResponse> {
+  const segments =
+    scope.kind === 'source'
+      ? ['sources', scope.source]
+      : ['projects', scope.source, ...scope.repo.split('/')];
+  return request(`${API}/${segments.map(encodeURIComponent).join('/')}/refresh`, {
+    method: 'POST',
+    headers: await refreshHeaders(),
+  });
+}
+
+export async function refreshAllSources(): Promise<SweepStatus> {
+  return request(`${API}/refresh`, { method: 'POST', headers: await refreshHeaders() });
+}
+
+export function fetchSweep(): Promise<SweepStatus | null> {
+  return request(`${API}/refresh`);
 }
 
 export interface Settings {

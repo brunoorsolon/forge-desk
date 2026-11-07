@@ -38,6 +38,18 @@ jobs:
           path: navigation-browser-evidence
           if-no-files-found: ignore
 
+      - name: Scope refresh browser regression
+        run: node scripts/check-refresh-browser.mjs
+        env:
+          BROWSER_EVIDENCE_DIR: refresh-browser-evidence
+      - name: Preserve refresh browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-browser-evidence
+          path: refresh-browser-evidence
+          if-no-files-found: ignore
+
   docker:
     runs-on: ubuntu-latest
     steps:

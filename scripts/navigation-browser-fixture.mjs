@@ -3,9 +3,16 @@ import { fileURLToPath } from 'node:url';
 import { parseConfig } from '../dist/config/load.js';
 import { parseKey } from '../dist/core/keys.js';
 import { createScopeRuntime } from '../dist/service/scopeRuntime.js';
+import { SweepScheduler } from '../dist/service/sweepScheduler.js';
 import { buildApp } from '../dist/server/app.js';
 
-export async function navigationFixture({ conflicts = [], refreshMinutes = 0, seed = true } = {}) {
+export async function navigationFixture({
+  conflicts = [],
+  refreshMinutes = 0,
+  seed = true,
+  sweeps = false,
+  login = false,
+} = {}) {
   const coverage = { native: 'complete', subIssues: 'complete' };
   const listing = (repo) => ({
     issues: [
@@ -30,6 +37,9 @@ export async function navigationFixture({ conflicts = [], refreshMinutes = 0, se
   const config = parseConfig(
     JSON.stringify({
       ui: { refreshMinutes },
+      ...(login
+        ? { server: { basicAuth: { username: 'fixture', passwordEnv: 'FIXTURE_PASSWORD' } } }
+        : {}),
       cache: { ttlSeconds: 3600 },
       sources: [
         { id: 'alpha', kind: 'github' },
@@ -46,7 +56,7 @@ export async function navigationFixture({ conflicts = [], refreshMinutes = 0, se
         })),
       ],
     }),
-    {},
+    { FIXTURE_PASSWORD: 'fixture-only' },
   );
   const gates = new Map();
   const upstream = [];
@@ -79,18 +89,48 @@ export async function navigationFixture({ conflicts = [], refreshMinutes = 0, se
         );
       }
   const requests = [];
+  const responses = [];
+  let rejectRefresh = false;
+  const scheduler = sweeps
+    ? new SweepScheduler({
+        sources: config.catalog.sources,
+        jobs: runtime.jobs,
+        store: runtime.store,
+        sweepHours: 0,
+        ttlSeconds: config.cache.ttlSeconds,
+      })
+    : null;
   const app = buildApp(config, runtime.plans, {
     scopes: runtime,
+    ...(scheduler === null ? {} : { sweeps: scheduler }),
     webDir: fileURLToPath(new URL('../dist/web', import.meta.url)),
   });
-  app.addHook('onRequest', async (request) => {
-    requests.push({ url: request.url, at: Date.now() });
+  app.addHook('onRequest', async (request, reply) => {
+    requests.push({
+      url: request.url,
+      method: request.method,
+      at: Date.now(),
+      launchHeader: request.headers['x-forge-desk-request'],
+      hasCsrf: typeof request.headers['x-csrf-token'] === 'string',
+    });
+    if (rejectRefresh && request.method === 'POST' && request.url.endsWith('/refresh'))
+      return reply.code(403).send({ error: 'Fixture refresh rejected' });
+  });
+  app.addHook('onSend', async (request, _reply, payload) => {
+    if (request.url.endsWith('/refresh') && typeof payload === 'string')
+      responses.push({ url: request.url, method: request.method, body: JSON.parse(payload) });
+    return payload;
   });
   const origin = await app.listen({ host: '127.0.0.1', port: 0 });
   return {
     origin,
     requests,
+    responses,
     upstream,
+    sweep: () => scheduler?.status,
+    rejectRefresh(value = true) {
+      rejectRefresh = value;
+    },
     fail(project, message = 'Fixture upstream unavailable') {
       errors.set(`${project.source}/${project.repo}`, message);
       runtime.store.invalidateRepository(project);
