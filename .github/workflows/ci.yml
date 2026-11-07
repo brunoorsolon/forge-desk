@@ -24,6 +24,8 @@ jobs:
       - run: npm test
       - run: npm run format:check
       - run: npm run build
+      - name: Scope heading browser layout regression
+        run: node scripts/check-scope-heading-layout.mjs
 
   docker:
     runs-on: ubuntu-latest

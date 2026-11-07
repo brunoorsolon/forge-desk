@@ -709,6 +709,121 @@ a:hover {
   }
 }
 
+/* ----------------------------------------------------------- scope heading */
+
+.scope-heading {
+  flex: none;
+  /* Keep the plan visible even for large catalogs and running sweeps. */
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 14px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.scope-heading-top,
+.scope-identity,
+.scope-refresh-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.scope-heading-top {
+  justify-content: space-between;
+}
+.scope-source {
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.scope-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.scope-star {
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+.scope-star.active {
+  color: var(--blocked);
+}
+.scope-star[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: default;
+}
+.scope-preference-notice,
+.scope-freshness,
+.scope-sweep {
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+.scope-preference-notice {
+  display: block;
+  margin-top: 6px;
+}
+.scope-repositories {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+.scope-repository {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 4px 0;
+}
+.scope-repository-name {
+  font: 500 12px var(--font-mono);
+}
+.scope-status {
+  font-weight: 500;
+}
+.scope-repository[data-state='fresh'] > .scope-status,
+.scope-repository[data-state='checked'] > .scope-status {
+  color: var(--ready);
+}
+.scope-repository[data-state='stale'] > .scope-status,
+.scope-repository[data-state='invalidated'] > .scope-status,
+.scope-repository[data-state='delayed'] > .scope-status {
+  color: var(--blocked);
+}
+.scope-repository[data-state='failed'] > .scope-status,
+.scope-repository[data-state='unavailable'] > .scope-status,
+.scope-error {
+  color: var(--cycle);
+}
+.scope-observations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  color: var(--fg-3);
+}
+.scope-heading p {
+  margin: 4px 0;
+}
+.scope-sweep {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.scope-sweep h3,
+.scope-sweep h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+.scope-sweep-source {
+  margin-top: 8px;
+}
+.scope-sweep-source h4 .scope-status {
+  margin-left: 10px;
+  color: var(--fg-3);
+}
+
 /* ------------------------------------------------------------------ header */
 
 .app-header {
