@@ -43,6 +43,11 @@ export interface ScopePlanResult {
   computedAt: string;
   /** Sorted outstanding lookups, bounded by the legacy per-resolution budget. */
   pendingOutsideIssues: IssueKey[];
+  /** Observations used by this derivation, including closed dependency targets. */
+  contributingRepositories: string[];
+  referencedOutsideIssues: IssueKey[];
+  /** Targeted dependencies, including context supplied by another catalog listing. */
+  contextIssues: IssueKey[];
 }
 
 /** Derive from current observations, never from previously derived snapshots. No I/O. */
@@ -67,7 +72,14 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
   const listedRepos = scopeRepos.filter((repo) => records.get(repo)?.observation.issues != null);
   const unlistedRepos = scopeRepos.filter((repo) => records.get(repo)?.observation.issues == null);
   if (listedRepos.length === 0) {
-    return { snapshot: null, computedAt, pendingOutsideIssues: [] };
+    return {
+      snapshot: null,
+      computedAt,
+      pendingOutsideIssues: [],
+      contributingRepositories: scopeRepos,
+      referencedOutsideIssues: [],
+      contextIssues: [],
+    };
   }
   const id =
     scope.kind === 'project'
@@ -113,15 +125,31 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
     if (pending.length === 0) break;
     for (const key of pending) {
       const cached = knownCatalog.get(key);
-      if (cached) {
+      const record = outside.get(key);
+      const result = record?.observation.result;
+      // A project refresh lists only its own repository. Its targeted reads must
+      // therefore supersede older sibling listings, including observed closure.
+      const useTargeted =
+        result?.status === 'found' &&
+        (!cached ||
+          (record!.observation.lastCheckedAt ?? '') >=
+            (cached.record.observation.lastCheckedAt ?? ''));
+      // Keep failed targeted checks for retry pacing/provisional reporting even
+      // when the sibling listing remains the best available issue payload.
+      if (
+        record &&
+        (!cached ||
+          useTargeted ||
+          (record.observation.lastAttempt?.attemptedAt ?? '') >=
+            (cached.record.observation.lastCheckedAt ?? ''))
+      )
+        usedOutside.set(key, record);
+      if (cached && !useTargeted) {
         known.set(key, cached.issue);
         lookups.set(key, { status: 'found', issue: cached.issue });
         usedRepositories.add(cached.record.observation.project.repo.toLowerCase());
         continue;
       }
-      const record = outside.get(key);
-      const result = record?.observation.result;
-      if (record) usedOutside.set(key, record);
       // Stored results require no lookup and must not starve new dependencies.
       if (result?.status === 'found') {
         const issue = result.issue.key === key ? result.issue : { ...result.issue, key };
@@ -238,6 +266,11 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       snapshot: null,
       computedAt,
       pendingOutsideIssues: pendingOutsideIssues.sort(compareKeys),
+      contributingRepositories: [...new Set([...scopeRepos, ...usedRepositories])].sort(),
+      referencedOutsideIssues: [...lookups.keys()]
+        .filter((key) => !knownCatalog.has(key) || usedOutside.has(key))
+        .sort(compareKeys),
+      contextIssues: [...lookups.keys()].sort(compareKeys),
     };
   const snapshot: Snapshot = {
     viewId: id,
@@ -252,5 +285,14 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
     plan,
     layout,
   };
-  return { snapshot, computedAt, pendingOutsideIssues: pendingOutsideIssues.sort(compareKeys) };
+  return {
+    snapshot,
+    computedAt,
+    pendingOutsideIssues: pendingOutsideIssues.sort(compareKeys),
+    contributingRepositories: [...new Set([...scopeRepos, ...usedRepositories])].sort(),
+    referencedOutsideIssues: [...lookups.keys()]
+      .filter((key) => !knownCatalog.has(key) || usedOutside.has(key))
+      .sort(compareKeys),
+    contextIssues: [...lookups.keys()].sort(compareKeys),
+  };
 }

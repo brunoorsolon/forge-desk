@@ -21,6 +21,8 @@ export interface StoredObservation<T extends ObservationMetadata> {
   version: number;
   /** Only a successful read started in the current generation clears invalidation. */
   invalidated: boolean;
+  /** Generation captured by the latest failed attempt; newer invalidation bypasses retry pacing. */
+  failedGeneration: number | null;
 }
 
 interface ReadState {
@@ -111,6 +113,7 @@ function snapshot<T extends Observation>(
     observation: structuredClone(entry.observation),
     version: entry.version,
     invalidated: entry.invalidated,
+    failedGeneration: entry.failedGeneration,
   };
 }
 
@@ -138,6 +141,13 @@ export class ObservationStore {
 
   readOutsideIssue(ref: OutsideIssueRef): StoredObservation<OutsideIssueObservation> | undefined {
     return snapshot(this.outsideIssues.get(outsideId(ref)));
+  }
+
+  /** Detached source-local inputs for derivation, including closed outside issues. */
+  listOutsideIssues(source: string): StoredObservation<OutsideIssueObservation>[] {
+    return [...this.outsideIssues.values()]
+      .filter((entry) => entry.observation.source === source)
+      .map((entry) => snapshot(entry)!);
   }
 
   beginRepositoryRead(project: ProjectRef): RepositoryRead {
@@ -198,7 +208,7 @@ export class ObservationStore {
       // Providers use this for inaccessible 404/410s too. Keep the public last-good
       // issue, including body and relations, so derivation can retain every edge.
       entry.observation.result ??= { status: 'missing' };
-      this.failed(entry, copy.error ?? 'Issue was not found or is not accessible');
+      this.failed(entry, request, copy.error ?? 'Issue was not found or is not accessible');
       return true;
     }
     const coverage =
@@ -220,8 +230,9 @@ export class ObservationStore {
       token.kind === 'repository'
         ? this.repositories.get(repositoryId(token.project))
         : this.outsideIssues.get(outsideId(token));
-    if (!this.accept(token, entry) || !entry) return false;
-    this.failed(entry, error);
+    const request = this.accept(token, entry);
+    if (!request || !entry) return false;
+    this.failed(entry, request, error);
     return true;
   }
 
@@ -257,6 +268,7 @@ export class ObservationStore {
       observation,
       version: ++this.nextVersion,
       invalidated: false,
+      failedGeneration: null,
       lastAcceptedRead: 0,
       completeRelations: { native: null, subIssues: null },
     };
@@ -298,12 +310,13 @@ export class ObservationStore {
     return request;
   }
 
-  private failed(entry: Entry<Observation>, error: string): void {
+  private failed(entry: Entry<Observation>, request: PendingRead, error: string): void {
     entry.observation.lastAttempt = {
       attemptedAt: this.now().toISOString(),
       outcome: 'failed',
       error,
     };
+    entry.failedGeneration = request.generation;
     entry.version = ++this.nextVersion;
   }
 
@@ -325,6 +338,7 @@ export class ObservationStore {
       error: result.error ?? null,
     };
     entry.invalidated = request.generation !== entry.observation.invalidationGeneration;
+    entry.failedGeneration = null;
     entry.version = ++this.nextVersion;
   }
 

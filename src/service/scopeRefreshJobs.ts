@@ -44,6 +44,12 @@ export interface ScopeRefreshJob {
   readonly completion: Promise<ScopeRefreshJobStatus>;
 }
 
+export interface CompletedScopeRefresh {
+  finishedAt: string;
+  /** Source-local unit keys attempted by this job, including joined work. */
+  unitKeys: string[];
+}
+
 interface Job {
   status: ScopeRefreshJobStatus;
   units: Set<Unit>;
@@ -77,6 +83,7 @@ const isPartial = (coverage: RelationCoverage | undefined): boolean =>
 export class ScopeRefreshJobs {
   private readonly sources = new Map<string, SourceState>();
   private readonly jobs = new Map<string, Job>();
+  private readonly completed = new Map<string, CompletedScopeRefresh>();
   private readonly now: () => Date;
 
   constructor(
@@ -97,6 +104,12 @@ export class ScopeRefreshJobs {
 
   active(scope: Scope): ScopeRefreshJob | null {
     return this.jobs.get(scopeKey(this.canonicalScope(scope)))?.handle ?? null;
+  }
+
+  /** Retained for passive retry pacing, including jobs launched by a sweep. */
+  lastCompleted(scope: Scope): CompletedScopeRefresh | null {
+    const result = this.completed.get(scopeKey(this.canonicalScope(scope)));
+    return result ? { ...result, unitKeys: [...result.unitKeys] } : null;
   }
 
   /** Repeated opens/checks/refreshes join the same queued or running scope job. */
@@ -158,6 +171,10 @@ export class ScopeRefreshJobs {
         status.error = messageOf(error);
       } finally {
         status.finishedAt = this.timestamp();
+        this.completed.set(key, {
+          finishedAt: status.finishedAt,
+          unitKeys: [...job.units].map((unit) => unit.key),
+        });
         this.jobs.delete(key);
         for (const unit of job.units) unit.jobs.delete(job);
       }
