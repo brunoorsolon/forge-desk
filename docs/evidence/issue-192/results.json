@@ -1,0 +1,487 @@
+{
+  "checks": [
+    "Bare startup selects first nonempty source",
+    "Two source catalog mounted",
+    "Named-view selector and Refresh are hidden in scope mode",
+    "Source export menu uses scope route",
+    "Issue detail opens",
+    "Current scope preserves filter and details",
+    "Switch preserves tab/sort and clears filter/details",
+    "Narrow disclosure opens with keyboard",
+    "Escape closes disclosure and restores focus",
+    "Narrow selection closes sidebar and restores disclosure focus",
+    "Narrow sidebar can be reopened after navigation",
+    "Back and Forward restore scope and tab",
+    "Project export menu uses scope route",
+    "refreshMinutes=0 disables periodic checks",
+    "Active job follows up every two seconds",
+    "Another real tab makes the application hidden",
+    "Hidden pause, one return check, completed job stop, unopened projects untouched",
+    "Named view deep link preserved",
+    "Legacy view selector and Refresh remain visible",
+    "Release deep link preserved",
+    "Startup keeps first configured source and exposes its conflict",
+    "Startup and direct conflict branches remain explicit",
+    "Unavailable data is not presented as empty",
+    "Failed refresh retains last-good plan with explicit error",
+    "Cooldown exposes expected resume time",
+    "Configured one-minute timer rechecks only the open scope (Chromium virtual time)",
+    "Configured minute timer pauses while hidden and rechecks once on return"
+  ],
+  "requests": [
+    [
+      {
+        "url": "/?browser-case=1",
+        "at": 1794089133649
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089133677
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089133678
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089133698
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089133698
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089133706
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089133707
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089133722
+      },
+      {
+        "url": "/api/sources/alpha/snapshot",
+        "at": 1794089133742
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "at": 1794089133756
+      },
+      {
+        "url": "/?browser-case=2",
+        "at": 1794089133931
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089133948
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089133948
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089133951
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089133952
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089133969
+      },
+      {
+        "url": "/api/projects/beta/demo/three/snapshot",
+        "at": 1794089134217
+      },
+      {
+        "url": "/api/projects/alpha/demo/two/snapshot",
+        "at": 1794089134369
+      },
+      {
+        "url": "/api/projects/beta/demo/three/snapshot",
+        "at": 1794089134438
+      },
+      {
+        "url": "/api/projects/alpha/demo/two/snapshot",
+        "at": 1794089134451
+      },
+      {
+        "url": "/?browser-case=3",
+        "at": 1794089136767
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089136776
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089136777
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089136780
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089136781
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089136788
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089138805
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089140812
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089143465
+      },
+      {
+        "url": "/?browser-case=4",
+        "at": 1794089145685
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089145700
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089145702
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089145704
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089145705
+      },
+      {
+        "url": "/?browser-case=5",
+        "at": 1794089145780
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089145792
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089145793
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089145796
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089145796
+      },
+      {
+        "url": "/api/views/alpha-view/snapshot",
+        "at": 1794089145810
+      },
+      {
+        "url": "/?browser-case=6",
+        "at": 1794089145843
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089145859
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089145859
+      },
+      {
+        "url": "/api/releases/repositories",
+        "at": 1794089145866
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089145867
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089145867
+      }
+    ],
+    [
+      {
+        "url": "/?browser-case=7",
+        "at": 1794089145894
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089145903
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089145903
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089145915
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089145916
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089145921
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089145922
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089145927
+      },
+      {
+        "url": "/?browser-case=8",
+        "at": 1794089145957
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089145967
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089145967
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089145972
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089145974
+      }
+    ],
+    [
+      {
+        "url": "/?browser-case=9",
+        "at": 1794089146056
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089146062
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089146062
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089146077
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089146078
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089146082
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089146082
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089146084
+      }
+    ],
+    [
+      {
+        "url": "/?browser-case=10",
+        "at": 1794089146139
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089146145
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089146146
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089146160
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089146161
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089146168
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089146169
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089146173
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089146178
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "at": 1794089146199
+      }
+    ],
+    [
+      {
+        "url": "/?browser-case=11",
+        "at": 1794089146306
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089146311
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089146311
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089146322
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089146322
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089146328
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089146328
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089146332
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089146345
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "at": 1794089146358
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089148359
+      }
+    ],
+    [
+      {
+        "url": "/?browser-case=12",
+        "at": 1794089148456
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089148461
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089148461
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089148474
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089148474
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089148480
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089148481
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089148484
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "at": 1794089148497
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "at": 1794089148510
+      }
+    ],
+    [
+      {
+        "url": "/?browser-case=13",
+        "at": 1794089148606
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "at": 1794089148611
+      },
+      {
+        "url": "/assets/index-DJWUZeyS.js",
+        "at": 1794089148611
+      },
+      {
+        "url": "/api/session",
+        "at": 1794089148622
+      },
+      {
+        "url": "/api/settings",
+        "at": 1794089148623
+      },
+      {
+        "url": "/api/projects",
+        "at": 1794089148628
+      },
+      {
+        "url": "/api/views",
+        "at": 1794089148629
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "at": 1794089148631
+      },
+      {
+        "url": "/api/projects/beta/demo/three/snapshot",
+        "at": 1794089148642
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "at": 1794089148655
+      },
+      {
+        "url": "/api/projects/beta/demo/three/snapshot",
+        "at": 1794089148709
+      },
+      {
+        "url": "/api/projects/beta/demo/three/snapshot",
+        "at": 1794089148823
+      }
+    ]
+  ]
+}
