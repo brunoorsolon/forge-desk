@@ -1112,7 +1112,9 @@ not register HTTP routes or change named-view caching.
   service use the same guard. An unchecked invalidation in the scope's own
   repository observations or effective dependency context bypasses it only if the
   completed job attempted that unit, including when it joined a read that began
-  before the webhook. Capped or unreachable invalidated dependencies wait for the
+  before the webhook. Scope roots use repository units; dependency context uses
+  targeted issue units even when a newer sibling listing supplies its effective
+  observation. Capped or unreachable invalidated dependencies wait for the
   normal one-TTL retry instead of repeatedly restarting work that cannot clear
   them. A failed check in the current invalidation generation remains paced; a
   newer invalidation of an attempted unit retries immediately. Unrelated repository

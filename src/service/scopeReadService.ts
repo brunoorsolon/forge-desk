@@ -1,7 +1,5 @@
 import type {
   ObservationMetadata,
-  RepositoryObservation,
-  OutsideIssueObservation,
   Scope,
   ScopeResponse,
   RepositoryFreshness,
@@ -251,11 +249,15 @@ export class ScopeReadService {
   private needsRefresh(response: ScopeResponse, source: ScopeRefreshSource): boolean {
     const scope = response.scope;
     const plan = this.derive(scope, source);
-    const records: (
-      StoredObservation<RepositoryObservation | OutsideIssueObservation> | undefined
-    )[] = source.catalog.projects
+    const records: {
+      unitKey: string;
+      record: StoredObservation<ObservationMetadata> | undefined;
+    }[] = source.catalog.projects
       .filter((project) => scope.kind === 'source' || project.repo.toLowerCase() === scope.repo)
-      .map((project) => this.options.store.readRepository(project));
+      .map((project) => ({
+        unitKey: `repository:${project.repo}`,
+        record: this.options.store.readRepository(project),
+      }));
     for (const key of plan.contextIssues) {
       const targeted = this.options.store.readOutsideIssue({ source: scope.source, key });
       const repo = key.slice(0, key.lastIndexOf('#'));
@@ -272,7 +274,9 @@ export class ScopeReadService {
             (cached.observation.lastCheckedAt ?? ''))
           ? targeted
           : cached;
-      records.push(latest);
+      // Context is refreshed by a targeted lookup even when its effective
+      // observation comes from a newer sibling repository listing.
+      records.push({ unitKey: `outside-issue:${key}`, record: latest });
     }
     const completed = this.options.jobs.lastCompleted(scope);
     // A finished job can leave partial, capped or unreachable observations. Pace
@@ -282,17 +286,15 @@ export class ScopeReadService {
     // Only attempted units can demand an immediate recheck. A capped or
     // unreachable dependency cannot be cleared by repeating that same job.
     const attempted = new Set(completed?.unitKeys);
-    const uncheckedInvalidation = records.some((record) => {
+    const uncheckedInvalidation = records.some(({ unitKey, record }) => {
       if (!record?.invalidated) return false;
-      const observation = record.observation;
-      const key =
-        'project' in observation
-          ? `repository:${observation.project.repo}`
-          : `outside-issue:${observation.key}`;
-      return attempted.has(key) && record.failedGeneration !== observation.invalidationGeneration;
+      return (
+        attempted.has(unitKey) &&
+        record.failedGeneration !== record.observation.invalidationGeneration
+      );
     });
     if (completed && !this.expired(completed.finishedAt) && !uncheckedInvalidation) return false;
-    return records.some((record) => this.retryDue(record, source));
+    return records.some(({ record }) => this.retryDue(record, source));
   }
 
   private repositoryFreshness(

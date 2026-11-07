@@ -99,6 +99,67 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it.each(['closed', 'open', 'missing', 'failed', 'partial'] as const)(
+    'rechecks sibling context after a newer listing replaces its lookup, then paces the %s result',
+    async (outcome) => {
+      const f = fixture();
+      f.list.mockImplementation(async ({ repo }) =>
+        listing([issue(`o/${repo}#1`, repo === 'a' ? 'Depends on o/b#1' : '')]),
+      );
+      f.lookup.mockResolvedValue(issue('o/b#1'));
+      await f.service.refresh(project());
+      expect(f.jobs.lastCompleted(project())?.unitKeys).toEqual([
+        'repository:o/a',
+        'outside-issue:o/b#1',
+      ]);
+      vi.advanceTimersByTime(2000);
+      await f.service.refresh(project('o/b'));
+      // The sibling listing is newer, so derivation prunes the targeted record.
+      expect(f.store.readOutsideIssue({ source: 'gh', key: 'o/b#1' })).toBeUndefined();
+      expect((await f.service.get(project())).job).toBeNull();
+      expect(f.list).toHaveBeenCalledTimes(2);
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(2000);
+      f.store.invalidateRepository({ source: 'gh', repo: 'o/b' });
+      f.lookup.mockImplementation(async () => {
+        if (outcome === 'failed') throw new Error('offline');
+        if (outcome === 'missing') return null;
+        return {
+          ...issue('o/b#1', '', outcome === 'closed' ? 'closed' : 'open'),
+          relationCoverage:
+            outcome === 'partial' ? { native: 'failed', subIssues: 'complete' } : coverage,
+        };
+      });
+      expect((await f.service.get(project())).job).not.toBeNull();
+      await f.jobs.active(project())?.completion;
+      for (let n = 0; n < 5; n++) {
+        vi.advanceTimersByTime(2000);
+        const read = await f.service.get(project());
+        expect(read.job).toBeNull();
+        expect(read.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+          outcome === 'closed' ? 'ready' : 'blocked',
+        );
+      }
+      expect(f.list).toHaveBeenCalledTimes(3);
+      expect(f.lookup).toHaveBeenCalledTimes(2);
+      expect(f.list.mock.calls.map(([repo]) => repo.repo)).toEqual(['a', 'b', 'a']);
+
+      // A subsequent webhook must bypass pacing again, including after failure.
+      f.store.invalidateRepository({ source: 'gh', repo: 'o/b' });
+      f.lookup.mockResolvedValue(issue('o/b#1', '', 'closed'));
+      expect((await f.service.get(project())).job).not.toBeNull();
+      await f.jobs.active(project())?.completion;
+      const settled = await f.service.get(project());
+      expect(settled.job).toBeNull();
+      expect(settled.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+        'ready',
+      );
+      expect(f.list.mock.calls.map(([repo]) => repo.repo)).toEqual(['a', 'b', 'a', 'a']);
+      expect(f.lookup).toHaveBeenCalledTimes(3);
+    },
+  );
+
   it('paces an invalidated transitive target unreachable behind a failed lookup', async () => {
     const f = fixture();
     f.list.mockImplementation(async ({ repo }) =>
