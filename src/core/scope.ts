@@ -172,9 +172,11 @@ export interface SweepSourceStatus {
 }
 
 export interface SweepStatus {
+  /** Present only when no upstream work can be served from cache. */
+  skipReason?: 'caching-disabled';
   id: string;
   trigger: RefreshTrigger;
-  state: RefreshJobState;
+  state: RefreshJobState | 'skipped';
   startedAt: string;
   finishedAt: string | null;
   sources: SweepSourceStatus[];
