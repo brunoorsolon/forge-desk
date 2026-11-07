@@ -471,6 +471,18 @@ describe('rule 4: ignored regions', () => {
       expected: ['b:#1'],
     },
   ]);
+
+  it.each([
+    'Note `a\nBlocked by: [#1]\n<details>\nb` end',
+    'Note `a\nBlocked by: [#1]\n<!-- see `x` -->',
+    'Note `a\nBlocked by: [#1]\n<div>b` end</div>',
+    '- ```\n  b`\nBlocked by: [#1]\nb`',
+    '`a\nBlocked by: [#1]\nb`',
+  ])('preserves single-line dependency code spans in %s', (body) => {
+    // Dependency parsing predates closing PRs and must retain main's edge semantics.
+    expect(parseBodyRelations(body, { strict: true })).toEqual([rel('b:#1')]);
+    expect(parseBodyRelations(body)).toEqual([rel('b:#1')]);
+  });
 });
 
 describe('rule 5: prose is ignored', () => {
@@ -944,6 +956,19 @@ describe('parseClosingIssues', () => {
     expect(parseClosingIssues(body, HOSTS)).toEqual(['#2'].map(issueRef));
   });
 
+  it.each([
+    ['one backtick per line', '`\n'.repeat(32_760)],
+    ['quoted ordered list items', '2. >\n'.repeat(13_104)],
+    ['paired multiline prose', 'text `a\nb` text\n'.repeat(4_000)],
+  ])('handles a large body with %s and preserves the following reference', (_name, prefix) => {
+    const body = `${prefix}\nFixes #2`;
+    expect(body.length).toBeLessThanOrEqual(65_536);
+    expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+    expect(parseBodyRelations(`${prefix}\nBlocked by: [#2]`, { strict: true })).toEqual([
+      rel('b:#2'),
+    ]);
+  });
+
   it.each(['-', '*', '+', '1.', '2.', '1)', '- 1.', '1. -'])(
     'ignores fenced code and blockquotes after the %s list marker',
     (marker) => {
@@ -1038,9 +1063,6 @@ describe('parseClosingIssues', () => {
         '\n',
       );
       expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
-      expect(
-        parseBodyRelations(body.replace('Closes #1', 'Blocked by: [#1]'), { strict: true }),
-      ).toEqual([]);
     },
   );
 

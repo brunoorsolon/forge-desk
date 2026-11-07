@@ -338,4 +338,20 @@ describe('pure resolution', () => {
       ['a/r#2', 'ready', []],
     ]);
   });
+
+  it.each([
+    'Note `a\nBlocked by: [#1]\n<details>\nb` end',
+    'Note `a\nBlocked by: [#1]\n<!-- see `x` -->',
+    'Note `a\nBlocked by: [#1]\n<div>b` end</div>',
+    '- ```\n  b`\nBlocked by: [#1]\nb`',
+  ])('keeps a dependency blocked around HTML and unmatched backticks: %s', (body) => {
+    const plan = buildPlan(
+      resolvePlanInput([issue(1), issue(2, body)], new Map(), {
+        ...settings,
+        dependencies: { ...settings.dependencies, body: 'strict' },
+      }),
+    );
+    expect(plan.edges).toEqual([{ from: 'a/r#1', to: 'a/r#2', sources: ['body'] }]);
+    expect(plan.nodes.find((node) => node.key === 'a/r#2')?.status).toBe('blocked');
+  });
 });

@@ -113,9 +113,14 @@ function matchesWebRoot(
   return roots.some((r) => r.host === host && r.subpath === subpath);
 }
 
+interface CodeSpanEnd {
+  line: number;
+  col: number;
+}
+
 interface LineState {
   inComment: boolean;
-  codeSpanEnd: { line: number; col: number } | null;
+  codeSpanEnd: CodeSpanEnd | null;
 }
 
 /** Markdown indentation uses four-column tab stops, including inside list containers. */
@@ -154,11 +159,13 @@ function isFenceOpenLine(raw: string): { char: string; length: number } | null {
   return { char: marker[0]!, length: marker.length };
 }
 
-function listItemContent(raw: string): {
+interface ListItemContent {
   text: string;
   listIndent: number;
   itemIndent: number | null;
-} {
+}
+
+function listItemContent(raw: string): ListItemContent {
   let text = raw;
   let listIndent = 0;
   let itemIndent: number | null = null;
@@ -172,12 +179,10 @@ function listItemContent(raw: string): {
   return { text, listIndent, itemIndent };
 }
 
-function isInlineBlockBoundary(raw: string, openingLine: string): boolean {
-  const openingItem = listItemContent(openingLine);
+function isInlineBlockBoundary(raw: string, openingItem: ListItemContent): boolean {
   // Markdown block indentation is relative to the containing list item.
-  const block = raw.startsWith(' '.repeat(openingItem.listIndent))
-    ? raw.slice(openingItem.listIndent)
-    : raw;
+  const block =
+    /^ */.exec(raw)![0].length >= openingItem.listIndent ? raw.slice(openingItem.listIndent) : raw;
   const nextItem = INLINE_LIST_ITEM_RE.exec(raw);
   const nestedItem = INLINE_LIST_ITEM_RE.exec(block);
   // A sibling item ends an existing list paragraph regardless of its number.
@@ -201,30 +206,62 @@ function isInlineBlockBoundary(raw: string, openingLine: string): boolean {
   );
 }
 
-/** Retains list context when a backtick opens on a paragraph's continuation line. */
-function inlineParagraphOpeningLine(lines: readonly string[], lineIndex: number): string {
-  let start = lineIndex;
-  while (start > 0) {
-    const previous = lines[start - 1]!;
-    if (isInlineBlockBoundary(previous, '')) {
-      if (INLINE_LIST_ITEM_RE.test(previous)) start--;
-      break;
+interface ClosingLineContext {
+  block: Pick<ListItemContent, 'text' | 'listIndent'>;
+  codeSpanEnds: Map<number, CodeSpanEnd>;
+}
+
+/**
+ * Carry paragraph/list context forward once, and link each backtick run to the
+ * next equal-length run in its paragraph. Parsing never rescans earlier lines
+ * or searches the remaining paragraph for each unmatched delimiter.
+ */
+function closingLineContexts(lines: readonly string[]): ClosingLineContext[] {
+  const contexts: ClosingLineContext[] = [];
+  const root = listItemContent('');
+  let openingItem = root;
+  let newParagraph = true;
+  const pending = new Map<number, { line: number; col: number }>();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!;
+    const content = listItemContent(raw);
+    const startsBlock = newParagraph || isInlineBlockBoundary(raw, openingItem);
+    if (startsBlock) {
+      openingItem = content;
+      pending.clear();
     }
-    start--;
+    contexts.push({
+      block: startsBlock ? content : { text: raw, listIndent: 0 },
+      codeSpanEnds: new Map(),
+    });
+    for (const run of raw.matchAll(/`+/g)) {
+      const length = run[0].length;
+      const previous = pending.get(length);
+      if (previous) {
+        contexts[previous.line]!.codeSpanEnds.set(previous.col, {
+          line: lineIndex,
+          col: run.index + length,
+        });
+      }
+      pending.set(length, { line: lineIndex, col: run.index });
+    }
+    newParagraph = isInlineBlockBoundary(raw, root) && content.listIndent === 0;
   }
-  let openingLine = lines[start]!;
-  for (let k = start + 1; k <= lineIndex; k++) {
-    if (isInlineBlockBoundary(lines[k]!, openingLine)) openingLine = lines[k]!;
-  }
-  return openingLine;
+  return contexts;
 }
 
 /**
  * Removes HTML comments (replaced by a space) and inline code spans (replaced by a
- * placeholder) from one line. Comment and multiline inline code-span state carry over
- * to following lines within the same paragraph/block.
+ * placeholder) from one line. Comments carry over. Closing-reference parsing
+ * supplies precomputed multiline spans; dependency parsing keeps its original
+ * single-line code-span behavior so PR metadata cannot change dependency edges.
  */
-function cleanLine(lines: readonly string[], lineIndex: number, state: LineState): string {
+function cleanLine(
+  lines: readonly string[],
+  lineIndex: number,
+  state: LineState,
+  codeSpanEnds?: ReadonlyMap<number, CodeSpanEnd>,
+): string {
   const line = lines[lineIndex]!;
   let out = '';
   let i = 0;
@@ -254,29 +291,21 @@ function cleanLine(lines: readonly string[], lineIndex: number, state: LineState
     } else if (ch === '`') {
       let n = 1;
       while (line[i + n] === '`') n++;
-      const sameLineClose = findBacktickClose(line, i + n, n);
-      if (sameLineClose >= 0) {
-        out += CODE_PLACEHOLDER;
-        i = sameLineClose;
+      let close: CodeSpanEnd | undefined;
+      if (codeSpanEnds !== undefined) {
+        close = codeSpanEnds.get(i);
       } else {
-        let multilineClose: { line: number; col: number } | null = null;
-        if (!HEADING_RE.test(line)) {
-          const openingLine = inlineParagraphOpeningLine(lines, lineIndex);
-          for (let k = lineIndex + 1; k < lines.length; k++) {
-            const nextLine = lines[k]!;
-            if (isInlineBlockBoundary(nextLine, openingLine)) break;
-            const col = findBacktickClose(nextLine, 0, n);
-            if (col >= 0) {
-              multilineClose = { line: k, col };
-              break;
-            }
-          }
-        }
-        if (multilineClose !== null) {
-          state.codeSpanEnd = multilineClose;
-          out += CODE_PLACEHOLDER;
+        const col = findBacktickClose(line, i + n, n);
+        if (col >= 0) close = { line: lineIndex, col };
+      }
+      if (close !== undefined) {
+        out += CODE_PLACEHOLDER;
+        if (close.line > lineIndex) {
+          state.codeSpanEnd = close;
           return out;
         }
+        i = close.col;
+      } else {
         out += line.slice(i, i + n);
         i += n;
       }
@@ -296,24 +325,6 @@ const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
 const INLINE_LIST_ITEM_RE = /^( {0,3})(?:[-*+]|(\d{1,9})[.)])(?:[ \t]+|$)/;
 const THEMATIC_BREAK_RE = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/;
 const SETEXT_UNDERLINE_RE = /^ {0,3}(?:=+|-+)[ \t]*$/;
-
-/** Fences and quotes may start at the content of one or more nested list items. */
-function closingBlockContent(
-  lines: readonly string[],
-  lineIndex: number,
-): { text: string; listIndent: number } {
-  const raw = lines[lineIndex]!;
-  const content = listItemContent(raw);
-  // Ordinary prose/list text needs no paragraph lookbehind here.
-  if (content.listIndent === 0 || !/^\s*(?:>|`{3,}|~{3,})/.test(content.text)) {
-    return { text: raw, listIndent: 0 };
-  }
-  const openingLine = inlineParagraphOpeningLine(lines, lineIndex);
-  if (isInlineBlockBoundary(raw, openingLine)) {
-    return content;
-  }
-  return { text: raw, listIndent: 0 };
-}
 
 /**
  * A relation line: `Blocked by: [...]` or `Parent: [...]`, optionally after a list
@@ -481,6 +492,7 @@ export function parseClosingIssues(body: string, options: ClosingParseOptions = 
   const lineState: LineState = { inComment: false, codeSpanEnd: null };
   let fence: { char: string; length: number; listIndent: number } | null = null;
   const lines = bodyLines(body);
+  const contexts = closingLineContexts(lines);
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const raw = lines[lineIndex]!;
@@ -494,7 +506,7 @@ export function parseClosingIssues(body: string, options: ClosingParseOptions = 
       continue;
     }
     if (!lineState.inComment && lineState.codeSpanEnd === null) {
-      const block = closingBlockContent(lines, lineIndex);
+      const block = contexts[lineIndex]!.block;
       if (/^\s*>/.test(block.text)) continue;
       const opened = isFenceOpenLine(block.text);
       if (opened) {
@@ -503,7 +515,7 @@ export function parseClosingIssues(body: string, options: ClosingParseOptions = 
       }
     }
 
-    const line = cleanLine(lines, lineIndex, lineState);
+    const line = cleanLine(lines, lineIndex, lineState, contexts[lineIndex]!.codeSpanEnds);
     if (/^\s*>/.test(line)) continue;
 
     for (const m of line.matchAll(closingRe)) {
