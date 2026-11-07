@@ -18,7 +18,7 @@ export type ExportFormat = 'json' | 'md' | 'mmd' | 'dot';
 
 export class ApiError extends Error {
   readonly status: number;
-  /** Stable release error code from the response body, when the server sent one. */
+  /** Stable API error code from the response body, when the server sent one. */
   readonly code: string | undefined;
   constructor(message: string, status: number, code?: string) {
     super(message);
@@ -87,7 +87,7 @@ async function requestText(path: string): Promise<string> {
   return await (await send(path)).text();
 }
 
-/** Session-bound CSRF proof for every release mutation; signing in again is required. */
+/** Session-bound CSRF proof for protected browser mutations; signing in again is required. */
 async function csrfHeaders(signal?: AbortSignal): Promise<Record<string, string>> {
   const { csrfToken } = await fetchSession(signal);
   signal?.throwIfAborted();

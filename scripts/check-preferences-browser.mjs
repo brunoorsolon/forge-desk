@@ -39,6 +39,7 @@ let sequence = 0;
 const pending = new Map();
 const fixtures = [];
 const profiles = [];
+const preferenceTraffic = new Map();
 const checks = [];
 const started = Date.now();
 async function until(check, description, timeout = 7000) {
@@ -67,6 +68,9 @@ async function profile() {
   const { targetId } = await cdp('Target.createTarget', { url: 'about:blank', browserContextId });
   const { sessionId } = await cdp('Target.attachToTarget', { targetId, flatten: true });
   const send = (method, params = {}) => cdp(method, params, sessionId);
+  const inflight = new Set();
+  preferenceTraffic.set(sessionId, inflight);
+  await send('Network.enable');
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', {
     width: 1280,
@@ -83,11 +87,31 @@ async function profile() {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
+  let siblingTargetId;
   const page = {
     send,
     evaluate,
     browserContextId,
     targetId,
+    inflight,
+    async hide() {
+      // Isolated contexts own separate windows; focusing another profile is not tab hiding.
+      // Activate a genuine sibling tab in this context to emit real visibilitychange events.
+      if (!siblingTargetId) {
+        const sibling = await cdp('Target.createTarget', {
+          url: 'about:blank',
+          browserContextId,
+          newWindow: false,
+        });
+        siblingTargetId = sibling.targetId;
+      }
+      await cdp('Target.activateTarget', { targetId: siblingTargetId });
+      await until(() => evaluate('document.hidden'), 'profile tab hidden by sibling');
+    },
+    async show() {
+      await send('Page.bringToFront');
+      await until(() => evaluate('!document.hidden'), 'profile tab visible');
+    },
     async wait(expression, description) {
       await until(() => evaluate(expression), description);
     },
@@ -109,7 +133,7 @@ async function profile() {
 let visits = 0;
 async function visit(page, fixture, hash = '') {
   page.fixture = fixture;
-  await page.send('Page.bringToFront');
+  await page.show();
   const search = `?preferences-case=${++visits}`;
   await page.send('Page.navigate', { url: fixture.origin + '/' + search + hash });
   await page.wait(
@@ -119,9 +143,12 @@ async function visit(page, fixture, hash = '') {
 }
 async function login(page, fixture) {
   page.fixture = fixture;
-  await page.send('Page.bringToFront');
+  await page.show();
   await page.send('Page.navigate', { url: fixture.origin + '/login' });
-  await page.wait(`Boolean(document.querySelector('input[name="username"]'))`, 'login form');
+  await page.wait(
+    `location.origin === ${JSON.stringify(fixture.origin)} && location.pathname === '/login' && Boolean(document.querySelector('input[name="username"]'))`,
+    'login form',
+  );
   await page.evaluate(
     `document.querySelector('[name=username]').value='browser'; document.querySelector('[name=password]').value='disposable-browser-password'; document.querySelector('form').requestSubmit()`,
   );
@@ -144,6 +171,7 @@ async function favorites(page, names) {
     `JSON.stringify(${favoriteNames}) === ${JSON.stringify(JSON.stringify(names.map((name) => `Open ${name}`)))} && ${writable}`,
     'authoritative favorite list',
   );
+  await settle(page);
 }
 const rememberWrites = (fixture) =>
   fixture.requests.filter(
@@ -152,8 +180,10 @@ const rememberWrites = (fixture) =>
 const reads = (fixture) =>
   fixture.requests.filter((r) => r.method === 'GET' && r.url === '/api/preferences').length;
 async function settle(page) {
+  await until(() => page.inflight.size === 0, 'preference HTTP responses completed');
   await page.wait(writable, 'preferences writable');
-  await sleep(70);
+  // Let fetch completion continuations render before inspecting stable state.
+  await page.evaluate('new Promise(resolve => requestAnimationFrame(() => resolve()))');
 }
 async function fixture(name, options) {
   const value = await preferencesFixture(join(temporary, name), options);
@@ -182,6 +212,17 @@ try {
   });
   socket.addEventListener('message', (event) => {
     const response = JSON.parse(event.data);
+    const traffic = preferenceTraffic.get(response.sessionId);
+    if (
+      traffic &&
+      response.method === 'Network.requestWillBeSent' &&
+      new URL(response.params.request.url).pathname.startsWith('/api/preferences')
+    ) {
+      traffic.add(response.params.requestId);
+    }
+    if (traffic && ['Network.loadingFinished', 'Network.loadingFailed'].includes(response.method)) {
+      traffic.delete(response.params.requestId);
+    }
     const call = pending.get(response.id);
     if (!call) return;
     clearTimeout(call.timer);
@@ -215,21 +256,36 @@ try {
   assert.equal(rememberWrites(shared), 0, 'Favorite startup fallback does not remember');
   await b.shot('second-profile-favorite-fallback');
 
-  await a.send('Page.bringToFront');
-  await b.wait(`document.hidden`, 'second profile hidden');
+  await b.hide();
+  await a.show();
   await a.click('Add beta / demo/three to favorites');
   await favorites(a, ['alpha / demo/two', 'alpha / demo/one', 'beta / demo/three']);
   const beforeReturn = reads(shared);
-  await b.send('Page.bringToFront');
+  await b.show();
   await favorites(b, ['alpha / demo/two', 'alpha / demo/one', 'beta / demo/three']);
   assert.ok(reads(shared) > beforeReturn, 'Tab return rereads shared preferences');
   checks.push('Tab return synchronizes ordered favorites across isolated profiles');
+  const openDestination = await a.evaluate('location.hash');
+  await a.hide();
+  await b.show();
   await b.click('Open beta / demo/three');
   await until(
     () => shared.preferences.read().profile.rememberedProject?.repo === 'demo/three',
     'explicit project remembered',
   );
+  const beforeRemoteReturn = reads(shared);
+  await a.show();
+  await until(() => reads(shared) > beforeRemoteReturn, 'remote remembered-project reread');
+  await settle(a);
+  await a.expect(
+    `location.hash === ${JSON.stringify(openDestination)}`,
+    'A remote remembered-project change never moves an already open page',
+  );
   await visit(a, shared);
+  await a.wait(
+    `location.hash === '#/project/beta/demo/three/graph' && ${writable}`,
+    'remembered startup resolved',
+  );
   await a.expect(
     `location.hash === '#/project/beta/demo/three/graph'`,
     'Bare startup resumes the remembered project across profiles',
@@ -254,6 +310,7 @@ try {
     () => shared.preferences.read().profile.rememberedProject?.repo === 'demo/one',
     'explicit hash remembered',
   );
+  await settle(a);
   checks.push('An explicit project deep link is remembered');
 
   shared.failNext('reject');
@@ -292,12 +349,31 @@ try {
   await a.shot('remember-failure');
 
   // Revoke the real session behind the still-open app, then trigger its normal tab-return read.
+  const mutationsBeforeExpiry = shared.requests.filter(
+    (r) => r.url.startsWith('/api/preferences/') && r.method !== 'GET',
+  ).length;
   await a.evaluate(`fetch('/logout', {method:'POST'}).then(r => r.text())`);
-  await b.send('Page.bringToFront');
-  await a.wait('document.hidden', 'expired profile hidden');
-  await a.send('Page.bringToFront');
+  await a.hide();
+  await a.show();
   await a.wait(`${favoriteNames}.length === 0`, 'expired session clears personal UI');
   checks.push('Session expiry clears personal favorites on the first unauthorized read');
+  await a.wait(
+    `location.pathname === '/login' && Boolean(document.querySelector('input[name="username"]'))`,
+    'expired session requires login',
+  );
+  // Retrying the protected page must stay behind the real login gate, never replay a save.
+  await a.send('Page.navigate', { url: shared.origin + '/?expired-retry=1' });
+  await a.wait(
+    `location.pathname === '/login' && Boolean(document.querySelector('input[name="username"]'))`,
+    'protected-page retry still requires login',
+  );
+  assert.equal(
+    shared.requests.filter((r) => r.url.startsWith('/api/preferences/') && r.method !== 'GET')
+      .length,
+    mutationsBeforeExpiry,
+    'Expired sessions never replay protected mutations',
+  );
+  checks.push('Retry after session expiry requires login and does not replay preference mutations');
   await a.shot('session-expired');
   await login(b, shared);
   await favorites(b, ['alpha / demo/two', 'beta / demo/three']);
@@ -316,6 +392,27 @@ try {
     'logout removes personal UI',
   );
   checks.push('Explicit logout leaves no personal favorites visible');
+
+  const transient = await fixture('transient-read');
+  transient.failNext('read');
+  await login(a, transient);
+  await a.wait(
+    `Boolean(document.querySelector('.preference-retry:not([hidden])'))`,
+    'bare preference read failure offers retry',
+  );
+  await a.expect(
+    `['', '#/'].includes(location.hash) && !(${writable})`,
+    'Failed bare preference read does not silently choose a destination',
+  );
+  await a.shot('bare-read-failure');
+  await a.evaluate(`document.querySelector('.preference-retry').click()`);
+  await a.wait(
+    `location.hash === '#/source/alpha/graph' && ${writable}`,
+    'bare retry resolves after recovered preference read',
+  );
+  assert.equal(rememberWrites(transient), 0, 'Retry fallback does not remember');
+  checks.push('Bare preference-error retry rereads and resolves startup after recovery');
+  await a.shot('bare-read-recovered');
 
   for (const [name, options, fragment] of [
     ['login-disabled', { login: false }, 'require the application login'],

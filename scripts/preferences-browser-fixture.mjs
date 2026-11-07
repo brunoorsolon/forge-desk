@@ -78,6 +78,10 @@ export async function preferencesFixture(
   });
   app.addHook('onRequest', async (request, reply) => {
     requests.push({ method: request.method, url: request.url });
+    if (fault === 'read' && request.url === '/api/preferences' && request.method === 'GET') {
+      fault = null;
+      return reply.code(500).send({ error: 'Preferences temporarily could not be read.' });
+    }
     if (
       fault === 'reject' &&
       request.url.startsWith('/api/preferences/') &&
