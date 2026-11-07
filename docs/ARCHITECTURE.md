@@ -1100,16 +1100,24 @@ not register HTTP routes or change named-view caching.
 
 - Fresh contributing observations cause no upstream work. Stale, missing or
   invalidated observations start/join an interactive job, retaining last-good
-  data, per-repository check times, partial coverage and errors.
+  data, per-repository check times, partial coverage and errors. A failed attempt
+  is retried after its TTL rather than on every passive read; an explicit refresh
+  can retry immediately. Failed/unavailable states remain visible during that wait.
 - First-load and explicit refresh reads wait at most 15 seconds. Missing data
   remains a null snapshot; a successful empty listing is a real empty plan.
 - Zero TTL always waits for revalidation and only derives from that job's
-  successful units, excluding unrelated cached listings. An unfinished or failed
-  revalidation never returns a cached snapshot. A source already in cooldown
+  successful units, excluding unrelated cached listings. An unfinished revalidation
+  returns no snapshot. A partial failure preserves that job's successful updates
+  and provisional dependency edges without falling back to failed units' cached
+  data. Successful zero-TTL observations report fresh regardless of elapsed time.
+  A source already in cooldown
   raises `ScopeCooldownError` with its ISO `delayedUntil` immediately.
 - Derivation reports contributing repositories and outside references, including
   closed dependency targets. Each read recomputes catalog scope plans from current
   observations, so cross-scope changes and age warnings need no unrelated fetch.
+  Newer targeted dependency observations supersede older sibling listings in
+  project context. Reads settle after that revalidation without listing siblings;
+  a later sibling listing can supersede the targeted observation in turn.
   Outside freshness reports the oldest successful observation (null if any has
   never succeeded), and counts incomplete/unavailable outside observations.
 - After recomputation, unreferenced outside observations and non-catalog listings

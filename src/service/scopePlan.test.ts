@@ -193,6 +193,7 @@ describe('scope plan derivation', () => {
         pendingOutsideIssues: [],
         contributingRepositories: state === 'empty-catalog' ? [] : ['a/other', 'a/r'],
         referencedOutsideIssues: [],
+        contextIssues: [],
       });
     },
   );
@@ -260,6 +261,29 @@ describe('scope plan derivation', () => {
     expect(nodes(o).find((n) => n.key === 'a/r#1')!.status).toBe('blocked');
     o.repositories[1]!.observation.project.source = 'other';
     expect(deriveScopePlan(o).pendingOutsideIssues).toEqual(['a/other#2']);
+  });
+  it('uses newer targeted sibling observations and returns to a later catalog listing', () => {
+    const o = input();
+    o.repositories[0]!.observation.issues = [issue(1, 'Blocked by a/other#2')];
+    const targeted = outside('a/other#2', {
+      status: 'found',
+      issue: { ...issue(2, '', 'a/other'), state: 'closed' },
+    });
+    targeted.observation.lastCheckedAt = '2026-11-06T12:00:01.000Z';
+    targeted.observation.lastAttempt!.attemptedAt = targeted.observation.lastCheckedAt;
+    o.outsideIssues = [targeted];
+    const result = deriveScopePlan(o);
+    expect(result.snapshot!.plan.nodes.map((n) => [n.key, n.status])).toEqual([['a/r#1', 'ready']]);
+    expect(result.contributingRepositories).toEqual(['a/r']);
+    expect(result.referencedOutsideIssues).toEqual(['a/other#2']);
+    expect(result.contextIssues).toEqual(['a/other#2']);
+
+    // A later listing can observe reopening and supersede the targeted closure.
+    o.repositories[1]!.observation.lastCheckedAt = '2026-11-06T12:00:02.000Z';
+    const reopened = deriveScopePlan(o);
+    expect(reopened.snapshot!.plan.nodes.find((n) => n.key === 'a/r#1')!.status).toBe('blocked');
+    expect(reopened.contributingRepositories).toEqual(['a/other', 'a/r']);
+    expect(reopened.referencedOutsideIssues).toEqual([]);
   });
   it.each(['missing', 'unresolved', 'null'] as const)(
     'retains %s blockers and warns affected issues',

@@ -164,8 +164,7 @@ export class ScopeReadService {
       this.options.store.prune({ sources: this.options.sources.map((s) => s.catalog) }, references);
     const job = this.options.jobs.active(scope)?.status ?? null;
     const status = revalidation?.status;
-    const hideCached =
-      status && (status.finishedAt === null || status.units.some((u) => u.state === 'failed'));
+    const hideCached = status && status.finishedAt === null;
     const outside = result.referencedOutsideIssues.map((key) =>
       this.options.store.readOutsideIssue({ source: scope.source, key }),
     );
@@ -225,26 +224,57 @@ export class ScopeReadService {
           : [],
       ),
     ];
-    return checks.some(
-      (check) => this.now().getTime() - Date.parse(check) > this.options.cache.ttlSeconds * 1000,
-    );
+    return this.options.cache.ttlSeconds > 0 && checks.some((check) => this.expired(check));
+  }
+
+  private expired(check: string): boolean {
+    return this.now().getTime() - Date.parse(check) > this.options.cache.ttlSeconds * 1000;
+  }
+
+  private retryDue(
+    record: StoredObservation<ObservationMetadata> | undefined,
+    source: ScopeRefreshSource,
+  ): boolean {
+    // Failure is still reported as failed/stale, but polling is not permission
+    // to retry upstream at the page's polling rate, even before first data.
+    const attempt = record?.observation.lastAttempt;
+    if (
+      attempt?.outcome === 'failed' &&
+      record!.failedGeneration === record!.observation.invalidationGeneration
+    )
+      return this.expired(attempt.attemptedAt);
+    return this.stale(record, source);
   }
 
   private needsRefresh(response: ScopeResponse, source: ScopeRefreshSource): boolean {
+    const scope = response.scope;
+    const plan = this.derive(scope, source);
     if (
-      !response.snapshot ||
-      response.freshness.repositories.some((r) =>
-        this.stale(this.options.store.readRepository(r.project), source),
+      source.catalog.projects.some(
+        (project) =>
+          (scope.kind === 'source' || project.repo.toLowerCase() === scope.repo) &&
+          this.retryDue(this.options.store.readRepository(project), source),
       )
     )
       return true;
-    const plan = this.derive(response.scope, source);
-    return plan.referencedOutsideIssues.some((key) =>
-      this.stale(
-        this.options.store.readOutsideIssue({ source: response.scope.source, key }),
-        source,
-      ),
-    );
+    return plan.contextIssues.some((key) => {
+      const targeted = this.options.store.readOutsideIssue({ source: scope.source, key });
+      const repo = key.slice(0, key.lastIndexOf('#'));
+      const listing = source.catalog.projects.some((p) => p.repo.toLowerCase() === repo)
+        ? this.options.store.readRepository({ source: scope.source, repo })
+        : undefined;
+      const cached = listing?.observation.issues?.some((i) => i.key === key) ? listing : undefined;
+      // A successful target or a recent failed attempt can settle a project
+      // without refreshing an unrelated sibling repository's entire listing.
+      const latest =
+        targeted &&
+        (!cached ||
+          (targeted.observation.lastAttempt?.attemptedAt ?? '') >=
+            (cached.observation.lastCheckedAt ?? ''))
+          ? targeted
+          : cached;
+      return this.retryDue(latest, source);
+    });
   }
 
   private repositoryFreshness(

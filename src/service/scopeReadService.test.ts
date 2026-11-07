@@ -48,7 +48,9 @@ function fixture(ttlSeconds = 60) {
   });
   queues.push(queue);
   const list = vi.fn<IssueProvider['listOpenIssues']>(async () => listing([issue('o/a#1')]));
-  const lookup = vi.fn(async () => issue('external/repo#1', '', 'closed'));
+  const lookup = vi.fn<IssueProvider['getIssue']>(async () =>
+    issue('external/repo#1', '', 'closed'),
+  );
   const provider: IssueProvider = { kind: 'github', listOpenIssues: list, getIssue: lookup };
   const source: ScopeRefreshSource = {
     source: {
@@ -297,7 +299,10 @@ describe('cache-first scope reads', () => {
     f.store.fail(f.store.beginOutsideIssueRead(ref), 'outside offline');
     response = await f.service.get(project());
     expect(response.freshness.outsideIssues.provisionalCount).toBe(1);
+    expect(response.job).toBeNull();
+    const refresh = f.service.refresh(project());
     blocked.resolve();
+    await refresh;
     await tick();
     await f.service.get(project());
     expect(f.store.readOutsideIssue(ref)).toBeUndefined();
@@ -355,4 +360,211 @@ describe('cache-first scope reads', () => {
     expect(f.list).toHaveBeenCalledTimes(1);
     expect(f.lookup).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['open', 'closed'] as const)(
+    'settles a project with fresh targeted %s context instead of a stale sibling listing',
+    async (state) => {
+      const f = fixture();
+      f.seed('o/b', [issue('o/b#1')]);
+      vi.advanceTimersByTime(61_000);
+      f.seed('o/a', [issue('o/a#1', 'Depends on o/b#1')]);
+      f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on o/b#1')]));
+      f.lookup.mockResolvedValue({ ...issue('o/b#1', '', state), title: 'targeted context' });
+      expect((await f.service.get(project())).job).not.toBeNull();
+      await tick();
+      for (let n = 0; n < 5; n++) {
+        vi.advanceTimersByTime(2000);
+        const response = await f.service.get(project());
+        expect(response.job).toBeNull();
+        expect(response.freshness.repositories.map((r) => r.project.repo)).toEqual(['o/a']);
+        expect(response.freshness.outsideIssues).toMatchObject({ count: 1, provisionalCount: 0 });
+        const context = response.snapshot?.plan.nodes.find((i) => i.key === 'o/b#1');
+        if (state === 'closed') expect(context).toBeUndefined();
+        else expect(context?.title).toBe('targeted context');
+      }
+      expect(f.list).toHaveBeenCalledTimes(1);
+      expect(f.list.mock.calls[0]?.[0]).toEqual({ owner: 'o', repo: 'a' });
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      expect(f.store.readOutsideIssue({ source: 'gh', key: 'o/b#1' })).toBeDefined();
+    },
+  );
+
+  it('retains sibling context after a failed targeted lookup without repeatedly relisting', async () => {
+    const f = fixture();
+    f.seed('o/b', [{ ...issue('o/b#1'), title: 'last-good context' }]);
+    vi.advanceTimersByTime(61_000);
+    f.seed('o/a', [issue('o/a#1', 'Depends on o/b#1')]);
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on o/b#1')]));
+    f.lookup.mockResolvedValue(null);
+    await f.service.get(project());
+    await tick();
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      const response = await f.service.get(project());
+      expect(response.job).toBeNull();
+      expect(response.snapshot?.plan.nodes.find((i) => i.key === 'o/b#1')?.title).toBe(
+        'last-good context',
+      );
+      expect(
+        response.snapshot?.plan.warnings.some((w) => w.code === 'dependency-provisional'),
+      ).toBe(true);
+      expect(response.freshness.outsideIssues.provisionalCount).toBe(1);
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it('paces inaccessible dependency retries by the failed attempt TTL', async () => {
+    const f = fixture();
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on private/repo#9')]));
+    f.lookup.mockResolvedValue(null);
+    await f.service.get(project());
+    for (let n = 0; n < 5; n++) {
+      vi.advanceTimersByTime(2000);
+      const response = await f.service.get(project());
+      expect(response.job).toBeNull();
+      expect(
+        response.snapshot?.plan.warnings.some((w) => w.code === 'dependency-provisional'),
+      ).toBe(true);
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.lookup).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(50_001);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await tick();
+    expect(f.lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])(
+    'paces failed repository retries with last-good data=%s',
+    async (seeded) => {
+      const f = fixture();
+      if (seeded) f.seed('o/a', [issue('o/a#1')]);
+      vi.advanceTimersByTime(61_000);
+      f.list.mockRejectedValue(new Error('offline'));
+      const failed = await f.service.refresh(project());
+      expect(failed.freshness.repositories[0]?.state).toBe(seeded ? 'failed' : 'unavailable');
+      for (let n = 0; n < 5; n++) {
+        vi.advanceTimersByTime(2000);
+        const response = await f.service.get(project());
+        expect(response.job).toBeNull();
+        expect(response.freshness.repositories[0]?.error).toBe('offline');
+        expect(response.snapshot === null).toBe(!seeded);
+      }
+      expect(f.list).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(50_001);
+      await f.service.get(project());
+      await tick();
+      expect(f.list).toHaveBeenCalledTimes(2);
+      // An explicit request bypasses passive retry pacing.
+      await f.service.refresh(project());
+      expect(f.list).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('paces a failed invalidation recheck while honoring a newer invalidation immediately', async () => {
+    const f = fixture();
+    const ref = { source: 'gh', repo: 'o/a' };
+    f.seed('o/a', [issue('o/a#1')]);
+    f.store.invalidateRepository(ref);
+    f.list.mockRejectedValue(new Error('offline'));
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await tick();
+    for (let n = 0; n < 3; n++) {
+      vi.advanceTimersByTime(2000);
+      expect((await f.service.get(project())).job).toBeNull();
+    }
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.store.readRepository(ref)?.invalidated).toBe(true);
+    f.store.invalidateRepository(ref);
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await tick();
+    expect(f.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a failed read started before invalidation defer the required recheck', async () => {
+    const f = fixture();
+    const ref = { source: 'gh', repo: 'o/a' };
+    f.seed('o/a');
+    const oldRead = f.store.beginRepositoryRead(ref);
+    f.store.invalidateRepository(ref);
+    f.store.fail(oldRead, 'old failure');
+    expect((await f.service.get(project())).job).not.toBeNull();
+    await tick();
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.store.readRepository(ref)?.invalidated).toBe(false);
+  });
+
+  it('keeps zero-TTL successful roots and provisional edges after a dependency fails', async () => {
+    const f = fixture(0);
+    f.seed('o/a', [issue('o/a#99')]);
+    f.store.writeOutsideIssue(
+      f.store.beginOutsideIssueRead({ source: 'gh', key: 'private/repo#9' }),
+      {
+        result: { status: 'found', issue: { ...issue('private/repo#9'), title: 'cached secret' } },
+      },
+    );
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on private/repo#9')]));
+    f.lookup.mockResolvedValue(null);
+    const response = await f.service.get(project());
+    expect(response.job).toBeNull();
+    expect(response.freshness.computedAt).not.toBeNull();
+    expect(response.snapshot?.plan.nodes.map((n) => n.key)).toEqual(['o/a#1', 'private/repo#9']);
+    expect(response.snapshot?.plan.nodes.find((n) => n.key === 'private/repo#9')?.title).not.toBe(
+      'cached secret',
+    );
+    expect(response.snapshot?.plan.nodes.find((n) => n.key === 'o/a#1')?.status).toBe('blocked');
+    expect(response.snapshot?.plan.warnings.some((w) => w.code === 'dependency-provisional')).toBe(
+      true,
+    );
+  });
+
+  it('keeps zero-TTL successful repository updates without failed repositories cached data', async () => {
+    const f = fixture(0);
+    f.seed('o/b', [issue('o/b#99')]);
+    f.list.mockImplementation(async ({ repo }) => {
+      if (repo === 'b') throw new Error('offline');
+      return listing([issue('o/a#1')]);
+    });
+    const response = await f.service.get(all);
+    expect(response.job).toBeNull();
+    expect(response.snapshot?.plan.nodes.map((n) => n.key)).toEqual(['o/a#1']);
+    expect(response.snapshot?.plan.warnings.some((w) => w.code === 'repository-unlisted')).toBe(
+      true,
+    );
+    expect(response.freshness.repositories.map((r) => r.state)).toEqual(['fresh', 'failed']);
+  });
+
+  it.each(['project', 'source'] as const)(
+    'reports successful zero-TTL %s revalidation fresh after elapsed time',
+    async (kind) => {
+      const f = fixture(0);
+      const laterRepository = gate();
+      f.list.mockImplementation(async ({ repo }) => {
+        if (repo === 'b') {
+          await laterRepository.promise;
+          vi.setSystemTime(Date.now() + 5);
+        }
+        return listing([
+          issue(`o/${repo}#1`, kind === 'project' ? 'Depends on external/repo#1' : ''),
+        ]);
+      });
+      f.lookup.mockImplementation(async () => {
+        vi.setSystemTime(Date.now() + 5);
+        return issue('external/repo#1', '', 'closed');
+      });
+      const pending = f.service.get(kind === 'project' ? project() : all);
+      await tick();
+      laterRepository.resolve();
+      const response = await pending;
+      expect(response.snapshot).not.toBeNull();
+      expect(response.job).toBeNull();
+      expect(response.freshness.repositories.every((r) => r.state === 'fresh')).toBe(true);
+      if (kind === 'source')
+        expect(response.freshness.repositories.map((r) => r.lastCheckedAt)).toEqual([
+          '2026-01-01T00:00:00.000Z',
+          '2026-01-01T00:00:00.005Z',
+        ]);
+    },
+  );
 });
