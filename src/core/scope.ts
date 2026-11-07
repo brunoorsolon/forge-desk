@@ -1,6 +1,7 @@
 import type {
   Issue,
   IssueKey,
+  OpenPullRequest,
   PlanWarning,
   ProviderKind,
   RelationCoverage,
@@ -72,6 +73,8 @@ export interface RepositoryObservation extends ObservationMetadata {
   project: ProjectRef;
   /** Last-good open listing, or null before any successful listing. [] means verified empty. */
   issues: Issue[] | null;
+  /** Open pull requests observed with the last-good listing, when present. */
+  pullRequests?: OpenPullRequest[];
   warnings: PlanWarning[];
 }
 

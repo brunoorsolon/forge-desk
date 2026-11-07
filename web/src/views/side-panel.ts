@@ -1,6 +1,6 @@
 import type { IssueKey, PlanNode } from '../../../src/core/types.js';
 import { clear, h, icon } from '../dom.js';
-import { plural, shortKey } from '../format.js';
+import { claimedLabels, plural, shortKey } from '../format.js';
 import { downstreamOf, edgeId, upstreamOf } from '../graph-model.js';
 import { priorityName } from '../priority.js';
 import type { AppState, SnapshotIndex } from '../state.js';
@@ -60,6 +60,48 @@ export function createSidePanel(ctx: ViewCtx): View {
     );
   }
 
+  function inProgressList(n: PlanNode, index: SnapshotIndex): HTMLElement {
+    const claimed = claimedLabels(n.labels);
+    const prs = n.closingPullRequests ?? [];
+    if (claimed.length === 0 && prs.length === 0) return h('div', { class: 'rel-empty' }, 'None');
+    return h(
+      'ul',
+      { class: 'rel-list' },
+      ...claimed.map((label) =>
+        h(
+          'li',
+          null,
+          h(
+            'div',
+            { class: 'rel-item', title: label },
+            h('span', { class: 'card-key' }, labelChip(label)),
+            h('span', { class: 't' }, 'Claimed by agent'),
+            h('span', { class: 'src-tag', title: 'Declared by: label' }, 'label'),
+          ),
+        ),
+      ),
+      ...prs.map((pr) =>
+        h(
+          'li',
+          null,
+          h(
+            'a',
+            {
+              class: 'rel-item',
+              href: safeUrl(pr.url),
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              title: `${pr.key}: ${pr.title}`,
+            },
+            h('span', { class: 'card-key' }, shortKey(pr.key, index.multiRepo)),
+            h('span', { class: 't' }, pr.title),
+            h('span', { class: 'src-tag', title: 'Declared by: closes' }, 'closes'),
+          ),
+        ),
+      ),
+    );
+  }
+
   function fact(label: string, ...value: (Node | string)[]): Node[] {
     return [h('dt', null, label), h('dd', null, ...value)];
   }
@@ -75,6 +117,7 @@ export function createSidePanel(ctx: ViewCtx): View {
     const down = downstreamOf(index.adjacency, n.key);
     const prio = priorityName(snapshot, n);
     const labels = otherLabels(n, prio);
+    const inProgressCount = claimedLabels(n.labels).length + (n.closingPullRequests?.length ?? 0);
     clear(el);
     el.append(
       h(
@@ -154,6 +197,18 @@ export function createSidePanel(ctx: ViewCtx): View {
               : [none('Unassigned')]),
           ),
           ...fact('Labels', ...(labels.length > 0 ? labels.map((l) => labelChip(l)) : [none()])),
+        ),
+        h(
+          'section',
+          { class: 'rel-section rel-up' },
+          h(
+            'h3',
+            null,
+            h('span', { class: 'sw' }),
+            'In progress',
+            h('span', { class: 'n' }, String(inProgressCount)),
+          ),
+          inProgressList(n, index),
         ),
         h(
           'section',

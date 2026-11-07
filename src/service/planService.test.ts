@@ -202,7 +202,7 @@ describe('PlanService: demo end to end', () => {
     const { service } = demoService();
     const snap = await service.getSnapshot('demo');
     expect(snap.contentHash).toBe(
-      '1f532dbcf53112168cfe1903885c9b0bb3836b2ec6e75ae955ddaee5ecc6fae3',
+      '1181a20e638836c9b73543250bb11eaf0a77e5b0735529275c36d30e8acb2d21',
     );
   });
 

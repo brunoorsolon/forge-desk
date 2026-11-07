@@ -6,6 +6,7 @@ import type {
   Issue,
   IssueProvider,
   ListOptions,
+  OpenPullRequest,
   RawRelation,
   RepoRef,
 } from '../core/types.js';
@@ -32,11 +33,22 @@ const fixtureIssueSchema = z.object({
   milestone: z.string().nullish(),
   updatedAt: z.string().nullish(),
   blockedBy: z.array(z.string()).nullish(),
+  pullRequest: z.boolean().nullish(),
+});
+
+const fixturePullRequestSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  number: z.number().refine(Number.isInteger, 'expected an integer').min(1),
+  title: z.string(),
+  state: z.enum(['open', 'closed']).nullish(),
+  body: z.string().nullish(),
 });
 
 /** Top-level extra fields (such as `_comment`) are ignored. */
 const fixtureFileSchema = z.object({
   issues: z.array(z.unknown()),
+  pullRequests: z.array(z.unknown()).nullish(),
 });
 
 function sortedUnique(values: readonly string[]): string[] {
@@ -56,6 +68,8 @@ function formatZodIssues(error: z.ZodError, prefix: string): string {
 interface ParsedFixture {
   /** Every issue, sorted by key (owner/repo, then number). */
   issues: Issue[];
+  /** Every open pull request, sorted by key (owner/repo, then number). */
+  pullRequests: OpenPullRequest[];
 }
 
 function parseFixture(text: string, file: string): ParsedFixture {
@@ -74,8 +88,9 @@ function parseFixture(text: string, file: string): ParsedFixture {
     );
   }
 
-  const seen = new Map<string, number>();
+  const seen = new Map<string, string>();
   const issues: Issue[] = [];
+  const pullRequests: OpenPullRequest[] = [];
   top.data.issues.forEach((raw, index) => {
     const label = `issues[${index}]`;
     const parsed = fixtureIssueSchema.safeParse(raw);
@@ -88,10 +103,24 @@ function parseFixture(text: string, file: string): ParsedFixture {
     const first = seen.get(key);
     if (first !== undefined) {
       throw new Error(
-        `Invalid fixture file ${file}: ${label} duplicates ${key} (already defined at issues[${first}])`,
+        `Invalid fixture file ${file}: ${label} duplicates ${key} (already defined at ${first})`,
       );
     }
-    seen.set(key, index);
+    seen.set(key, label);
+
+    if (f.pullRequest === true) {
+      if (f.state === 'open') {
+        pullRequests.push({
+          key,
+          repo,
+          number: f.number,
+          title: f.title,
+          url: '',
+          body: f.body ?? '',
+        });
+      }
+      return;
+    }
 
     const nativeRelations: RawRelation[] = (f.blockedBy ?? []).map((blockedKey, j) => {
       try {
@@ -125,7 +154,36 @@ function parseFixture(text: string, file: string): ParsedFixture {
       nativeRelations,
     });
   });
-  return { issues };
+
+  (top.data.pullRequests ?? []).forEach((raw, index) => {
+    const label = `pullRequests[${index}]`;
+    const parsed = fixturePullRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(`Invalid fixture file ${file}: ${formatZodIssues(parsed.error, label)}`);
+    }
+    const f = parsed.data;
+    const repo: RepoRef = { owner: f.owner.toLowerCase(), repo: f.repo.toLowerCase() };
+    const key = makeKey(repo, f.number);
+    const first = seen.get(key);
+    if (first !== undefined) {
+      throw new Error(
+        `Invalid fixture file ${file}: ${label} duplicates ${key} (already defined at ${first})`,
+      );
+    }
+    seen.set(key, label);
+    if ((f.state ?? 'open') === 'open') {
+      pullRequests.push({
+        key,
+        repo,
+        number: f.number,
+        title: f.title,
+        url: '',
+        body: f.body ?? '',
+      });
+    }
+  });
+
+  return { issues, pullRequests };
 }
 
 /**
@@ -166,19 +224,32 @@ export function createFixtureProvider(opts: FixtureProviderOptions): IssueProvid
     };
   }
 
+  function toPullRequest(pr: OpenPullRequest): OpenPullRequest {
+    return {
+      ...pr,
+      repo: { ...pr.repo },
+      url: `${webUrl}/${pr.repo.owner}/${pr.repo.repo}/pulls/${pr.number}`,
+    };
+  }
+
   return {
     kind: 'fixture',
 
     async listOpenIssues(repo: RepoRef, options: ListOptions): Promise<FetchResult> {
-      const { issues } = await load();
+      const { issues, pullRequests } = await load();
       const owner = repo.owner.toLowerCase();
       const name = repo.repo.toLowerCase();
       const open = issues
         .filter((i) => i.state === 'open' && i.repo.owner === owner && i.repo.repo === name)
         .sort((a, b) => a.number - b.number)
         .map((i) => toIssue(i, options.native));
+      const openPullRequests = pullRequests
+        .filter((pr) => pr.repo.owner === owner && pr.repo.repo === name)
+        .sort((a, b) => a.number - b.number)
+        .map(toPullRequest);
       return {
         issues: open,
+        ...(openPullRequests.length > 0 ? { pullRequests: openPullRequests } : {}),
         warnings: [],
         relationCoverage: {
           native: options.native ? 'complete' : 'not-requested',

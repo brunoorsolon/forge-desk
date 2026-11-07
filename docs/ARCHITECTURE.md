@@ -693,8 +693,11 @@ Rules (these are the documented user contract, so tests must cover each one):
    `- Blocked by: [#76] needs #99 first` reads only `#76`.
 4. **Reference forms:** `#123`; `owner/repo#123`; and
    `https://<host>/<owner>/<repo>/issues/<n>` when `<host>` is in `webHosts`
-   (paths with extra segments before `/owner/repo`, such as Gitea sub-path
-   installs, are not supported in v1). `#123` must not be preceded by a word
+   and the path prefix matches that configured web root. A bare host accepts
+   only root paths (`/owner/repo/issues/N`); a sub-path source passes its
+   configured prefix in `webHosts` (for example `example.com/gitea`) and
+   accepts only `/gitea/owner/repo/issues/N`, not root paths or other prefixes.
+   This also applies to closing-PR references. `#123` must not be preceded by a word
    character or `/`, and `owner/repo#123` must not be preceded by a word
    character. owner/repo are lowercased. Same-repo references have
    `owner: null, repo: null`.

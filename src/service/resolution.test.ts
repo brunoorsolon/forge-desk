@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_KEYWORDS } from '../core/parser.js';
-import type { Issue } from '../core/types.js';
+import { buildPlan } from '../core/plan.js';
+import type { Issue, OpenPullRequest } from '../core/types.js';
 import {
   pendingOutsideIssueKeys,
   resolvePlanInput,
@@ -145,5 +146,212 @@ describe('pure resolution', () => {
     expect(input.issues.map((i) => i.key)).toEqual(['a/r#1', 'a/r#2', 'a/r#5']);
     expect({ root, other, lookups, settings }).toEqual(before);
     expect(mismatched.key).toBe('a/r#99');
+  });
+
+  it('resolves same-repo, cross-repo, and web-host closing pull requests onto included issues only', () => {
+    const first = issue(1);
+    const second = issue(2, '', { key: 'a/web#2', repo: { owner: 'a', repo: 'web' } });
+    const input = resolvePlanInput(
+      [first, second],
+      new Map(),
+      settings,
+      [],
+      [
+        {
+          key: 'a/r#10',
+          repo: { owner: 'a', repo: 'r' },
+          number: 10,
+          title: 'Fix issue 1 and web 2',
+          url: 'https://web.test/a/r/pull/10',
+          body: 'Closes #1\nFixes a/web#2\nResolves #99',
+        },
+        {
+          key: 'a/web#11',
+          repo: { owner: 'a', repo: 'web' },
+          number: 11,
+          title: 'URL close for issue 1',
+          url: 'https://web.test/a/web/pull/11',
+          body: 'Closes https://web.test/a/r/issues/1',
+        },
+      ],
+    );
+    expect(input.closingPullRequests).toEqual([
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Fix issue 1 and web 2',
+          url: 'https://web.test/a/r/pull/10',
+        },
+      },
+      {
+        issue: 'a/web#2',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Fix issue 1 and web 2',
+          url: 'https://web.test/a/r/pull/10',
+        },
+      },
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/web#11',
+          number: 11,
+          title: 'URL close for issue 1',
+          url: 'https://web.test/a/web/pull/11',
+        },
+      },
+    ]);
+  });
+
+  it('resolves conflicting duplicate pull request records deterministically regardless of arrival order', () => {
+    const root = issue(1);
+    const pr: OpenPullRequest = {
+      key: 'a/r#10',
+      repo: { owner: 'a', repo: 'r' },
+      number: 10,
+      title: 'Implement work',
+      url: 'https://web.test/a/r/pull/10',
+      body: 'Closes #1',
+    };
+    const other: OpenPullRequest = {
+      ...pr,
+      title: 'Alternate payload',
+      body: 'No closing reference',
+    };
+    const first = buildPlan(resolvePlanInput([root], new Map(), settings, [], [pr, other]));
+    const second = buildPlan(resolvePlanInput([root], new Map(), settings, [], [other, pr]));
+    expect(first).toEqual(second);
+  });
+
+  it('does not attach a closing pull request from numbered text inside a multiline code span', () => {
+    const issues = [issue(1), issue(2)];
+    const pullRequest: OpenPullRequest = {
+      key: 'a/r#10',
+      repo: { owner: 'a', repo: 'r' },
+      number: 10,
+      title: 'Example PR',
+      url: 'https://web.test/a/r/pull/10',
+      body: '`example starts\n2. Closes #1\nexample ends`\nFixes #2',
+    };
+    const baseline = buildPlan(resolvePlanInput(issues, new Map(), settings));
+    const plan = buildPlan(resolvePlanInput(issues, new Map(), settings, [], [pullRequest]));
+
+    expect(plan.nodes.find((node) => node.key === 'a/r#1')?.closingPullRequests).toEqual([]);
+    expect(plan.nodes.find((node) => node.key === 'a/r#2')?.closingPullRequests).toEqual([
+      { key: 'a/r#10', number: 10, title: 'Example PR', url: 'https://web.test/a/r/pull/10' },
+    ]);
+    expect(plan.nodes.map((node) => [node.key, node.status])).toEqual(
+      baseline.nodes.map((node) => [node.key, node.status]),
+    );
+    expect(plan.edges).toEqual(baseline.edges);
+    expect(plan.order).toEqual(baseline.order);
+    expect(plan.waves).toEqual(baseline.waves);
+    expect(plan.criticalPath).toEqual(baseline.criticalPath);
+  });
+
+  it('recognizes closing URLs under a subpath-hosted forge webUrl while rejecting mismatched prefixes', () => {
+    const root = issue(1);
+    const subpathSettings: ResolutionSettings = {
+      ...settings,
+      webHosts: ['example.com'],
+      webUrl: 'https://example.com/gitea',
+    };
+    const input = resolvePlanInput(
+      [root, issue(2, 'Blocked by: [https://example.com/gitea/a/r/issues/1]')],
+      new Map(),
+      subpathSettings,
+      [],
+      [
+        {
+          key: 'a/r#10',
+          repo: { owner: 'a', repo: 'r' },
+          number: 10,
+          title: 'Subpath close',
+          url: 'https://example.com/gitea/a/r/pulls/10',
+          body: 'Closes https://example.com/gitea/a/r/issues/1',
+        },
+        {
+          key: 'a/r#11',
+          repo: { owner: 'a', repo: 'r' },
+          number: 11,
+          title: 'Wrong prefix',
+          url: 'https://example.com/gitea/a/r/pulls/11',
+          body: 'Closes https://example.com/other/a/r/issues/1\nCloses https://example.com/a/r/issues/1',
+        },
+      ],
+    );
+    expect(input.closingPullRequests).toEqual([
+      {
+        issue: 'a/r#1',
+        pullRequest: {
+          key: 'a/r#10',
+          number: 10,
+          title: 'Subpath close',
+          url: 'https://example.com/gitea/a/r/pulls/10',
+        },
+      },
+    ]);
+    expect(input.edges).toEqual([{ from: 'a/r#1', to: 'a/r#2', sources: ['body'] }]);
+  });
+
+  it.each(['---', '***', '___', '===', '=', '-'])(
+    'retains prerequisite edges after a %s Markdown block boundary',
+    (boundary) => {
+      const dependent = issue(2, ['Note `a', boundary, 'Blocked by: [#1]', 'b` end'].join('\n'));
+      const plan = buildPlan(
+        resolvePlanInput([issue(1), dependent], new Map(), {
+          ...settings,
+          dependencies: { ...settings.dependencies, body: 'strict' },
+        }),
+      );
+      expect(plan.edges).toEqual([{ from: 'a/r#1', to: 'a/r#2', sources: ['body'] }]);
+      expect(plan.nodes.find((node) => node.key === 'a/r#2')?.status).toBe('blocked');
+    },
+  );
+
+  it('rejects extra URL path prefixes for both dependencies and closing PRs on root-hosted sources', () => {
+    const invalidUrl = 'https://web.test/x/y/a/r/issues/1';
+    const plan = buildPlan(
+      resolvePlanInput(
+        [issue(1), issue(2, `Blocked by: [${invalidUrl}]`)],
+        new Map(),
+        settings,
+        [],
+        [
+          {
+            key: 'a/r#10',
+            repo: { owner: 'a', repo: 'r' },
+            number: 10,
+            title: 'An unrelated URL',
+            url: 'https://web.test/a/r/pull/10',
+            body: `Closes ${invalidUrl}`,
+          },
+        ],
+      ),
+    );
+    expect(plan.edges).toEqual([]);
+    expect(plan.nodes.map((node) => [node.key, node.status, node.closingPullRequests])).toEqual([
+      ['a/r#1', 'ready', []],
+      ['a/r#2', 'ready', []],
+    ]);
+  });
+
+  it.each([
+    'Note `a\nBlocked by: [#1]\n<details>\nb` end',
+    'Note `a\nBlocked by: [#1]\n<!-- see `x` -->',
+    'Note `a\nBlocked by: [#1]\n<div>b` end</div>',
+    '- ```\n  b`\nBlocked by: [#1]\nb`',
+  ])('keeps a dependency blocked around HTML and unmatched backticks: %s', (body) => {
+    const plan = buildPlan(
+      resolvePlanInput([issue(1), issue(2, body)], new Map(), {
+        ...settings,
+        dependencies: { ...settings.dependencies, body: 'strict' },
+      }),
+    );
+    expect(plan.edges).toEqual([{ from: 'a/r#1', to: 'a/r#2', sources: ['body'] }]);
+    expect(plan.nodes.find((node) => node.key === 'a/r#2')?.status).toBe('blocked');
   });
 });

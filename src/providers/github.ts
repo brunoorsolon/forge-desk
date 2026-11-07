@@ -1,10 +1,12 @@
 import { compareRefs, makeKey } from '../core/keys.js';
+import { normalizeOpenPullRequests } from '../core/plan.js';
 import type {
   FetchResult,
   Issue,
   IssueProvider,
   IssueRef,
   ListOptions,
+  OpenPullRequest,
   PlanWarning,
   RawRelation,
   RelationCoverage,
@@ -115,6 +117,26 @@ function mapIssue(raw: GhIssue, repo: RepoRef): Issue {
     milestone,
     updatedAt,
     nativeRelations: [],
+  };
+}
+
+function mapPullRequest(raw: GhIssue, repo: RepoRef): OpenPullRequest | null {
+  if (raw.state === 'closed') return null;
+  if (isPlainObject(raw.pull_request) && raw.pull_request.merged_at != null) return null;
+  if (
+    typeof raw.number !== 'number' ||
+    !Number.isSafeInteger(raw.number) ||
+    typeof raw.title !== 'string'
+  ) {
+    throw new Error(`Unexpected GitHub issue payload in ${repo.owner}/${repo.repo}`);
+  }
+  return {
+    key: makeKey(repo, raw.number),
+    repo,
+    number: raw.number,
+    title: raw.title,
+    url: typeof raw.html_url === 'string' ? raw.html_url : '',
+    body: typeof raw.body === 'string' ? raw.body : '',
   };
 }
 
@@ -239,14 +261,21 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     );
 
     const issues: Issue[] = [];
+    const rawPullRequests: OpenPullRequest[] = [];
     const summaries = new Map<number, GhIssue>();
     for (const raw of rawItems) {
-      if (!isPlainObject(raw) || raw.pull_request) continue;
+      if (!isPlainObject(raw)) continue;
+      if (raw.pull_request) {
+        const pr = mapPullRequest(raw, repo);
+        if (pr) rawPullRequests.push(pr);
+        continue;
+      }
       const issue = mapIssue(raw, repo);
       issues.push(issue);
       summaries.set(issue.number, raw);
     }
     issues.sort((a, b) => a.number - b.number);
+    const pullRequests = normalizeOpenPullRequests(rawPullRequests);
 
     const warnings: PlanWarning[] = [];
     const relationCoverage: RelationCoverage = {
@@ -307,7 +336,12 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
     for (const issue of issues) {
       issue.nativeRelations = normalizeRelations(relations.get(issue.number) ?? []);
     }
-    return { issues, warnings, relationCoverage };
+    return {
+      issues,
+      ...(pullRequests.length > 0 ? { pullRequests } : {}),
+      warnings,
+      relationCoverage,
+    };
   }
 
   async function getIssue(

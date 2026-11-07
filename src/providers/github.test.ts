@@ -93,10 +93,67 @@ describe('listOpenIssues: listing', () => {
 
   it('filters out pull requests', async () => {
     const { p } = provider(() =>
-      json([ghIssue(1), ghIssue(2, { pull_request: { url: 'x' } }), ghIssue(3)]),
+      json([
+        ghIssue(1),
+        ghIssue(4, {
+          title: 'PR 4',
+          body: 'Closes #1',
+          html_url: 'https://github.com/acme/api/pull/4',
+          pull_request: { url: 'x', merged_at: null },
+        }),
+        ghIssue(2, {
+          title: 'PR 2',
+          body: null,
+          html_url: 'https://github.com/acme/api/pull/2',
+          pull_request: { url: 'x' },
+        }),
+        ghIssue(5, {
+          title: 'Merged PR',
+          pull_request: { url: 'x', merged_at: '2026-01-01T00:00:00Z' },
+        }),
+        ghIssue(3),
+      ]),
     );
     const res = await p.listOpenIssues(REPO, NONE);
     expect(res.issues.map((i) => i.number)).toEqual([1, 3]);
+    expect(res.pullRequests).toEqual([
+      {
+        key: 'acme/api#2',
+        repo: { owner: 'acme', repo: 'api' },
+        number: 2,
+        title: 'PR 2',
+        url: 'https://github.com/acme/api/pull/2',
+        body: '',
+      },
+      {
+        key: 'acme/api#4',
+        repo: { owner: 'acme', repo: 'api' },
+        number: 4,
+        title: 'PR 4',
+        url: 'https://github.com/acme/api/pull/4',
+        body: 'Closes #1',
+      },
+    ]);
+  });
+
+  it('resolves conflicting duplicate pull requests deterministically regardless of item order', async () => {
+    const prA = ghIssue(10, {
+      title: 'Implement work',
+      body: 'Closes #1',
+      html_url: 'https://github.com/acme/api/pull/10',
+      pull_request: { url: 'x', merged_at: null },
+    });
+    const prB = ghIssue(10, {
+      title: 'Alternate payload',
+      body: 'No closing reference',
+      html_url: 'https://github.com/acme/api/pull/10',
+      pull_request: { url: 'x', merged_at: null },
+    });
+    const { p: p1 } = provider(() => json([prA, prB]));
+    const { p: p2 } = provider(() => json([prB, prA]));
+    expect((await p1.listOpenIssues(REPO, NONE)).pullRequests).toEqual(
+      (await p2.listOpenIssues(REPO, NONE)).pullRequests,
+    );
   });
 
   it('maps and normalizes fields', async () => {

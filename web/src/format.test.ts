@@ -130,4 +130,32 @@ describe('displayStatus', () => {
     expect(workflowStatus(['agent/blocked'])).toBe('blocked');
     expect(workflowStatus([])).toBeNull();
   });
+
+  it('shows In progress for open closing pull requests while preserving precedence', () => {
+    const pr = {
+      key: 'acme/api#10',
+      number: 10,
+      title: 'Fix issue',
+      url: 'https://github.com/acme/api/pull/10',
+    };
+    expect(displayStatus({ status: 'ready', labels: [], closingPullRequests: [pr] })).toBe(
+      'in-progress',
+    );
+    expect(workflowStatus([], [pr])).toBe('in-progress');
+    expect(
+      displayStatus({ status: 'ready', labels: ['agent:blocked'], closingPullRequests: [pr] }),
+    ).toBe('blocked');
+    expect(
+      displayStatus({ status: 'ready', labels: ['spec:decomposed'], closingPullRequests: [pr] }),
+    ).toBe('spec');
+    expect(
+      displayStatus({ status: 'ready', labels: ['wayfinder:map'], closingPullRequests: [pr] }),
+    ).toBe('map');
+    expect(displayStatus({ status: 'blocked', labels: [], closingPullRequests: [pr] })).toBe(
+      'blocked',
+    );
+    expect(displayStatus({ status: 'in-cycle', labels: [], closingPullRequests: [pr] })).toBe(
+      'in-cycle',
+    );
+  });
 });

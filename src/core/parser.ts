@@ -1,5 +1,5 @@
 import { compareRefs } from './keys.js';
-import type { RawRelation } from './types.js';
+import type { IssueRef, RawRelation } from './types.js';
 
 export interface KeywordConfig {
   blockedBy: string[];
@@ -17,6 +17,11 @@ export interface ParseOptions {
   webHosts?: string[];
   /** When true, read only `Blocked by: [...]` / `Parent: [...]` relation lines and ignore the keyword-line and section forms. */
   strict?: boolean;
+}
+
+export interface ClosingParseOptions {
+  /** Hostnames accepted in URL references (e.g. ['github.com']). Empty or undefined: URLs are ignored. */
+  webHosts?: string[];
 }
 
 type Kind = RawRelation['kind'];
@@ -62,22 +67,215 @@ function buildKeywords(config: KeywordConfig): KeywordEntry[] {
   return entries;
 }
 
+interface AllowedWebRoot {
+  host: string;
+  /** Lowercased path prefix without leading/trailing `/`; empty for a root-hosted source. */
+  subpath: string;
+}
+
+function parseWebRoots(webHosts: readonly string[] | undefined): AllowedWebRoot[] {
+  const out: AllowedWebRoot[] = [];
+  for (const raw of webHosts ?? []) {
+    const entry = raw.trim();
+    if (entry === '') continue;
+    if (/^https?:\/\//i.test(entry)) {
+      try {
+        const u = new URL(entry);
+        const host = u.host.toLowerCase();
+        const subpath = u.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+        if (host !== '') out.push({ host, subpath });
+      } catch {
+        // Ignore malformed URL entries.
+      }
+      continue;
+    }
+    const trimmed = entry.replace(/\/+$/, '').toLowerCase();
+    if (trimmed === '') continue;
+    const slash = trimmed.indexOf('/');
+    if (slash < 0) {
+      out.push({ host: trimmed, subpath: '' });
+    } else {
+      const host = trimmed.slice(0, slash);
+      const subpath = trimmed.slice(slash + 1).replace(/^\/+/, '');
+      if (host !== '') out.push({ host, subpath });
+    }
+  }
+  return out;
+}
+
+function matchesWebRoot(
+  roots: readonly AllowedWebRoot[],
+  rawHost: string,
+  rawSubpath: string | undefined,
+): boolean {
+  const host = rawHost.toLowerCase();
+  const subpath = (rawSubpath ?? '').replace(/^\/+|\/+$/g, '').toLowerCase();
+  return roots.some((r) => r.host === host && r.subpath === subpath);
+}
+
+interface CodeSpanEnd {
+  line: number;
+  col: number;
+}
+
 interface LineState {
   inComment: boolean;
+  codeSpanEnd: CodeSpanEnd | null;
+}
+
+/** Markdown indentation uses four-column tab stops, including inside list containers. */
+function bodyLines(body: string): string[] {
+  return body.split(/\r\n|\r|\n/).map((line) => {
+    let column = 0;
+    return line.replace(/[^\t]+|\t/g, (part) => {
+      const width = part === '\t' ? 4 - (column % 4) : part.length;
+      column += width;
+      return part === '\t' ? ' '.repeat(width) : part;
+    });
+  });
+}
+
+function findBacktickClose(line: string, start: number, length: number): number {
+  let j = start;
+  while (j < line.length) {
+    if (line[j] !== '`') {
+      j++;
+      continue;
+    }
+    let m = 1;
+    while (line[j + m] === '`') m++;
+    if (m === length) return j + m;
+    j += m;
+  }
+  return -1;
+}
+
+function isFenceOpenLine(raw: string): { char: string; length: number } | null {
+  const open = FENCE_OPEN_RE.exec(raw);
+  if (!open) return null;
+  const marker = open[1]!;
+  // A backtick fence's info string cannot contain backticks (that is an inline span).
+  if (marker[0] === '`' && open[2]!.includes('`')) return null;
+  return { char: marker[0]!, length: marker.length };
+}
+
+interface ListItemContent {
+  text: string;
+  listIndent: number;
+  itemIndent: number | null;
+}
+
+function listItemContent(raw: string): ListItemContent {
+  let text = raw;
+  let listIndent = 0;
+  let itemIndent: number | null = null;
+  for (;;) {
+    const item = INLINE_LIST_ITEM_RE.exec(text);
+    if (item === null) break;
+    itemIndent = listIndent + item[1]!.length;
+    listIndent += item[0].length;
+    text = text.slice(item[0].length);
+  }
+  return { text, listIndent, itemIndent };
+}
+
+function isInlineBlockBoundary(raw: string, openingItem: ListItemContent): boolean {
+  // Markdown block indentation is relative to the containing list item.
+  const block =
+    /^ */.exec(raw)![0].length >= openingItem.listIndent ? raw.slice(openingItem.listIndent) : raw;
+  const nextItem = INLINE_LIST_ITEM_RE.exec(raw);
+  const nestedItem = INLINE_LIST_ITEM_RE.exec(block);
+  // A sibling item ends an existing list paragraph regardless of its number.
+  // To interrupt ordinary paragraph text, a new ordered list must start at 1
+  // and its first item (like a bullet item) must have nonblank content.
+  const listBoundary =
+    (nextItem !== null &&
+      openingItem.itemIndent !== null &&
+      nextItem[1]!.length <= openingItem.itemIndent) ||
+    (nestedItem !== null &&
+      (nestedItem[2] === undefined || Number(nestedItem[2]) === 1) &&
+      /\S/.test(block.slice(nestedItem[0].length)));
+  return (
+    /^\s*$/.test(block) ||
+    isFenceOpenLine(block) !== null ||
+    /^\s*>/.test(block) ||
+    HEADING_RE.test(block) ||
+    THEMATIC_BREAK_RE.test(block) ||
+    SETEXT_UNDERLINE_RE.test(block) ||
+    listBoundary
+  );
+}
+
+interface ClosingLineContext {
+  block: Pick<ListItemContent, 'text' | 'listIndent'>;
+  codeSpanEnds: Map<number, CodeSpanEnd>;
+}
+
+/**
+ * Carry paragraph/list context forward once, and link each backtick run to the
+ * next equal-length run in its paragraph. Parsing never rescans earlier lines
+ * or searches the remaining paragraph for each unmatched delimiter.
+ */
+function closingLineContexts(lines: readonly string[]): ClosingLineContext[] {
+  const contexts: ClosingLineContext[] = [];
+  const root = listItemContent('');
+  let openingItem = root;
+  let newParagraph = true;
+  const pending = new Map<number, { line: number; col: number }>();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!;
+    const content = listItemContent(raw);
+    const startsBlock = newParagraph || isInlineBlockBoundary(raw, openingItem);
+    if (startsBlock) {
+      openingItem = content;
+      pending.clear();
+    }
+    contexts.push({
+      block: startsBlock ? content : { text: raw, listIndent: 0 },
+      codeSpanEnds: new Map(),
+    });
+    for (const run of raw.matchAll(/`+/g)) {
+      const length = run[0].length;
+      const previous = pending.get(length);
+      if (previous) {
+        contexts[previous.line]!.codeSpanEnds.set(previous.col, {
+          line: lineIndex,
+          col: run.index + length,
+        });
+      }
+      pending.set(length, { line: lineIndex, col: run.index });
+    }
+    newParagraph = isInlineBlockBoundary(raw, root) && content.listIndent === 0;
+  }
+  return contexts;
 }
 
 /**
  * Removes HTML comments (replaced by a space) and inline code spans (replaced by a
- * placeholder) from one line. Comment state carries over to following lines.
+ * placeholder) from one line. Comments carry over. Closing-reference parsing
+ * supplies precomputed multiline spans; dependency parsing keeps its original
+ * single-line code-span behavior so PR metadata cannot change dependency edges.
  */
-function cleanLine(line: string, state: LineState): string {
+function cleanLine(
+  lines: readonly string[],
+  lineIndex: number,
+  state: LineState,
+  codeSpanEnds?: ReadonlyMap<number, CodeSpanEnd>,
+): string {
+  const line = lines[lineIndex]!;
   let out = '';
   let i = 0;
+  if (state.codeSpanEnd !== null) {
+    if (lineIndex < state.codeSpanEnd.line) return CODE_PLACEHOLDER;
+    out = CODE_PLACEHOLDER;
+    i = state.codeSpanEnd.col;
+    state.codeSpanEnd = null;
+  }
   if (state.inComment) {
-    const end = line.indexOf('-->');
-    if (end < 0) return ' ';
+    const end = line.indexOf('-->', i);
+    if (end < 0) return out + ' ';
     state.inComment = false;
-    out = ' ';
+    out += ' ';
     i = end + 3;
   }
   while (i < line.length) {
@@ -93,28 +291,23 @@ function cleanLine(line: string, state: LineState): string {
     } else if (ch === '`') {
       let n = 1;
       while (line[i + n] === '`') n++;
-      // Find the next backtick run of exactly the same length.
-      let j = i + n;
-      let close = -1;
-      while (j < line.length) {
-        if (line[j] !== '`') {
-          j++;
-          continue;
-        }
-        let m = 1;
-        while (line[j + m] === '`') m++;
-        if (m === n) {
-          close = j + m;
-          break;
-        }
-        j += m;
+      let close: CodeSpanEnd | undefined;
+      if (codeSpanEnds !== undefined) {
+        close = codeSpanEnds.get(i);
+      } else {
+        const col = findBacktickClose(line, i + n, n);
+        if (col >= 0) close = { line: lineIndex, col };
       }
-      if (close < 0) {
+      if (close !== undefined) {
+        out += CODE_PLACEHOLDER;
+        if (close.line > lineIndex) {
+          state.codeSpanEnd = close;
+          return out;
+        }
+        i = close.col;
+      } else {
         out += line.slice(i, i + n);
         i += n;
-      } else {
-        out += CODE_PLACEHOLDER;
-        i = close;
       }
     } else {
       out += ch;
@@ -128,6 +321,10 @@ const FENCE_OPEN_RE = /^\s*(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSE_RE = /^\s*(`+|~+)\s*$/;
 const HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]+(.*))?$/;
 const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
+/** List items for inline block boundaries, including CommonMark's 1–9 digit limit. */
+const INLINE_LIST_ITEM_RE = /^( {0,3})(?:[-*+]|(\d{1,9})[.)])(?:[ \t]+|$)/;
+const THEMATIC_BREAK_RE = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/;
+const SETEXT_UNDERLINE_RE = /^ {0,3}(?:=+|-+)[ \t]*$/;
 
 /**
  * A relation line: `Blocked by: [...]` or `Parent: [...]`, optionally after a list
@@ -161,9 +358,7 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
   const keywords = buildKeywords(options.keywords ?? DEFAULT_KEYWORDS);
   if (!body) return [];
   const kindOf = new Map<string, Kind>(keywords.map((k) => [k.text, k.kind]));
-  const hosts = new Set(
-    (options.webHosts ?? []).map((h) => h.trim().toLowerCase()).filter((h) => h !== ''),
-  );
+  const webRoots = parseWebRoots(options.webHosts);
 
   const alternation = keywords.map((k) => escapeRegex(k.text).replace(/ /g, '\\s+')).join('|');
   const keywordLineRe = new RegExp(
@@ -173,11 +368,11 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
 
   const refRe = new RegExp(
     [
-      // 1: host, 2: owner, 3: repo, 4: number
-      `(?<![${WORD}])https?://([A-Za-z0-9.-]+(?::\\d+)?)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
-      // 5: owner, 6: repo, 7: number
+      // 1: host, 2: subpath, 3: owner, 4: repo, 5: number
+      `(?<![${WORD}])https?://([A-Za-z0-9.-]+(?::\\d+)?)(?:/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+))?/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
+      // 6: owner, 7: repo, 8: number
       `(?<![${WORD}])([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\\d+)(?![${WORD}])`,
-      // 8: number
+      // 9: number
       `(?<![${WORD}/])#(\\d+)(?![${WORD}])`,
     ].join('|'),
     'gu',
@@ -189,17 +384,17 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
       let owner: string | null = null;
       let repo: string | null = null;
       let numText: string;
-      if (m[4] !== undefined) {
-        if (!hosts.has(m[1]!.toLowerCase())) continue;
-        owner = m[2]!.toLowerCase();
-        repo = m[3]!.toLowerCase();
-        numText = m[4];
-      } else if (m[7] !== undefined) {
-        owner = m[5]!.toLowerCase();
-        repo = m[6]!.toLowerCase();
-        numText = m[7];
+      if (m[5] !== undefined) {
+        if (!matchesWebRoot(webRoots, m[1]!, m[2])) continue;
+        owner = m[3]!.toLowerCase();
+        repo = m[4]!.toLowerCase();
+        numText = m[5];
+      } else if (m[8] !== undefined) {
+        owner = m[6]!.toLowerCase();
+        repo = m[7]!.toLowerCase();
+        numText = m[8];
       } else {
-        numText = m[8]!;
+        numText = m[9]!;
       }
       const number = Number(numText);
       if (!Number.isSafeInteger(number) || number < 1) continue;
@@ -210,29 +405,27 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
     }
   };
 
-  const lineState: LineState = { inComment: false };
+  const lineState: LineState = { inComment: false, codeSpanEnd: null };
   let fence: { char: string; length: number } | null = null;
   let section: Kind | null = null;
+  const lines = bodyLines(body);
 
-  for (const raw of body.split(/\r\n|\r|\n/)) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!;
     if (fence) {
       const close = FENCE_CLOSE_RE.exec(raw);
       if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
       continue;
     }
-    if (!lineState.inComment) {
-      const open = FENCE_OPEN_RE.exec(raw);
-      if (open) {
-        const marker = open[1]!;
-        // A backtick fence's info string cannot contain backticks (that is an inline span).
-        if (!(marker[0] === '`' && open[2]!.includes('`'))) {
-          fence = { char: marker[0]!, length: marker.length };
-          continue;
-        }
+    if (!lineState.inComment && lineState.codeSpanEnd === null) {
+      const opened = isFenceOpenLine(raw);
+      if (opened) {
+        fence = opened;
+        continue;
       }
     }
 
-    const line = cleanLine(raw, lineState);
+    const line = cleanLine(lines, lineIndex, lineState);
     if (/^\s*>/.test(line)) continue;
 
     // A relation line is read in every mode; when it has this shape, only the
@@ -271,4 +464,84 @@ export function parseBodyRelations(body: string, options: ParseOptions = {}): Ra
   return [...found.values()].sort(
     (a, b) => kindRank(a.kind) - kindRank(b.kind) || compareRefs(a.ref, b.ref),
   );
+}
+
+/**
+ * Extracts issue references after standard pull-request closing keywords
+ * (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`),
+ * ignoring fenced code blocks, inline code spans, HTML comments, and blockquotes.
+ */
+export function parseClosingIssues(body: string, options: ClosingParseOptions = {}): IssueRef[] {
+  if (!body) return [];
+  const webRoots = parseWebRoots(options.webHosts);
+  const closingRe = new RegExp(
+    `(?<![${WORD}/])(?:\\*{1,2}|_{1,2})?(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:(?=(?:\\*{1,2}|_{1,2})(?![${WORD}]))|(?![${WORD}]))(?:\\*{1,2}|_{1,2})?(?:\\s*:\\s*(?:\\*{1,2}|_{1,2})?\\s*|\\s+)(?:\\[\\s*)?(?:` +
+      [
+        // 1: host, 2: subpath, 3: owner, 4: repo, 5: number
+        `https?://([A-Za-z0-9.-]+(?::\\d+)?)(?:/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+))?/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\\d+)(?![${WORD}])`,
+        // 6: owner, 7: repo, 8: number
+        `([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\\d+)(?![${WORD}])`,
+        // 9: number
+        `#(\\d+)(?![${WORD}])`,
+      ].join('|') +
+      ')',
+    'giu',
+  );
+
+  const found = new Map<string, IssueRef>();
+  const lineState: LineState = { inComment: false, codeSpanEnd: null };
+  let fence: { char: string; length: number; listIndent: number } | null = null;
+  const lines = bodyLines(body);
+  const contexts = closingLineContexts(lines);
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!;
+    // A list-contained code block ends with its item, even without a closing fence.
+    if (fence && raw.trim() !== '' && /^ */.exec(raw)![0].length < fence.listIndent) {
+      fence = null;
+    }
+    if (fence) {
+      const close = FENCE_CLOSE_RE.exec(raw.slice(fence.listIndent));
+      if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
+      continue;
+    }
+    if (!lineState.inComment && lineState.codeSpanEnd === null) {
+      const block = contexts[lineIndex]!.block;
+      if (/^\s*>/.test(block.text)) continue;
+      const opened = isFenceOpenLine(block.text);
+      if (opened) {
+        fence = { ...opened, listIndent: block.listIndent };
+        continue;
+      }
+    }
+
+    const line = cleanLine(lines, lineIndex, lineState, contexts[lineIndex]!.codeSpanEnds);
+    if (/^\s*>/.test(line)) continue;
+
+    for (const m of line.matchAll(closingRe)) {
+      let owner: string | null = null;
+      let repo: string | null = null;
+      let numText: string;
+      if (m[5] !== undefined) {
+        if (!matchesWebRoot(webRoots, m[1]!, m[2])) continue;
+        owner = m[3]!.toLowerCase();
+        repo = m[4]!.toLowerCase();
+        numText = m[5];
+      } else if (m[8] !== undefined) {
+        owner = m[6]!.toLowerCase();
+        repo = m[7]!.toLowerCase();
+        numText = m[8];
+      } else {
+        numText = m[9]!;
+      }
+      const number = Number(numText);
+      if (!Number.isSafeInteger(number) || number < 1) continue;
+      const id = `${owner ?? ''}/${repo ?? ''}#${number}`;
+      if (!found.has(id)) {
+        found.set(id, { owner, repo, number });
+      }
+    }
+  }
+
+  return [...found.values()].sort(compareRefs);
 }

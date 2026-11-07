@@ -430,4 +430,53 @@ describe('scope plan derivation', () => {
     o.scope = { kind: 'source', source: 'foreign' };
     expect(() => deriveScopePlan(o)).toThrow('source');
   });
+
+  it('attaches open closing pull requests in project and source scopes, including cross-repository pull requests', () => {
+    const o = input();
+    o.repositories[0]!.observation.pullRequests = [
+      {
+        key: 'a/r#10',
+        repo: { owner: 'a', repo: 'r' },
+        number: 10,
+        title: 'Implement work',
+        url: 'https://github.com/a/r/pull/10',
+        body: 'Closes #1',
+      },
+    ];
+    o.repositories[1]!.observation.pullRequests = [
+      {
+        key: 'a/other#11',
+        repo: { owner: 'a', repo: 'other' },
+        number: 11,
+        title: 'Cross-repo fix for issue 1',
+        url: 'https://github.com/a/other/pull/11',
+        body: 'Fixes a/r#1',
+      },
+    ];
+    const projectNode = nodes(o).find((n) => n.key === 'a/r#1')!;
+    expect(projectNode.closingPullRequests).toEqual([
+      {
+        key: 'a/r#10',
+        number: 10,
+        title: 'Implement work',
+        url: 'https://github.com/a/r/pull/10',
+      },
+    ]);
+    o.scope = { kind: 'source', source: 's' };
+    const sourceNode = nodes(o).find((n) => n.key === 'a/r#1')!;
+    expect(sourceNode.closingPullRequests).toEqual([
+      {
+        key: 'a/other#11',
+        number: 11,
+        title: 'Cross-repo fix for issue 1',
+        url: 'https://github.com/a/other/pull/11',
+      },
+      {
+        key: 'a/r#10',
+        number: 10,
+        title: 'Implement work',
+        url: 'https://github.com/a/r/pull/10',
+      },
+    ]);
+  });
 });

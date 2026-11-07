@@ -96,9 +96,9 @@ describe('listOpenIssues: listing', () => {
     expect(res.issues[106]!.number).toBe(107);
     expect(res.warnings).toEqual([]);
     expect(calls.map((c) => c.url)).toEqual([
-      `${API}/repos/acme/api/issues?state=open&type=issues&limit=50&page=1`,
-      `${API}/repos/acme/api/issues?state=open&type=issues&limit=50&page=2`,
-      `${API}/repos/acme/api/issues?state=open&type=issues&limit=50&page=3`,
+      `${API}/repos/acme/api/issues?state=open&limit=50&page=1`,
+      `${API}/repos/acme/api/issues?state=open&limit=50&page=2`,
+      `${API}/repos/acme/api/issues?state=open&limit=50&page=3`,
     ]);
   });
 
@@ -169,10 +169,64 @@ describe('listOpenIssues: listing', () => {
 
   it('filters out pull requests', async () => {
     const { p } = provider(() =>
-      list([gtIssue(1), gtIssue(2, { pull_request: { merged: false } }), gtIssue(3)]),
+      list([
+        gtIssue(1),
+        gtIssue(4, {
+          title: 'PR 4',
+          body: 'Closes #1',
+          html_url: `${ROOT}/acme/api/pulls/4`,
+          pull_request: { merged: false },
+        }),
+        gtIssue(2, {
+          title: 'PR 2',
+          body: null,
+          html_url: `${ROOT}/acme/api/pulls/2`,
+          pull_request: { merged: false },
+        }),
+        gtIssue(5, { pull_request: { merged: true } }),
+        gtIssue(3),
+      ]),
     );
     const res = await p.listOpenIssues(REPO, NONE);
     expect(res.issues.map((i) => i.number)).toEqual([1, 3]);
+    expect(res.pullRequests).toEqual([
+      {
+        key: 'acme/api#2',
+        repo: { owner: 'acme', repo: 'api' },
+        number: 2,
+        title: 'PR 2',
+        url: `${ROOT}/acme/api/pulls/2`,
+        body: '',
+      },
+      {
+        key: 'acme/api#4',
+        repo: { owner: 'acme', repo: 'api' },
+        number: 4,
+        title: 'PR 4',
+        url: `${ROOT}/acme/api/pulls/4`,
+        body: 'Closes #1',
+      },
+    ]);
+  });
+
+  it('resolves conflicting duplicate pull requests deterministically regardless of item order', async () => {
+    const prA = gtIssue(10, {
+      title: 'Implement work',
+      body: 'Closes #1',
+      html_url: `${ROOT}/acme/api/pulls/10`,
+      pull_request: { merged: false },
+    });
+    const prB = gtIssue(10, {
+      title: 'Alternate payload',
+      body: 'No closing reference',
+      html_url: `${ROOT}/acme/api/pulls/10`,
+      pull_request: { merged: false },
+    });
+    const { p: p1 } = provider(() => list([prA, prB]));
+    const { p: p2 } = provider(() => list([prB, prA]));
+    expect((await p1.listOpenIssues(REPO, NONE)).pullRequests).toEqual(
+      (await p2.listOpenIssues(REPO, NONE)).pullRequests,
+    );
   });
 
   it('pages on the raw item count even when a full page is all pull requests', async () => {
@@ -276,9 +330,7 @@ describe('request construction', () => {
     const p = createGiteaProvider({ baseUrl, token: null, fetch });
     await p.listOpenIssues(REPO, NONE);
     await p.getIssue(REPO, 3);
-    expect(calls[0]!.url).toBe(
-      `${api}/repos/acme/api/issues?state=open&type=issues&limit=50&page=1`,
-    );
+    expect(calls[0]!.url).toBe(`${api}/repos/acme/api/issues?state=open&limit=50&page=1`);
     expect(calls[1]!.url).toBe(`${api}/repos/acme/api/issues/3`);
   });
 

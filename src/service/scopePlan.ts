@@ -15,6 +15,7 @@ import {
   MAX_EXTERNAL_FETCHES,
   pendingOutsideIssueKeys,
   resolvePlanInput,
+  webHostsOf,
   type OutsideIssueLookup,
   type ResolutionSettings,
 } from './resolution.js';
@@ -77,7 +78,7 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
     id,
     scope: { labels: [], excludeLabels: [], milestones: [] },
     webUrl: options.webUrl,
-    webHosts: options.webUrl === '' ? [] : [new URL(options.webUrl).host.toLowerCase()],
+    webHosts: webHostsOf(options.webUrl),
   };
   const knownCatalog = new Map<
     IssueKey,
@@ -92,6 +93,9 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
   const roots = listedRepos
     .flatMap((r) => records.get(r)!.observation.issues!)
     .filter((i) => i.state === 'open');
+  const openPullRequests = listedRepos.flatMap(
+    (r) => records.get(r)!.observation.pullRequests ?? [],
+  );
   const known = new Map(roots.map((i) => [i.key, i]));
   const outside = new Map(
     options.outsideIssues
@@ -146,7 +150,7 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       issues: [],
     })),
   ];
-  const resolved = resolvePlanInput(roots, lookups, settings, warnings);
+  const resolved = resolvePlanInput(roots, lookups, settings, warnings, openPullRequests);
   const included = new Set(resolved.issues.map((i) => i.key));
   const stale = (record: DerivationObservation<ObservationMetadata>): boolean => {
     const m = record.observation;

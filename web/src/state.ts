@@ -43,6 +43,12 @@ export function indexSnapshot(
   const { plan, layout } = snapshot;
   const nodes = new Map(plan.nodes.map((n) => [n.key, n] as const));
   const repos = new Set(plan.nodes.map((n) => `${n.repo.owner}/${n.repo.repo}`));
+  for (const n of plan.nodes) {
+    for (const pr of n.closingPullRequests ?? []) {
+      const hash = pr.key.indexOf('#');
+      if (hash > 0) repos.add(pr.key.slice(0, hash));
+    }
+  }
   return {
     nodes,
     layout: new Map(layout.nodes.map((n) => [n.key, n] as const)),
@@ -395,6 +401,7 @@ export function nodeTarget(n: PlanNode, snapshot: Snapshot, index: SnapshotIndex
     priority: priorityName(snapshot, n),
     critical: index.criticalNodes.has(n.key),
     parents: n.parents,
+    closingPullRequests: n.closingPullRequests,
   };
 }
 
