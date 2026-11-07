@@ -944,6 +944,41 @@ describe('parseClosingIssues', () => {
     expect(parseClosingIssues(body, HOSTS)).toEqual(['#2'].map(issueRef));
   });
 
+  it.each(['2.', '2)', '0.', '42.', '0002.', '1234567890.', '    1.'])(
+    'keeps %s continuation text inside a multiline inline code span',
+    (marker) => {
+      const body = ['`example starts', `${marker} Closes #1`, 'example ends`', 'Fixes #2'].join(
+        '\n',
+      );
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#2')]);
+      expect(
+        parseBodyRelations(body.replace('Closes #1', 'Blocked by: [#1]'), { strict: true }),
+      ).toEqual([]);
+    },
+  );
+
+  it.each(['-', '*', '+', '1.', '1)', '01.', '   1.'])(
+    'does not pair backticks across a paragraph-interrupting %s list item',
+    (marker) => {
+      const body = ['Note with `unmatched opener', `${marker} Closes #1`, 'another ` opener'].join(
+        '\n',
+      );
+      expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
+    },
+  );
+
+  it.each([
+    '1. Note with `unmatched opener',
+    '1. Introduction\n   Note with `unmatched opener',
+    '2. Introduction\n   Note with `unmatched opener',
+  ])('does not pair backticks across sibling numbered list items after %s', (opening) => {
+    const body = [opening, '3. Closes #1', '4. Another ` opener'].join('\n');
+    expect(parseClosingIssues(body, HOSTS)).toEqual([issueRef('#1')]);
+    expect(
+      parseBodyRelations(body.replace('Closes #1', 'Blocked by: [#1]'), { strict: true }),
+    ).toEqual([rel('b:#1')]);
+  });
+
   it('does not pair unmatched backticks across paragraph or block boundaries', () => {
     const body = [
       'Note with `unmatched opener',

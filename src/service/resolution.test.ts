@@ -226,6 +226,32 @@ describe('pure resolution', () => {
     expect(first).toEqual(second);
   });
 
+  it('does not attach a closing pull request from numbered text inside a multiline code span', () => {
+    const issues = [issue(1), issue(2)];
+    const pullRequest: OpenPullRequest = {
+      key: 'a/r#10',
+      repo: { owner: 'a', repo: 'r' },
+      number: 10,
+      title: 'Example PR',
+      url: 'https://web.test/a/r/pull/10',
+      body: '`example starts\n2. Closes #1\nexample ends`\nFixes #2',
+    };
+    const baseline = buildPlan(resolvePlanInput(issues, new Map(), settings));
+    const plan = buildPlan(resolvePlanInput(issues, new Map(), settings, [], [pullRequest]));
+
+    expect(plan.nodes.find((node) => node.key === 'a/r#1')?.closingPullRequests).toEqual([]);
+    expect(plan.nodes.find((node) => node.key === 'a/r#2')?.closingPullRequests).toEqual([
+      { key: 'a/r#10', number: 10, title: 'Example PR', url: 'https://web.test/a/r/pull/10' },
+    ]);
+    expect(plan.nodes.map((node) => [node.key, node.status])).toEqual(
+      baseline.nodes.map((node) => [node.key, node.status]),
+    );
+    expect(plan.edges).toEqual(baseline.edges);
+    expect(plan.order).toEqual(baseline.order);
+    expect(plan.waves).toEqual(baseline.waves);
+    expect(plan.criticalPath).toEqual(baseline.criticalPath);
+  });
+
   it('recognizes closing URLs under a subpath-hosted forge webUrl while rejecting mismatched prefixes', () => {
     const root = issue(1);
     const subpathSettings: ResolutionSettings = {

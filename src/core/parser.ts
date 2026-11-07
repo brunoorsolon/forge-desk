@@ -142,14 +142,42 @@ function isFenceOpenLine(raw: string): { char: string; length: number } | null {
   return { char: marker[0]!, length: marker.length };
 }
 
-function isInlineBlockBoundary(raw: string): boolean {
+function isInlineBlockBoundary(raw: string, openingLine: string): boolean {
+  const nextItem = INLINE_LIST_ITEM_RE.exec(raw);
+  const openingItem = INLINE_LIST_ITEM_RE.exec(openingLine);
+  // A sibling item ends an existing list paragraph regardless of its number.
+  // To interrupt ordinary paragraph text, a new ordered list must start at 1
+  // and its first item (like a bullet item) must have nonblank content.
+  const listBoundary =
+    nextItem !== null &&
+    ((openingItem !== null && nextItem[1]!.length <= openingItem[1]!.length) ||
+      ((nextItem[2] === undefined || Number(nextItem[2]) === 1) &&
+        /\S/.test(raw.slice(nextItem[0].length))));
   return (
     /^\s*$/.test(raw) ||
     isFenceOpenLine(raw) !== null ||
     /^\s*>/.test(raw) ||
     HEADING_RE.test(raw) ||
-    LIST_MARKER_RE.test(raw)
+    listBoundary
   );
+}
+
+/** Retains list context when a backtick opens on a paragraph's continuation line. */
+function inlineParagraphOpeningLine(lines: readonly string[], lineIndex: number): string {
+  let start = lineIndex;
+  while (start > 0) {
+    const previous = lines[start - 1]!;
+    if (isInlineBlockBoundary(previous, '')) {
+      if (INLINE_LIST_ITEM_RE.test(previous)) start--;
+      break;
+    }
+    start--;
+  }
+  let openingLine = lines[start]!;
+  for (let k = start + 1; k <= lineIndex; k++) {
+    if (isInlineBlockBoundary(lines[k]!, openingLine)) openingLine = lines[k]!;
+  }
+  return openingLine;
 }
 
 /**
@@ -194,9 +222,10 @@ function cleanLine(lines: readonly string[], lineIndex: number, state: LineState
       } else {
         let multilineClose: { line: number; col: number } | null = null;
         if (!HEADING_RE.test(line)) {
+          const openingLine = inlineParagraphOpeningLine(lines, lineIndex);
           for (let k = lineIndex + 1; k < lines.length; k++) {
             const nextLine = lines[k]!;
-            if (isInlineBlockBoundary(nextLine)) break;
+            if (isInlineBlockBoundary(nextLine, openingLine)) break;
             const col = findBacktickClose(nextLine, 0, n);
             if (col >= 0) {
               multilineClose = { line: k, col };
@@ -224,6 +253,8 @@ const FENCE_OPEN_RE = /^\s*(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSE_RE = /^\s*(`+|~+)\s*$/;
 const HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]+(.*))?$/;
 const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
+/** List items for inline block boundaries, including CommonMark's 1–9 digit limit. */
+const INLINE_LIST_ITEM_RE = /^( {0,3})(?:[-*+]|(\d{1,9})[.)])(?:[ \t]+|$)/;
 
 /**
  * A relation line: `Blocked by: [...]` or `Parent: [...]`, optionally after a list
