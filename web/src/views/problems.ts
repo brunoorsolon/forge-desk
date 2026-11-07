@@ -40,6 +40,14 @@ export const WARNING_EXPLANATIONS: Record<string, { title: string; text: string 
     title: 'An issue could not be fetched',
     text: 'It is treated as an open external issue titled "(unavailable)", so its own dependencies are unknown.',
   },
+  'stale-data': {
+    title: 'Plan uses stale data',
+    text: 'Some observations are out of date or were invalidated. The plan keeps the last successful data while it is updated; a failed refresh does not make that data current. Check the scope heading for each repository’s check time and any refresh error.',
+  },
+  'dependency-provisional': {
+    title: 'Dependencies are provisional',
+    text: 'Some dependencies could not be fully checked. Their blockers are kept until a later check confirms closure or removal of the relationship. A plan with provisional dependencies is not fully verified.',
+  },
   'repository-unlisted': {
     title: 'All projects plan is partial',
     text: 'These repositories have no successful issue listing yet. The plan uses the available listings and may include referenced dependencies from the unlisted repositories.',

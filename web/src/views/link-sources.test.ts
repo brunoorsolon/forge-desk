@@ -211,3 +211,30 @@ describe('partial All projects warning', () => {
     expect(textOfClass(root, 'warn-msg')).toEqual([]);
   });
 });
+
+describe('scope freshness and coverage warnings', () => {
+  it('explains stale observations and that provisional dependencies are not fully verified', () => {
+    const scoped = structuredClone(snapshot);
+    scoped.plan.warnings = [
+      { code: 'stale-data', message: 'o/r uses its last successful check.', issues: ['o/r#1'] },
+      {
+        code: 'dependency-provisional',
+        message: 'o/r#2 relation coverage could not be checked.',
+        issues: ['o/r#2'],
+      },
+    ];
+    const problems = createProblemsView(ctx);
+    problems.update({ ...stateWith(null, 'problems'), snapshot: scoped }, INITIAL_STATE);
+    const root = problems.el as unknown as FakeElement;
+    expect(root.textContent).toContain('Plan uses stale data');
+    expect(root.textContent).toContain('a failed refresh does not make that data current');
+    expect(root.textContent).toContain('Dependencies are provisional');
+    expect(root.textContent).toContain('blockers are kept');
+    expect(root.textContent).toContain(
+      'A plan with provisional dependencies is not fully verified.',
+    );
+    expect(textOfClass(root, 'warn-msg')).toEqual(
+      scoped.plan.warnings.map((warning) => warning.message),
+    );
+  });
+});
