@@ -26,6 +26,17 @@ jobs:
       - run: npm run build
       - name: Scope heading browser layout regression
         run: node scripts/check-scope-heading-layout.mjs
+      - name: Project navigation browser regression
+        run: node scripts/check-navigation-browser.mjs
+        env:
+          BROWSER_EVIDENCE_DIR: navigation-browser-evidence
+      - name: Preserve navigation browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: navigation-browser-evidence
+          path: navigation-browser-evidence
+          if-no-files-found: ignore
 
   docker:
     runs-on: ubuntu-latest

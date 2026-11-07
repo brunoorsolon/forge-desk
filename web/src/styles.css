@@ -2526,3 +2526,23 @@ button.issue-pill:hover {
     animation: none !important;
   }
 }
+
+/* Project-first navigation mounts beside the existing planning area. */
+.planning-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.planning-shell > .planning {
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .planning-shell {
+    flex-direction: column;
+  }
+  .planning-shell > .project-sidebar {
+    max-height: 70%;
+    overflow-y: auto;
+  }
+}
