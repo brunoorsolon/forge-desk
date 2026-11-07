@@ -81,6 +81,30 @@ Unknown sources and projects return `404` with `unknown-source` or `unknown-proj
 conflicts return `409` with `policy-conflict` and the explanation. All these routes use the existing
 planning login when configured, and are open otherwise. Responses are `Cache-Control: no-store`.
 
+### Explicit scope refresh
+
+- `POST /api/projects/:source/:owner/:repo/refresh`
+- `POST /api/sources/:source/refresh`
+
+Both start or join a paced recheck even when observations are fresh, wait up to the same
+15-second bound, and return `{ scope, snapshot, freshness, job }` just like snapshot reads.
+A project refresh lists only that repository and looks up the outside issues its plan needs.
+A source refresh covers its entire configured catalog, including empty projects. Concurrent
+requests join queued or running work rather than duplicating upstream requests. A timeout
+leaves the job running; failures retain last-good observations with their original check time.
+
+Every refresh launch requires `x-forge-desk-request: 1`. A supplied `Origin` must match
+`server.publicOrigin` by host and port, or the request's `Host` when no public origin is configured.
+With a login configured, scripts use Basic credentials without a session cookie; browser sessions
+must also send their Origin and the session-bound `x-csrf-token` from `GET /api/session`.
+Session cookies and Authorization headers cannot be combined. Without a login, the launch header
+and Origin rules still apply. The routes do not enable CORS.
+
+Access failures return `401` (`unauthenticated`) or `403` (`missing-launch-header`,
+`forbidden-origin`, `missing-csrf`, `invalid-csrf`, `mixed-credentials`). The scope `404`, `409`
+and zero-TTL cooldown `503` responses are the same as snapshot reads. Closing the scope runtime
+rejects new work with `503` and `code: "server-closing"`. Named-view refresh behavior is unchanged.
+
 ### Scope exports
 
 - `GET /api/projects/:source/:owner/:repo/export.:format`
