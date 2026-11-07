@@ -10,8 +10,8 @@ import {
   refreshSnapshot,
 } from './api.js';
 import type { CatalogResponse } from '../../src/core/scope.js';
-import { initialPreferenceState, type PreferenceState } from './preferenceState.js';
-import { resolveStartup, type StartupPreferences } from './startup.js';
+import { createPreferenceController } from './preference-controller.js';
+import { resolveStartup } from './startup.js';
 import {
   createScopeNavigation,
   routeForScope,
@@ -47,20 +47,7 @@ applyTheme(loadTheme());
 const store = new Store({ ...INITIAL_STATE, route: parseHash(location.hash) });
 
 // ------------------------------------------ project-first navigation wiring
-// Preference reads/saves and refresh mutations are wired by their own tickets.
-const startupPreferences: StartupPreferences = {
-  available: false,
-  reason: 'storage-not-configured',
-  message: 'Personal preferences are not connected yet.',
-};
-const preferences: PreferenceState = {
-  ...initialPreferenceState(),
-  view: {
-    status: 'unavailable',
-    reason: startupPreferences.reason,
-    message: startupPreferences.message,
-  },
-};
+// Refresh mutations remain separate from preference persistence.
 let catalog: CatalogResponse | null = null;
 let catalogError: string | null = null;
 let navigationPanel: ScopePanelState | null = {
@@ -68,8 +55,34 @@ let navigationPanel: ScopePanelState | null = {
   message: 'Loading the project catalog.',
 };
 let resolved = false;
+let lastDestination: string | undefined;
 const scopeNavigation = createScopeNavigation(store);
 scopeNavigation.setVisible(!document.hidden && parseReleaseHash(location.hash) === null);
+
+// --------------------------------------------------------- preference wiring
+const preferences = createPreferenceController((event) => {
+  // Only the unresolved initial/bare visit may navigate when preferences arrive.
+  // Remote reads never move a page that already has a destination.
+  if (!resolved && (event.type === 'read-success' || event.type === 'read-failure'))
+    resolveLocation();
+  else render();
+});
+
+function trackDestination(route: Route, remember: boolean): void {
+  const scope = scopeFromRoute(route);
+  const destination = JSON.stringify(scope ?? { view: route.viewId });
+  if (destination === lastDestination) return;
+  lastDestination = destination;
+  preferences.selectProject(remember && scope?.kind === 'project' ? scope : null);
+}
+
+function retryPreferences(): void {
+  if (navigationPanel?.kind === 'preference-error') {
+    resolved = false;
+    navigationPanel = { kind: 'loading', message: 'Loading personal preferences.' };
+  }
+  preferences.load('reload');
+}
 
 function resolveLocation(): void {
   if (parseReleaseHash(location.hash) !== null) return;
@@ -78,6 +91,7 @@ function resolveLocation(): void {
   if (route.scope === undefined && route.viewId !== null) {
     navigationPanel = null;
     resolved = true;
+    trackDestination(route, false);
     store.dispatch({ type: 'route', route });
     render();
     return;
@@ -93,10 +107,22 @@ function resolveLocation(): void {
     render();
     return;
   }
+  const startupPreferences = preferences.startup();
+  if (route.scope === undefined && startupPreferences === null) {
+    resolved = false;
+    navigationPanel = { kind: 'loading', message: 'Loading personal preferences.' };
+    scopeNavigation.open(null);
+    render();
+    return;
+  }
   const result = resolveStartup({
     hash: location.hash,
     catalog,
-    preferences: startupPreferences,
+    preferences: startupPreferences ?? {
+      available: false,
+      reason: 'read-failed',
+      message: 'Loading personal preferences.',
+    },
     views: store.get().views ?? [],
   });
   resolved = true;
@@ -119,6 +145,7 @@ function resolveLocation(): void {
       message: result.error.message,
     };
   } else if (result.kind === 'empty-catalog') navigationPanel = { kind: 'empty-catalog' };
+  trackDestination(next, result.rememberProject);
   store.dispatch({ type: 'route', route: next });
   // Resolve startup in place; back returns to the user's previous page, not a bare-root detour.
   const hash = serializeHash(store.get().route);
@@ -219,10 +246,28 @@ const sidebar = createProjectSidebar({
     const viewId = store.get().views?.[0]?.id;
     if (viewId !== undefined) actions.setView(viewId);
   },
-  toggleFavorite: () => {}, // unavailable until preference wiring supplies persistence
+  toggleFavorite: preferences.toggleFavorite,
 });
-const heading = createScopeHeading({ toggleFavorite: () => {} });
+const heading = createScopeHeading({ toggleFavorite: preferences.toggleFavorite });
 const scopeStates = createScopeStates();
+const preferenceError = h('p', { class: 'preference-error', role: 'alert', hidden: true });
+const preferenceNotice = h('p', { class: 'preference-notice', role: 'status', hidden: true });
+const preferenceRetry = h(
+  'button',
+  {
+    class: 'btn preference-retry',
+    type: 'button',
+    onclick: retryPreferences,
+  },
+  'Reload preferences',
+);
+const preferenceFeedback = h(
+  'div',
+  { class: 'preference-feedback', hidden: true },
+  preferenceError,
+  preferenceNotice,
+  preferenceRetry,
+);
 const scopeEmpty = h(
   'section',
   { class: 'state-center', hidden: true },
@@ -241,6 +286,7 @@ const planningContent = h(
   'div',
   { class: 'planning' },
   header.el,
+  preferenceFeedback,
   heading.el,
   summary.el,
   states.el,
@@ -267,6 +313,8 @@ function syncArea(): void {
   planningLink.setAttribute('aria-current', route === null ? 'page' : 'false');
   releasesLink.setAttribute('aria-current', route === null ? 'false' : 'page');
   if (route !== null) {
+    lastDestination = 'releases';
+    preferences.selectProject(null);
     document.title = 'Releases · Forge Desk';
     void releases.open(route);
   } else {
@@ -325,8 +373,22 @@ store.subscribe((state) => {
 });
 
 function updateNavigation(state: ReturnType<Store['get']>): void {
-  sidebar.update(state, preferences, catalog);
-  heading.update(state, preferences);
+  const preferenceState = preferences.get();
+  sidebar.update(state, preferenceState, catalog);
+  heading.update(state, preferenceState);
+  preferenceError.textContent = preferenceState.error ?? '';
+  preferenceError.hidden = preferenceState.error === null;
+  preferenceNotice.textContent = preferenceState.notice ?? '';
+  preferenceNotice.hidden = preferenceState.notice === null;
+  const unavailable =
+    preferenceState.view.status === 'unverified' ||
+    (preferenceState.view.status === 'unavailable' &&
+      preferenceState.view.reason !== 'login-disabled' &&
+      preferenceState.view.reason !== 'storage-not-configured');
+  preferenceRetry.hidden =
+    !unavailable && preferenceState.error === null && preferenceState.notice === null;
+  preferenceFeedback.hidden =
+    preferenceError.hidden && preferenceNotice.hidden && preferenceRetry.hidden;
   const scoped = state.route.scope !== undefined;
   const blocked = navigationPanel !== null;
   const panelState =
@@ -351,6 +413,16 @@ function titleFor(state: ReturnType<Store['get']>): string {
 window.addEventListener('hashchange', () => {
   if (parseReleaseHash(location.hash) === null) resolveLocation();
   syncArea();
+});
+
+// Clear before leaving, not after the logout response. Late requests cannot restore it.
+document.addEventListener('submit', (event) => {
+  if (event.target instanceof HTMLFormElement && event.target.getAttribute('action') === 'logout')
+    preferences.endSession();
+});
+window.addEventListener('pagehide', () => preferences.endSession());
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) location.reload(); // Revalidate authentication instead of restoring private BFCache data.
 });
 
 document.addEventListener('keydown', (e) => {
@@ -378,6 +450,7 @@ document.addEventListener('keydown', (e) => {
 render();
 syncArea();
 resolveLocation();
+preferences.load('open');
 
 fetchProjects().then(
   (result) => {
@@ -399,6 +472,7 @@ fetchViews().then(
 );
 
 document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) preferences.load('tab-return');
   const visible = !document.hidden && parseReleaseHash(location.hash) === null;
   scopeNavigation.setVisible(visible);
   if (visible && resolved && navigationPanel === null && store.get().route.scope === undefined)
