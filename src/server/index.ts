@@ -5,6 +5,7 @@ import { ConfigError, loadConfig } from '../config/load.js';
 import { loadReleaseRuntime } from '../config/releaseRuntime.js';
 import { openPreferenceRuntime, type PreferenceRuntime } from '../service/preferenceRuntime.js';
 import { createScopeRuntime } from '../service/scopeRuntime.js';
+import { SweepScheduler } from '../service/sweepScheduler.js';
 import { acquireReleaseOwnership } from '../service/releaseOwnership.js';
 import { ReleaseStateStore } from '../service/releaseState.js';
 import { ReleasePreparation } from '../release/preparation.js';
@@ -32,6 +33,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
 
   const scopes = createScopeRuntime(config);
   const service = scopes.plans;
+  const sweeps = new SweepScheduler({
+    sources: config.catalog.sources,
+    jobs: scopes.jobs,
+    store: scopes.store,
+    sweepHours: config.refresh.sweepHours,
+    ttlSeconds: config.cache.ttlSeconds,
+  });
   // The single-owner gate is claimed before the app can serve release work, so release routes
   // exist only on a runtime that owns its state directory. A second process is refused here.
   let app: FastifyInstance | null = null;
@@ -70,6 +78,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
       logger: true,
       preferences,
       scopes,
+      sweeps,
       ...(opts.webDir !== undefined ? { webDir: opts.webDir } : {}),
       ...(releaseRuntime !== null && ownership !== null
         ? {
@@ -88,6 +97,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
         : {}),
     });
   } catch (error) {
+    sweeps.stop();
     await scopes.close();
     await preferences?.close();
     await ownership?.shutdown();
@@ -117,6 +127,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Fastif
   const { host, port } = config.server;
   try {
     await server.listen({ host, port });
+    sweeps.start();
   } catch (error) {
     // Do not leak the ownership lock or the helper process when listening fails.
     await server.close().catch(() => undefined);
