@@ -5,6 +5,7 @@ import type {
   RepositoryFreshness,
 } from '../core/scope.js';
 import type { ObservationStore, StoredObservation, OutsideIssueRef } from './observationStore.js';
+import { AdmissionShutdownError } from './admissionQueue.js';
 import { deriveScopePlan, type ScopePlanResult } from './scopePlan.js';
 import {
   ScopeRefreshError,
@@ -26,11 +27,15 @@ export class ScopeCooldownError extends Error {
 /** Cache-first scope reads. HTTP lifetime and named-view caching stay separate. */
 export class ScopeReadService {
   private readonly now: () => Date;
+  private closed = false;
+  private readonly waiters = new Set<() => void>();
   constructor(
     private readonly options: {
       sources: ScopeRefreshSource[];
       store: ObservationStore;
       jobs: ScopeRefreshJobs;
+      /** Other lanes using these observations, such as unpaced exports. */
+      relatedJobs?: ScopeRefreshJobs[];
       cache: { ttlSeconds: number };
       now?: () => Date;
     },
@@ -39,6 +44,7 @@ export class ScopeReadService {
   }
 
   async get(requested: Scope, options: { refresh?: boolean } = {}): Promise<ScopeResponse> {
+    if (this.closed) throw new AdmissionShutdownError();
     const scope =
       requested.kind === 'project'
         ? { ...requested, repo: requested.repo.toLowerCase() }
@@ -62,6 +68,27 @@ export class ScopeReadService {
       response = this.response(scope, source);
     }
     return response;
+  }
+
+  /** Read current observations without scheduling any upstream work. */
+  cached(requested: Scope): ScopeResponse {
+    if (this.closed) throw new AdmissionShutdownError();
+    const scope =
+      requested.kind === 'project'
+        ? { ...requested, repo: requested.repo.toLowerCase() }
+        : { ...requested };
+    return this.response(scope, this.source(scope));
+  }
+
+  /** Release HTTP waiters before the server drains its connections. */
+  close(): void {
+    this.closed = true;
+    for (const release of this.waiters) release();
+    this.waiters.clear();
+  }
+
+  private get jobLanes(): ScopeRefreshJobs[] {
+    return [this.options.jobs, ...(this.options.relatedJobs ?? [])];
   }
 
   refresh(scope: Scope): Promise<ScopeResponse> {
@@ -143,7 +170,7 @@ export class ScopeReadService {
         references.push(
           ...plan.referencedOutsideIssues.map((key) => ({ source: current.source, key })),
         );
-        active ||= this.options.jobs.active(current) !== null;
+        active ||= this.jobLanes.some((jobs) => jobs.active(current) !== null);
         if (
           current.kind === scope.kind &&
           current.source === scope.source &&
@@ -162,7 +189,8 @@ export class ScopeReadService {
     // Prune on the first settled read instead of retiring that token mid-flight.
     if (!active)
       this.options.store.prune({ sources: this.options.sources.map((s) => s.catalog) }, references);
-    const job = this.options.jobs.active(scope)?.status ?? null;
+    const job =
+      this.jobLanes.map((jobs) => jobs.active(scope)).find((job) => job !== null)?.status ?? null;
     const status = revalidation?.status;
     const hideCached = status && status.finishedAt === null;
     const outside = result.referencedOutsideIssues.map((key) =>
@@ -309,15 +337,17 @@ export class ScopeReadService {
       { kind: 'project', ...project },
       { kind: 'source', source: sourceId },
     ];
-    const updating = scopes.some((s) =>
-      this.options.jobs
-        .active(s)
-        ?.status.units.some(
-          (u) =>
-            u.kind === 'repository' &&
-            u.project.repo === repo &&
-            (u.state === 'queued' || u.state === 'checking'),
-        ),
+    const updating = this.jobLanes.some((jobs) =>
+      scopes.some((s) =>
+        jobs
+          .active(s)
+          ?.status.units.some(
+            (u) =>
+              u.kind === 'repository' &&
+              u.project.repo === repo &&
+              (u.state === 'queued' || u.state === 'checking'),
+          ),
+      ),
     );
     const until = updating ? source.queue.status.delayedUntil : null;
     return {
@@ -347,15 +377,23 @@ export class ScopeReadService {
     // A cooldown is visible immediately; no request waits for its whole duration.
     if (job.status.delayedUntil !== null) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let release!: () => void;
+    const stopped = new Promise<void>((resolve) => {
+      release = resolve;
+      this.waiters.add(resolve);
+      if (this.closed) resolve();
+    });
     try {
       await Promise.race([
         job.completion,
+        stopped,
         new Promise<void>((resolve) => {
           timer = setTimeout(resolve, SCOPE_READ_WAIT_MS);
         }),
       ]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      this.waiters.delete(release);
     }
   }
 }

@@ -21,6 +21,8 @@ import { packageVersion } from '../version.js';
 import { SESSION_COOKIE, checkBasicAuth, credentialsMatch, sessionToken } from './auth.js';
 import { checkReleaseAccess } from './releaseAccess.js';
 import { registerReleaseRoutes, releaseRouteError, type ReleaseMount } from './releaseRoutes.js';
+import type { ScopeRuntime } from '../service/scopeRuntime.js';
+import { registerScopeRoutes } from './scopeRoutes.js';
 import { registerWebhooks, WEBHOOK_PATHS } from './webhooks.js';
 
 export interface BuildAppOptions {
@@ -35,6 +37,8 @@ export interface BuildAppOptions {
   releases?: ReleaseMount;
   /** Startup-owned preference store; never opened implicitly by buildApp. */
   preferences?: PreferenceRuntime;
+  /** Startup-owned shared planning and scope services. */
+  scopes?: ScopeRuntime;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -508,6 +512,7 @@ export function buildApp(
   );
 
   registerPreferenceRoutes(app, config, preferenceAuthentication, opts.preferences);
+  if (opts.scopes) registerScopeRoutes(app, config, opts.scopes);
 
   // --- release routes (only with an owned release runtime; otherwise the routes do not exist) ---
   if (releaseMount !== null) registerReleaseRoutes(app, config, releaseMount);

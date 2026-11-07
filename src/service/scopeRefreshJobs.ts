@@ -24,7 +24,7 @@ export interface ScopeRefreshSource {
   catalog: CatalogSource;
   provider: IssueProvider;
   /** The provider's fetch must already be wrapped by this source's queue. */
-  queue: AdmissionQueue;
+  queue: Pick<AdmissionQueue, keyof AdmissionQueue>;
 }
 
 export class ScopeRefreshError extends Error {
