@@ -1,0 +1,584 @@
+{
+  "checks": [
+    "Add/remove/re-add persists insertion order through real session and CSRF HTTP mutations",
+    "Second isolated profile starts at first favorite",
+    "Tab return synchronizes ordered favorites across isolated profiles",
+    "A remote remembered-project change never moves an already open page",
+    "Bare startup resumes the remembered project across profiles",
+    "Source/view navigation, tab/query changes and passive reads do not remember",
+    "An explicit project deep link is remembered",
+    "Failed favorite save restores confirmed order and shows an error",
+    "Truncated save-response error is visible after reconciliation",
+    "Truncated save response reconciles the committed disk state by a fresh GET",
+    "Failed remember keeps navigation usable without changing the stored selection",
+    "Session expiry clears personal favorites on the first unauthorized read",
+    "Retry after session expiry requires login and does not replay preference mutations",
+    "Logout clears personal UI synchronously before the HTTP response",
+    "Explicit logout leaves no personal favorites visible",
+    "Failed bare preference read does not silently choose a destination",
+    "Bare preference-error retry rereads and resolves startup after recovery",
+    "login-disabled keeps personal controls unavailable",
+    "login-disabled permits source fallback",
+    "storage-not-configured keeps personal controls unavailable",
+    "storage-not-configured permits source fallback",
+    "unreadable keeps personal controls unavailable",
+    "Configured unreadable storage blocks silent bare fallback"
+  ],
+  "elapsedMs": 3623,
+  "requests": [
+    [
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "POST",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-0kmDIFxG.css"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-5gfOIiq0.js"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/sources/alpha/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "POST",
+        "url": "/api/preferences/favorites"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "POST",
+        "url": "/api/preferences/favorites"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "DELETE",
+        "url": "/api/preferences/favorites/alpha/demo/one"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "POST",
+        "url": "/api/preferences/favorites"
+      },
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "POST",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-5gfOIiq0.js"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-0kmDIFxG.css"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/alpha/demo/two/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "POST",
+        "url": "/api/preferences/favorites"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/alpha/demo/two/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/beta/demo/three/snapshot"
+      },
+      {
+        "method": "PUT",
+        "url": "/api/preferences/remembered-project"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/sources/alpha/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/?preferences-case=1"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/beta/demo/three/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/api/sources/alpha/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views/alpha-view/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/?preferences-case=2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/alpha/demo/one/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "PUT",
+        "url": "/api/preferences/remembered-project"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "DELETE",
+        "url": "/api/preferences/favorites/alpha/demo/one"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "DELETE",
+        "url": "/api/preferences/favorites/alpha/demo/one"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/alpha/demo/two/snapshot"
+      },
+      {
+        "method": "PUT",
+        "url": "/api/preferences/remembered-project"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "POST",
+        "url": "/logout"
+      },
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/favicon.ico"
+      },
+      {
+        "method": "POST",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects/alpha/demo/one/snapshot"
+      },
+      {
+        "method": "POST",
+        "url": "/logout"
+      },
+      {
+        "method": "GET",
+        "url": "/login"
+      }
+    ],
+    [
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "POST",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-5gfOIiq0.js"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-0kmDIFxG.css"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/sources/alpha/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2"
+      }
+    ],
+    [
+      {
+        "method": "GET",
+        "url": "/?preferences-case=3"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-5gfOIiq0.js"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-0kmDIFxG.css"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/sources/alpha/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2"
+      }
+    ],
+    [
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "POST",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-5gfOIiq0.js"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-0kmDIFxG.css"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/sources/alpha/snapshot"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2"
+      }
+    ],
+    [
+      {
+        "method": "GET",
+        "url": "/login"
+      },
+      {
+        "method": "POST",
+        "url": "/login"
+      },
+      {
+        "method": "GET",
+        "url": "/"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-5gfOIiq0.js"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/index-0kmDIFxG.css"
+      },
+      {
+        "method": "GET",
+        "url": "/api/session"
+      },
+      {
+        "method": "GET",
+        "url": "/api/settings"
+      },
+      {
+        "method": "GET",
+        "url": "/api/preferences"
+      },
+      {
+        "method": "GET",
+        "url": "/api/projects"
+      },
+      {
+        "method": "GET",
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2"
+      },
+      {
+        "method": "GET",
+        "url": "/api/views"
+      }
+    ]
+  ]
+}
