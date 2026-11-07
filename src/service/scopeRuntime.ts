@@ -1,6 +1,6 @@
 import type { AppConfig, ResolvedSource } from '../config/schema.js';
 import type { Scope, ScopeResponse } from '../core/scope.js';
-import type { IssueProvider } from '../core/types.js';
+import type { IssueProvider, ProviderKind } from '../core/types.js';
 import { createProvider, type CreateProviderDeps } from '../providers/index.js';
 import type { FetchLike } from '../providers/http.js';
 import { AdmissionQueue, AdmissionShutdownError } from './admissionQueue.js';
@@ -89,6 +89,26 @@ export function createScopeRuntime(config: AppConfig, deps: ScopeRuntimeDeps = {
     jobs,
     store,
     sources,
+    /** Webhooks carry no source identity. Invalidate every candidate, without fetching. */
+    invalidateRepository(kind: ProviderKind, repo: string): void {
+      const canonical = repo.toLowerCase();
+      for (const source of config.sources) {
+        if (source.kind !== kind) continue;
+        const catalog = config.catalog.sources.find((entry) => entry.id === source.id)!;
+        // Unknown webhook repositories must not grow the observation store. Include
+        // targeted context, even when the repository is outside this source's catalog.
+        if (
+          catalog.projects.some((project) => project.repo === canonical) ||
+          store
+            .listOutsideIssues(source.id)
+            .some(
+              ({ observation }) =>
+                observation.key.slice(0, observation.key.lastIndexOf('#')) === canonical,
+            )
+        )
+          store.invalidateRepository({ source: source.id, repo: canonical });
+      }
+    },
     async exportRead(scope: Scope, options: { refresh?: boolean } = {}): Promise<ScopeResponse> {
       const cached = reads.cached(scope);
       if (!options.refresh && config.cache.ttlSeconds > 0 && cached.snapshot !== null)
