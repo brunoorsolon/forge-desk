@@ -124,6 +124,7 @@ async function key(key, code, virtual) {
     key,
     code,
     windowsVirtualKeyCode: virtual,
+    ...(key === 'Enter' ? { text: '\r' } : {}),
   });
   await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtual });
 }
@@ -195,7 +196,7 @@ try {
   await until(() => evaluate(`Boolean(document.querySelector('.order .row'))`), 'order row');
   await evaluate(`document.querySelector('.order .row').click()`);
   await expect(
-    `document.querySelector('.panel').textContent.includes('demo/one#1')`,
+    `Boolean(document.querySelector('.panel.open')?.textContent.includes('demo/one#1'))`,
     'Issue detail opens',
   );
   const beforeCurrent = snapshotRequests(fixture).length;
@@ -203,7 +204,7 @@ try {
   await sleep(200);
   assert.equal(snapshotRequests(fixture).length, beforeCurrent, 'Current scope must not reload');
   await expect(
-    `location.hash.includes('q=Browser') && document.querySelector('.panel').textContent.includes('demo/one#1')`,
+    `location.hash.includes('q=Browser') && Boolean(document.querySelector('.panel.open')?.textContent.includes('demo/one#1'))`,
     'Current scope preserves filter and details',
   );
   await evaluate(`document.querySelector('[aria-label="Open beta / demo/three"]').focus()`);
@@ -214,7 +215,7 @@ try {
   );
   await ready();
   await expect(
-    `document.querySelector('.filter-input').value === '' && !document.querySelector('.panel').textContent.includes('demo/one#1')`,
+    `document.querySelector('.filter-input').value === '' && !document.querySelector('.panel.open')`,
     'Switch preserves tab/sort and clears filter/details',
   );
   await cdp('Emulation.setDeviceMetricsOverride', {
@@ -467,6 +468,15 @@ try {
   );
   console.log(JSON.stringify({ checks, evidence }, null, 2));
 } catch (error) {
+  console.error('Navigation regression failed:', error);
+  await writeFile(
+    join(evidence, 'failure.json'),
+    JSON.stringify(
+      { error: String(error), checks, requests: fixtures.map((f) => f.requests) },
+      null,
+      2,
+    ),
+  );
   if (socket?.readyState === WebSocket.OPEN) {
     console.error(
       await evaluate(`({ hash: location.hash, text: document.body.innerText })`).catch(
@@ -479,7 +489,13 @@ try {
 } finally {
   for (const call of pending.values()) clearTimeout(call.timer);
   socket?.close();
-  chrome.kill();
+  if (chrome.exitCode === null && chrome.signalCode === null) {
+    const exited = new Promise((resolve) => chrome.once('exit', resolve));
+    chrome.kill();
+    await exited;
+  }
   for (const fixture of fixtures) await fixture.close();
-  await rm(temporary, { recursive: true, force: true });
+  await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
+    (error) => console.warn('Temporary browser profile cleanup:', error.message),
+  );
 }
