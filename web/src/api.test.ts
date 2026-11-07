@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   fetchViews,
+  fetchProjects,
+  fetchScopeSnapshot,
   refreshSnapshot,
   fetchReleaseRepositories,
   fetchReleaseJobs,
@@ -160,6 +162,24 @@ describe('network failures', () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).message).toBe(
       'Network error: could not reach the Forge Desk server.',
+    );
+  });
+});
+
+describe('scope reads', () => {
+  it('uses relative catalog and encoded scope snapshot URLs without refresh mutations', async () => {
+    const fetch = vi.fn(async (_path: string, _init: RequestInit) => Response.json({}));
+    vi.stubGlobal('fetch', fetch);
+    await fetchProjects();
+    await fetchScopeSnapshot({ kind: 'project', source: 'source /', repo: 'owner/repo name' });
+    await fetchScopeSnapshot({ kind: 'source', source: 'source /' });
+    expect(fetch.mock.calls.map((args) => args[0])).toEqual([
+      'api/projects',
+      'api/projects/source%20%2F/owner/repo%20name/snapshot',
+      'api/sources/source%20%2F/snapshot',
+    ]);
+    expect(fetch.mock.calls.every((args) => (args[1] as RequestInit).method === undefined)).toBe(
+      true,
     );
   });
 });
