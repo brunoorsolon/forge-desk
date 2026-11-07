@@ -1,6 +1,7 @@
 import type { ProviderKind, Snapshot } from '../../src/core/types.js';
 import type { ReleaseJob, ReleasePlan, ReleasePlanWarning } from '../../src/core/release.js';
 import type { RouteScope } from './route.js';
+import type { CatalogResponse, Scope, ScopeResponse } from '../../src/core/scope.js';
 
 /** Shape of one entry of `GET /api/views` (ARCHITECTURE section 13/14). */
 export interface ViewSummary {
@@ -84,6 +85,19 @@ async function csrfHeaders(): Promise<Record<string, string>> {
 
 export function fetchViews(): Promise<ViewSummary[]> {
   return request<ViewSummary[]>(`${API}/views`);
+}
+
+/** Project browsing reads only the catalog and the currently open scope. */
+export function fetchProjects(): Promise<CatalogResponse> {
+  return request(`${API}/projects`);
+}
+
+export function fetchScopeSnapshot(scope: Scope): Promise<ScopeResponse> {
+  const segments =
+    scope.kind === 'source'
+      ? ['sources', scope.source]
+      : ['projects', scope.source, ...scope.repo.split('/')];
+  return request(`${API}/${segments.map(encodeURIComponent).join('/')}/snapshot`);
 }
 
 export interface Settings {
