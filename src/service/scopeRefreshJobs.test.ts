@@ -353,6 +353,58 @@ describe('scope refresh jobs', () => {
     });
   });
 
+  it('retains repository and outside check times while units are queued and checking', async () => {
+    const list = gate();
+    const lookup = gate();
+    let cooldown: number | null = null;
+    const f = fixture(
+      async (path) => {
+        if (!path.includes('/issues/')) {
+          await list.promise;
+          cooldown = Date.now() + 1000;
+          return json(listing([issue('owner/a#1', 'Blocked by: other/lib#1')]));
+        }
+        await lookup.promise;
+        return json(issue('other/lib#1'));
+      },
+      { cooldownUntil: () => cooldown },
+    );
+    const { jobs, store } = service(f.input);
+    const root = { source: 'gh', repo: 'owner/a' };
+    const outside = { source: 'gh', key: 'other/lib#1' };
+    store.writeRepository(store.beginRepositoryRead(root), listing());
+    store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+      result: { status: 'found', issue: issue(outside.key) },
+    });
+    const checkedAt = '2026-01-01T00:00:00.000Z';
+    vi.setSystemTime(Date.now() + 10);
+    const job = jobs.refresh(project());
+    try {
+      expect(job.status.units[0]).toMatchObject({ state: 'queued', lastCheckedAt: checkedAt });
+      await tick();
+      expect(job.status.units[0]).toMatchObject({ state: 'checking', lastCheckedAt: checkedAt });
+      list.resolve();
+      await tick();
+      expect(job.status.units[1]).toMatchObject({
+        kind: 'outside-issue',
+        state: 'queued',
+        lastCheckedAt: checkedAt,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(job.status.units[1]).toMatchObject({ state: 'checking', lastCheckedAt: checkedAt });
+    } finally {
+      cooldown = null;
+      list.resolve();
+      lookup.resolve();
+      f.input.queue.cooldownChanged();
+    }
+    expect((await job.completion).state).toBe('completed');
+    expect(job.status.units.map((unit) => unit.lastCheckedAt)).toEqual([
+      '2026-01-01T00:00:00.010Z',
+      '2026-01-01T00:00:01.010Z',
+    ]);
+  });
+
   it('captures reads at admission and never freshens observations invalidated during requests', async () => {
     const list = gate();
     const lookup = gate();
