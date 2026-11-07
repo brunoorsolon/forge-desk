@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { PlanService } from '../service/planService.js';
+import type { ScopeRuntime } from '../service/scopeRuntime.js';
 
 /** Paths of the webhook endpoints. They authenticate with a signature instead of basic auth. */
 export const WEBHOOK_PATHS: readonly string[] = ['/api/webhooks/github', '/api/webhooks/gitea'];
@@ -46,13 +47,18 @@ function repositoryOf(payload: unknown): string | null {
 
 /**
  * Register `POST /api/webhooks/github` and `POST /api/webhooks/gitea`. A verified delivery
- * invalidates the cached snapshots of every view that includes the repository.
+ * invalidates every matching named view and candidate source's scope observations.
  *
  * The routes live in an encapsulated plugin with its own JSON parser that keeps the raw bytes, so
  * the HMAC is computed over exactly what the sender signed. Only `application/json` is accepted
  * (other content types get 415).
  */
-export function registerWebhooks(app: FastifyInstance, secret: string, service: PlanService): void {
+export function registerWebhooks(
+  app: FastifyInstance,
+  secret: string,
+  service: PlanService,
+  scopes?: Pick<ScopeRuntime, 'invalidateRepository'>,
+): void {
   void app.register((scope, _opts, done) => {
     scope.addContentTypeParser(
       'application/json',
@@ -61,7 +67,7 @@ export function registerWebhooks(app: FastifyInstance, secret: string, service: 
     );
 
     const handle =
-      (verify: (request: FastifyRequest, raw: Buffer) => boolean) =>
+      (kind: 'github' | 'gitea', verify: (request: FastifyRequest, raw: Buffer) => boolean) =>
       async (request: FastifyRequest, reply: FastifyReply) => {
         const raw = request.body as Buffer;
         if (!verify(request, raw)) {
@@ -86,13 +92,14 @@ export function registerWebhooks(app: FastifyInstance, secret: string, service: 
         const repo = repositoryOf(payload);
         const invalidated = repo === null ? [] : service.viewsForRepo(repo);
         for (const viewId of invalidated) service.invalidate(viewId);
+        if (repo !== null) scopes?.invalidateRepository(kind, repo);
         request.log.info({ event, repo, invalidated }, 'webhook delivery accepted');
         return reply.code(202).send({ invalidated });
       };
 
     scope.post(
       '/api/webhooks/github',
-      handle((request, raw) =>
+      handle('github', (request, raw) =>
         signatureMatches(secret, raw, request.headers['x-hub-signature-256'], 'sha256='),
       ),
     );
@@ -102,6 +109,7 @@ export function registerWebhooks(app: FastifyInstance, secret: string, service: 
     scope.post(
       '/api/webhooks/gitea',
       handle(
+        'gitea',
         (request, raw) =>
           signatureMatches(secret, raw, request.headers['x-gitea-signature'], '') ||
           signatureMatches(secret, raw, request.headers['x-forgejo-signature'], '') ||
