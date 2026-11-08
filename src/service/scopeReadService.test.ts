@@ -71,7 +71,7 @@ function fixture(ttlSeconds = 60) {
     queue,
   };
   const store = new ObservationStore();
-  const jobs = new ScopeRefreshJobs({ sources: [source], store });
+  const jobs = new ScopeRefreshJobs({ sources: [source], store, cache: { ttlSeconds } });
   const service = new ScopeReadService({ sources: [source], store, jobs, cache: { ttlSeconds } });
   const seed = (repo: string, issues: Issue[] = []) =>
     store.writeRepository(store.beginRepositoryRead({ source: 'gh', repo }), listing(issues));
@@ -327,6 +327,34 @@ describe('cache-first scope reads', () => {
     expect(f.lookup).toHaveBeenCalledTimes(200);
   });
 
+  it.each(['open', 'closed', 'failed'] as const)(
+    'revalidates a previously closed prerequisite and uses the %s result with zero TTL',
+    async (outcome) => {
+      const f = fixture(0);
+      f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on external/repo#1')]));
+      await f.service.refresh(project());
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 86_400_000);
+      if (outcome === 'failed') f.lookup.mockRejectedValueOnce(new Error('offline'));
+      else f.lookup.mockResolvedValueOnce(issue('external/repo#1', '', outcome));
+      const refreshed = await f.service.refresh(project());
+      expect(f.list).toHaveBeenCalledTimes(2);
+      expect(f.lookup).toHaveBeenCalledTimes(2);
+      expect(refreshed.freshness.outsideIssues).toMatchObject({
+        count: 1,
+        provisionalCount: outcome === 'failed' ? 1 : 0,
+      });
+      expect(refreshed.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+        outcome === 'closed' ? 'ready' : 'blocked',
+      );
+      expect(
+        refreshed.snapshot?.plan.warnings.some(
+          (warning) => warning.code === 'dependency-provisional',
+        ),
+      ).toBe(outcome === 'failed');
+    },
+  );
+
   it('settles capped dependency work for one TTL, then retries or honors explicit refresh', async () => {
     const f = fixture();
     f.list.mockResolvedValue(
@@ -357,9 +385,11 @@ describe('cache-first scope reads', () => {
     await f.jobs.active(project())?.completion;
     expect(f.list).toHaveBeenCalledTimes(2);
     expect(f.lookup).toHaveBeenCalledTimes(400);
-    await f.service.refresh(project());
+    const refreshed = await f.service.refresh(project());
     expect(f.list).toHaveBeenCalledTimes(3);
-    expect(f.lookup).toHaveBeenCalledTimes(600);
+    // The 200 just-checked closed observations leave the budget for the last dependency.
+    expect(f.lookup).toHaveBeenCalledTimes(401);
+    expect(refreshed.freshness.outsideIssues).toMatchObject({ count: 201, provisionalCount: 0 });
   });
 
   it('settles unvisited transitive dependencies behind a failed sibling lookup', async () => {
