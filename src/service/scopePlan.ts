@@ -19,6 +19,7 @@ import {
   type OutsideIssueLookup,
   type ResolutionSettings,
 } from './resolution.js';
+import { hasStaleProblem, staleProblemMessage } from './staleProblem.js';
 
 /** Structurally compatible with the observation store; no store or provider dependency. */
 export interface DerivationObservation<T extends ObservationMetadata> {
@@ -180,24 +181,6 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
   ];
   const resolved = resolvePlanInput(roots, lookups, settings, warnings, openPullRequests);
   const included = new Set(resolved.issues.map((i) => i.key));
-  const stale = (record: DerivationObservation<ObservationMetadata>): boolean => {
-    const m = record.observation;
-    return (
-      record.invalidated ||
-      m.lastAttempt?.outcome === 'failed' ||
-      m.lastCheckedAt === null ||
-      (options.cache.ttlSeconds > 0 &&
-        options.now.getTime() - Date.parse(m.lastCheckedAt) > options.cache.ttlSeconds * 1000) ||
-      (options.cache.ttlSeconds > 0 &&
-        (['native', 'subIssues'] as const).some(
-          (kind) =>
-            policy.dependencies[kind] &&
-            m.relationsCheckedAt[kind] !== null &&
-            options.now.getTime() - Date.parse(m.relationsCheckedAt[kind]!) >
-              options.cache.ttlSeconds * 1000,
-        ))
-    );
-  };
   const inspect = (
     record: DerivationObservation<ObservationMetadata>,
     issues: Issue[],
@@ -216,10 +199,10 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
       )
         provisional.add(issue.key);
     }
-    if (stale(record))
+    if (hasStaleProblem(record.observation, options.cache.ttlSeconds, options.now))
       resolved.warnings.push({
         code: 'stale-data',
-        message: `Stale observation: ${name}`,
+        message: staleProblemMessage(name),
         issues: contributing.map((i) => i.key).sort(compareKeys),
       });
   };
