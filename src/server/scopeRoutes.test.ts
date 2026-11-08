@@ -455,6 +455,48 @@ describe('scope HTTP observations and freshness', () => {
   });
 });
 
+describe('scope exports with distinct failed observations', () => {
+  it('keeps each repository and outside failure while enriching only the repository rows', async () => {
+    const f = setup();
+    f.seed('o/a', [issue('o/a#1', 'Depends on outside/repo#9')]);
+    f.seed('o/b');
+    const outside = { source: 'gh', key: 'outside/repo#9' };
+    f.runtime.store.writeOutsideIssue(f.runtime.store.beginOutsideIssueRead(outside), {
+      result: { status: 'found', issue: issue(outside.key) },
+    });
+    vi.setSystemTime(Date.parse(START) + 960_001);
+    for (const repo of ['o/a', 'o/b'])
+      f.runtime.store.fail(f.runtime.store.beginRepositoryRead({ source: 'gh', repo }), 'offline');
+    f.runtime.store.fail(f.runtime.store.beginOutsideIssueRead(outside), 'offline');
+    const response = await f.app.inject(`${SOURCE}/export.json`);
+    expect(response.statusCode).toBe(200);
+    expect(
+      response
+        .json()
+        .plan.warnings.filter((warning: { code: string }) => warning.code === 'stale-data'),
+    ).toEqual([
+      {
+        code: 'stale-data',
+        message: `gh/o/a: failed; last checked ${START}; offline`,
+        issues: ['o/a#1'],
+      },
+      {
+        code: 'stale-data',
+        message: `gh/o/b: failed; last checked ${START}; offline`,
+        issues: ['o/b#1'],
+      },
+      {
+        code: 'stale-data',
+        message: 'Stale observation: outside/repo#9',
+        issues: ['outside/repo#9'],
+      },
+    ]);
+    expect(response.body).toContain('dependency-provisional');
+    expect(f.list).not.toHaveBeenCalled();
+    expect(f.lookup).not.toHaveBeenCalled();
+  });
+});
+
 describe('scope exports with missing repository observations', () => {
   it.each(['json', 'md', 'mmd', 'dot'])(
     'adds stale-data in %s only after a never-succeeded failure',
@@ -468,7 +510,7 @@ describe('scope exports with missing repository observations', () => {
       f.runtime.store.fail(read, `offline ${TOKEN}`);
       const failed = await f.app.inject(`${SOURCE}/export.${ext}`);
       expect(failed.statusCode).toBe(200);
-      expect(failed.body).toContain('stale-data');
+      expect(failed.body.match(/stale-data/g)).toHaveLength(1);
       expect(failed.body).toContain('gh/o/b: unavailable');
       expect(failed.body).toContain('last checked never');
       expect(failed.body).toContain('dependency-provisional');
@@ -577,9 +619,21 @@ describe.each([
         });
       }
       vi.setSystemTime(Date.parse(START) + 960_001);
+      const derived = f.runtime.reads.cached(scope).snapshot!;
       const overdueFailure = await f.app.inject(`${base}/export.${ext}`);
       expect(overdueFailure.statusCode).toBe(200);
-      expect(overdueFailure.body).toContain('stale-data');
+      expect(overdueFailure.body.match(/stale-data/g)).toHaveLength(1);
+      expect(overdueFailure.body).toContain('gh/o/a: failed');
+      expect(overdueFailure.body).toContain(`last checked ${START}`);
+      expect(overdueFailure.body).toContain('offline ***');
+      if (ext === 'json') {
+        expect(overdueFailure.json().plan.warnings).toContainEqual({
+          code: 'stale-data',
+          issues: ['o/a#1'],
+          message: `gh/o/a: failed; last checked ${START}; offline ***`,
+        });
+      }
+      expect(f.runtime.reads.cached(scope).snapshot).toEqual(derived);
       expect(overdueFailure.body).toContain(START);
       expect(overdueFailure.body).not.toContain(TOKEN);
       expect(f.list).not.toHaveBeenCalled();

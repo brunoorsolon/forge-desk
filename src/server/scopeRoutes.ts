@@ -9,7 +9,7 @@ import type { ObservationStore } from '../service/observationStore.js';
 import { ScopeCooldownError } from '../service/scopeReadService.js';
 import { ScopeRefreshError } from '../service/scopeRefreshJobs.js';
 import type { ScopeRuntime } from '../service/scopeRuntime.js';
-import { hasStaleProblem } from '../service/staleProblem.js';
+import { hasStaleProblem, staleProblemMessage } from '../service/staleProblem.js';
 
 const formats: Record<string, ExportFormat> = {
   json: 'json',
@@ -39,12 +39,24 @@ function exportSnapshot(
     const codes: PlanWarning['code'][] = [];
     if (stale) codes.push('stale-data');
     if (repo.partial) codes.push('dependency-provisional');
-    for (const code of codes)
-      warnings.push({
+    const name = `${repo.project.source}/${repo.project.repo}`;
+    for (const code of codes) {
+      // Enrich the repository's derived warning instead of adding a second row.
+      // Outside-issue warnings and never-listed repositories remain distinct.
+      const index =
+        code === 'stale-data'
+          ? warnings.findIndex(
+              (warning) => warning.code === code && warning.message === staleProblemMessage(name),
+            )
+          : -1;
+      const warning: PlanWarning = {
         code,
-        issues: [],
-        message: `${repo.project.source}/${repo.project.repo}: ${repo.state}${repo.partial ? ', partial relation coverage' : ''}; last checked ${repo.lastCheckedAt ?? 'never'}${repo.delayedUntil ? `; delayed until ${repo.delayedUntil}` : ''}${repo.error ? `; ${repo.error}` : ''}`,
-      });
+        issues: index < 0 ? [] : warnings[index]!.issues,
+        message: `${name}: ${repo.state}${repo.partial ? ', partial relation coverage' : ''}; last checked ${repo.lastCheckedAt ?? 'never'}${repo.delayedUntil ? `; delayed until ${repo.delayedUntil}` : ''}${repo.error ? `; ${repo.error}` : ''}`,
+      };
+      if (index < 0) warnings.push(warning);
+      else warnings[index] = warning;
+    }
   }
   const plan = { ...snapshot.plan, warnings };
   return { ...snapshot, plan, contentHash: contentHash({ plan, layout: snapshot.layout }) };
