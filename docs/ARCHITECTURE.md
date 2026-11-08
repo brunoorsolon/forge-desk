@@ -1454,7 +1454,7 @@ opening a named view.
 
 Scope requests use the project/source snapshot endpoints. `scope-navigation.ts` owns one lane
 for the open scope, coalesces pending reads and rejects late responses after navigation, including
-a return to the same scope. Active jobs repeat a read two seconds after each response. The
+a return to the same scope. Active jobs repeat a read 60 seconds after each response. The
 configured `ui.refreshMinutes` schedules freshness reads for the open scope, with zero disabling
 that periodic timer. Hidden tabs and the Releases area suspend scope checks; returning checks
 once and resumes the active-job/periodic schedule. No unopened project is polled.
