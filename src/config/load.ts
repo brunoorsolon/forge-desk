@@ -8,6 +8,7 @@ import {
   DEFAULT_KEYWORDS,
   MAX_REFRESH_MINUTES,
   enabledReleasesSchema,
+  releaseDefaultsSchema,
   absolutePathSchema,
   publicOriginSchema,
   rawConfigSchema,
@@ -18,6 +19,7 @@ import {
   type RawPlanningPolicy,
   type ResolvedPlanningPolicy,
   type ReleaseTokenSelector,
+  type ReleaseDefaults,
   type ResolvedReleaseRepository,
   type ResolvedReleases,
   type ResolvedSource,
@@ -391,25 +393,82 @@ function resolveWebhooks(
 }
 
 /**
+ * Merge only the supported nested blocks. Explicit invalid values must survive to validation,
+ * and a repository token selector replaces the source selector as a unit, never as a fallback.
+ */
+function inheritReleaseDefaults(repository: unknown, defaults: ReleaseDefaults): unknown {
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (!isObject(repository)) return repository;
+  const merged: Record<string, unknown> = { ...defaults, ...repository };
+  if (repository['apiTokenFile'] !== undefined || repository['apiTokenEnv'] !== undefined) {
+    delete merged['apiTokenFile'];
+    delete merged['apiTokenEnv'];
+    if (repository['apiTokenFile'] !== undefined) {
+      merged['apiTokenFile'] = repository['apiTokenFile'];
+    }
+    if (repository['apiTokenEnv'] !== undefined) {
+      merged['apiTokenEnv'] = repository['apiTokenEnv'];
+    }
+  }
+  for (const key of ['ci', 'ssh', 'tagger'] as const) {
+    if (isObject(repository[key])) merged[key] = { ...defaults[key], ...repository[key] };
+  }
+  return merged;
+}
+
+/**
  * Resolve the opt-in `releases` block. Everything is optional while releases are disabled, so an
  * existing planning-only file keeps working; an enabled block must be complete and safe.
  */
 function resolveReleases(
   raw: RawConfig['releases'],
+  sources: RawSource[],
   kindById: Map<string, ProviderKind>,
   hasLogin: boolean,
 ): ResolvedReleases {
-  if (raw === undefined) return { enabled: false };
-  const parsed = enabledReleasesSchema.safeParse(raw);
+  if (raw?.enabled !== true) return { enabled: false };
+
+  const defaultsBySource = new Map<string, ReleaseDefaults>();
+  const defaultIssues: z.core.$ZodIssue[] = [];
+  sources.forEach((source, i) => {
+    if (source.releases === undefined) return;
+    const path = ['sources', i, 'releases'];
+    if (source.kind !== 'gitea') {
+      defaultIssues.push({
+        code: 'custom',
+        path,
+        message: 'release defaults require a gitea source',
+      });
+    }
+    const defaults = releaseDefaultsSchema.safeParse(source.releases);
+    if (defaults.success) defaultsBySource.set(source.id, defaults.data);
+    else {
+      defaultIssues.push(
+        ...defaults.error.issues.map((issue) => ({ ...issue, path: [...path, ...issue.path] })),
+      );
+    }
+  });
+
+  const parsed = enabledReleasesSchema.safeParse({
+    ...raw,
+    repositories: raw.repositories?.map((repository) => {
+      const source =
+        typeof repository === 'object' && repository !== null && 'source' in repository
+          ? repository.source
+          : undefined;
+      const defaults = typeof source === 'string' ? defaultsBySource.get(source) : undefined;
+      return defaults === undefined ? repository : inheritReleaseDefaults(repository, defaults);
+    }),
+  });
   if (!parsed.success) {
-    // A disabled or partial block must not keep an existing planning deployment from starting.
-    if (raw.enabled !== true) return { enabled: false };
     const issues = parsed.error.issues.map((issue) => ({
       ...issue,
       path: ['releases', ...issue.path],
     }));
-    throw new ConfigError(formatIssues(issues));
+    throw new ConfigError(formatIssues([...defaultIssues, ...issues]));
   }
+  if (defaultIssues.length > 0) throw new ConfigError(formatIssues(defaultIssues));
   const enabled = parsed.data;
 
   const errors: string[] = [];
@@ -567,7 +626,7 @@ function resolveConfig(input: unknown, env: Env, baseDir: string): AppConfig {
   if (sweepHours > 0 && ttlSeconds === 0) {
     warnings.push('refresh.sweepHours: cache.ttlSeconds is 0; the sweep will not run');
   }
-  const releases = resolveReleases(raw.releases, kindById, basicAuth !== null);
+  const releases = resolveReleases(raw.releases, raw.sources, kindById, basicAuth !== null);
 
   return {
     server: { host, port, publicOrigin, basicAuth },

@@ -917,6 +917,274 @@ describe('release configuration', () => {
     ).toMatchObject({ publicOrigin: 'https://desk.example' });
   });
 
+  describe('Gitea source release defaults', () => {
+    function inheritedConfig(): Json {
+      const config = rawConfig();
+      const { id, source, repo, origin, ...defaults } = config['releases'].repositories[0];
+      config['sources'][0].releases = defaults;
+      config['releases'].repositories = [{ id, source, repo, origin }];
+      return config;
+    }
+
+    function resolve(config: Json) {
+      return parseConfig(JSON.stringify(config), {});
+    }
+
+    function defaultsError(mutate: (config: Json) => void): string {
+      const config = inheritedConfig();
+      mutate(config);
+      return errorOf(() => resolve(config)).message;
+    }
+
+    it('resolves inherited defaults identically to explicit repository values without leaking them', () => {
+      const config = inheritedConfig();
+      expect(resolve(config)).toEqual(resolve(rawConfig()));
+      const before = JSON.stringify(config);
+      expect(resolve(config).releases).toEqual(resolve(config).releases);
+      expect(JSON.stringify(config)).toBe(before);
+      expect(resolve(config).sources[0]).not.toHaveProperty('releases');
+      expect(JSON.stringify(resolve(config).catalog)).not.toContain('/run/secrets');
+    });
+
+    it('inherits into multiple allowlisted repositories without sharing nested objects', () => {
+      const config = inheritedConfig();
+      config['releases'].repositories.push({
+        id: 'other',
+        source: 'gt',
+        repo: 'example/other',
+        origin: 'ssh://git@gitea.example.com/example/other.git',
+      });
+      const result = resolve(config);
+      if (!result.releases.enabled) throw new Error('expected enabled releases');
+      const [first, second] = result.releases.repositories;
+      expect(second).toMatchObject({
+        id: 'other',
+        token: first!.token,
+        ssh: first!.ssh,
+        tagger: first!.tagger,
+        ci: first!.ci,
+      });
+      first!.ssh.privateKeyFile = '/changed/key';
+      first!.tagger.name = 'Changed';
+      first!.ci.workflowPath = 'changed.yml';
+      expect(second!.ssh.privateKeyFile).toBe('/run/secrets/forge_desk_release_key');
+      expect(second!.tagger.name).toBe('Forge Desk Release Bot');
+      expect(second!.ci.workflowPath).toBe('.gitea/workflows/validate.yaml');
+      // Release defaults/repositories do not add projects or expand the release allowlist.
+      expect(result.catalog).toEqual(resolve(rawConfig()).catalog);
+      config['releases'].repositories = [];
+      expect(errorOf(() => resolve(config)).message).toContain('at least one release repository');
+    });
+
+    it('overrides every field and inherits omitted nested fields', () => {
+      const config = inheritedConfig();
+      Object.assign(config['releases'].repositories[0], {
+        apiTokenFile: '/override/token',
+        expectedApiUser: 'other-bot',
+        ci: { workflowPath: '.gitea/workflows/other.yml' },
+        ssh: { privateKeyFile: '/override/key' },
+        tagger: { email: 'other@example.com' },
+      });
+      expect(resolve(config).releases).toMatchObject({
+        repositories: [
+          {
+            token: { kind: 'file', path: '/override/token' },
+            expectedApiUser: 'other-bot',
+            ci: { workflowPath: '.gitea/workflows/other.yml' },
+            ssh: {
+              privateKeyFile: '/override/key',
+              knownHostsFile: '/run/secrets/forge_desk_known_hosts',
+            },
+            tagger: { name: 'Forge Desk Release Bot', email: 'other@example.com' },
+          },
+        ],
+      });
+      config['releases'].repositories[0].ssh = { knownHostsFile: '/override/hosts' };
+      config['releases'].repositories[0].tagger = { name: 'Other Bot' };
+      expect(resolve(config).releases).toMatchObject({
+        repositories: [
+          {
+            ssh: {
+              privateKeyFile: '/run/secrets/forge_desk_release_key',
+              knownHostsFile: '/override/hosts',
+            },
+            tagger: { name: 'Other Bot', email: 'releases@example.com' },
+          },
+        ],
+      });
+    });
+
+    it.each(['file', 'env'] as const)('replaces a source %s token selector as a unit', (kind) => {
+      const config = inheritedConfig();
+      const defaults = config['sources'][0].releases;
+      const repository = config['releases'].repositories[0];
+      if (kind === 'file') {
+        repository.apiTokenEnv = 'OTHER_TOKEN';
+        expect(resolve(config).releases).toMatchObject({
+          repositories: [{ token: { kind: 'env', name: 'OTHER_TOKEN' } }],
+        });
+      } else {
+        delete defaults.apiTokenFile;
+        defaults.apiTokenEnv = 'SOURCE_TOKEN';
+        expect(resolve(config).releases).toMatchObject({
+          repositories: [{ token: { kind: 'env', name: 'SOURCE_TOKEN' } }],
+        });
+        repository.apiTokenFile = '/override/token';
+        expect(resolve(config).releases).toMatchObject({
+          repositories: [{ token: { kind: 'file', path: '/override/token' } }],
+        });
+        delete repository.apiTokenFile;
+        repository.apiTokenEnv = 'OTHER_TOKEN';
+        expect(resolve(config).releases).toMatchObject({
+          repositories: [{ token: { kind: 'env', name: 'OTHER_TOKEN' } }],
+        });
+      }
+    });
+
+    it('supports partial defaults and keeps separate source ids isolated on the same forge', () => {
+      const config = inheritedConfig();
+      const original = rawConfig()['releases'].repositories[0];
+      config['sources'][0].releases = {
+        ssh: { privateKeyFile: '/shared/key' },
+        tagger: { name: 'Shared' },
+      };
+      config['releases'].repositories[0] = {
+        ...original,
+        ssh: { knownHostsFile: '/repo/hosts' },
+        tagger: { email: 'repo@example.com' },
+      };
+      config['sources'].push({
+        ...config['sources'][0],
+        id: 'other',
+        releases: { expectedApiUser: 'other-bot' },
+      });
+      config['releases'].repositories.push({ ...original, id: 'other', source: 'other' });
+      delete config['releases'].repositories[1].expectedApiUser;
+      expect(resolve(config).releases).toMatchObject({
+        repositories: [
+          {
+            expectedApiUser: 'release-bot',
+            ssh: { privateKeyFile: '/shared/key', knownHostsFile: '/repo/hosts' },
+            tagger: { name: 'Shared', email: 'repo@example.com' },
+          },
+          { expectedApiUser: 'other-bot', ssh: original.ssh, tagger: original.tagger },
+        ],
+      });
+    });
+
+    it.each(['apiTokenFile', 'expectedApiUser', 'ci', 'ssh', 'tagger'])(
+      'requires %s after merging',
+      (key) => {
+        expect(
+          defaultsError((config) => {
+            delete config['sources'][0].releases[key];
+          }),
+        ).toContain(`releases.repositories[0].${key}`);
+      },
+    );
+
+    it('never substitutes the planning token for the release token', () => {
+      expect(
+        defaultsError((config) => {
+          delete config['sources'][0].releases.apiTokenFile;
+          config['sources'][0].token = 'planning-only-secret';
+        }),
+      ).toContain('exactly one of apiTokenFile or apiTokenEnv');
+    });
+
+    it.each(['id', 'source', 'repo', 'origin', 'token', 'repositories', 'enabled'])(
+      'rejects %s in source defaults',
+      (key) => {
+        const message = defaultsError((config) => {
+          config['sources'][0].releases[key] = 'private-value';
+        });
+        expect(message).toContain('sources[0].releases');
+        expect(message).toContain(key);
+        expect(message).not.toContain('private-value');
+      },
+    );
+
+    it('rejects conflicting token selectors at either level', () => {
+      expect(
+        defaultsError((config) => {
+          config['sources'][0].releases.apiTokenEnv = 'SOURCE_TOKEN';
+          config['releases'].repositories[0].apiTokenEnv = 'OVERRIDE_TOKEN';
+        }),
+      ).toContain('sources[0].releases.apiTokenFile: at most one');
+      expect(
+        defaultsError((config) => {
+          Object.assign(config['releases'].repositories[0], {
+            apiTokenEnv: 'TOKEN',
+            apiTokenFile: '/a/token',
+          });
+        }),
+      ).toContain('releases.repositories[0].apiTokenFile: exactly one');
+    });
+
+    it.each([
+      ['apiTokenFile', 'private-value'],
+      ['apiTokenEnv', 'private-value'],
+      ['expectedApiUser', ''],
+      ['ci', { workflowPath: '../private-value.yml' }],
+      ['ssh', { privateKeyFile: 'private-value' }],
+      ['tagger', { email: 'private-value' }],
+    ])('validates source %s even when overridden without echoing values', (key, value) => {
+      const config = rawConfig();
+      config['sources'][0].releases = { [key as string]: value };
+      const message = errorOf(() => resolve(config)).message;
+      expect(message).toContain(`sources[0].releases.${key as string}`);
+      expect(message).not.toContain('private-value');
+    });
+
+    it.each([
+      ['apiTokenFile', null],
+      ['expectedApiUser', ''],
+      ['ci', null],
+      ['ssh', []],
+      ['tagger', { email: null }],
+      ['ci', { unexpected: true }],
+    ])('does not mask invalid repository %s overrides with defaults', (key, value) => {
+      const message = defaultsError((config) => {
+        config['releases'].repositories[0][key as string] = value;
+      });
+      expect(message).toContain(`releases.repositories[0].${key as string}`);
+    });
+
+    it.each(['github', 'fixture'])('rejects enabled defaults for a %s source', (kind) => {
+      const message = defaultsError((config) => {
+        config['sources'].push({ id: 'other', kind, path: 'fixture.json', releases: {} });
+      });
+      expect(message).toContain('sources[1].releases: release defaults require a gitea source');
+    });
+
+    it('still requires explicit repository identity and origin and rejects unknown sources', () => {
+      for (const key of ['id', 'source', 'repo', 'origin']) {
+        expect(
+          defaultsError((config) => {
+            delete config['releases'].repositories[0][key];
+          }),
+        ).toContain(`releases.repositories[0].${key}`);
+      }
+      const config = rawConfig();
+      config['sources'][0].releases = { expectedApiUser: 'default-bot' };
+      config['releases'].repositories[0].source = 'unknown';
+      expect(errorOf(() => resolve(config)).message).toContain('unknown source');
+    });
+
+    it.each([undefined, false])(
+      'ignores stale source defaults when releases.enabled is %s',
+      (enabled) => {
+        const config = inheritedConfig();
+        config['sources'][0].releases = { apiTokenFile: 'relative', ssh: null, obsolete: true };
+        delete config['server'];
+        if (enabled === undefined) delete config['releases'];
+        else config['releases'].enabled = enabled;
+        expect(resolve(config).releases).toEqual({ enabled: false });
+        expect(resolve(config).server.basicAuth).toBeNull();
+      },
+    );
+  });
+
   it('requires the application login', () => {
     expect(releaseError((_r, c) => delete c['server']).message).toContain('application login');
   });
