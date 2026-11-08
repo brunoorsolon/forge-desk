@@ -350,6 +350,39 @@ try {
   assert.ok(launches(fixture).every((r) => r.launchHeader === '1' && !r.hasCsrf));
   checks.push('Anonymous refreshes carry the required request header, without a session token');
 
+  // A policy-conflict panel does not hide the heading or all-source control.
+  // The healthy source must still refresh and its sweep progress must be followed.
+  const conflicted = await navigationFixture({ sweeps: true, conflicts: ['alpha'] });
+  fixtures.push(conflicted);
+  const releaseHealthy = conflicted.hold({ source: 'beta', repo: 'demo/three' });
+  await visit(conflicted, '#/project/alpha/demo/one/graph');
+  await until(
+    () => evaluate(`!document.querySelector('.scope-heading').hidden`),
+    'conflicted project heading visible',
+  );
+  await click('Refresh all sources');
+  await until(() => sweepReads(conflicted).length > 0, 'conflicted-scope sweep read');
+  const conflictReads = sweepReads(conflicted).length;
+  await sleep(2200);
+  assert.ok(sweepReads(conflicted).length > conflictReads);
+  releaseHealthy();
+  await until(
+    () =>
+      evaluate(`document.querySelector('.scope-sweep-summary')?.textContent.startsWith('Partial')`),
+    'conflicted-scope sweep completes',
+  );
+  await expect(
+    `document.querySelector('.scope-sweep').textContent.includes('Policy conflict:') &&
+      document.querySelector('.scope-sweep [aria-label="Source beta"] [data-state="checked"]') !== null`,
+    'A visible policy-conflict scope still follows the sweep and shows the healthy source completing',
+  );
+  assert.equal(
+    snapshotRequests(conflicted).length,
+    0,
+    'Blocked scopes must not start snapshot polling',
+  );
+  await shot('sweep-policy-conflict');
+
   const authenticated = await navigationFixture({ sweeps: true, login: true });
   fixtures.push(authenticated);
   await cdp('Page.navigate', { url: authenticated.origin + '/login' });

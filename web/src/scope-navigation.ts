@@ -72,7 +72,8 @@ export function createScopeNavigation(
   let visible = true;
   let generation = 0;
   let pending = false;
-  let checkQueued = false;
+  let requestedRecheck = 0;
+  let completedRecheck = 0;
   let respondedAt: number | null = null;
   let visibleSince: number | null = null;
   let interval = 0;
@@ -100,8 +101,9 @@ export function createScopeNavigation(
     cancelTimer();
     const origin = scope!;
     const token = generation;
+    const recheckAtStart = requestedRecheck;
+    let succeeded = false;
     pending = true;
-    checkQueued = false;
     store.dispatch({ type: 'scope-load-start', scope: origin });
     try {
       const response = await (explicit ? refresh : read)(target);
@@ -113,6 +115,7 @@ export function createScopeNavigation(
           store.dispatch({ type: 'route', route: routeForScope(scope, store.get().route) });
         }
         store.dispatch({ type: 'scope-response', response });
+        succeeded = true;
       }
     } catch (error) {
       if (token === generation)
@@ -127,10 +130,12 @@ export function createScopeNavigation(
       if (token === generation) {
         pending = false;
         respondedAt = Date.now();
-        // A completed sweep may request a recheck while the
-        // current read still holds an older snapshot. Coalesce those requests
-        // behind this lane instead of dropping the only post-sweep read.
-        if (checkQueued) void check();
+        // Only a current read attempt or successful refresh satisfies earlier
+        // rechecks. A rejected refresh must not consume a sweep's recheck when
+        // it supersedes a pending read, and requests received during this load
+        // still need a later read. Failed passive reads stop with their error.
+        if (!explicit || succeeded) completedRecheck = recheckAtStart;
+        if (completedRecheck < requestedRecheck) void check();
         else schedule();
       }
     }
@@ -146,7 +151,8 @@ export function createScopeNavigation(
       cancelTimer();
       generation++;
       pending = false;
-      checkQueued = false;
+      requestedRecheck = 0;
+      completedRecheck = 0;
       respondedAt = null;
       visibleSince = null;
       scope = next;
@@ -168,7 +174,7 @@ export function createScopeNavigation(
     check,
     recheck(): void {
       if (scope === null) return;
-      checkQueued = true;
+      requestedRecheck++;
       if (!pending) void check();
     },
     async refresh(target: Scope): Promise<void> {

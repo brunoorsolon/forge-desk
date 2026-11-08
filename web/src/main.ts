@@ -167,8 +167,6 @@ function syncRefreshVisibility(): void {
   sweepRefresh.setVisible(
     !document.hidden &&
       parseReleaseHash(location.hash) === null &&
-      resolved &&
-      navigationPanel === null &&
       store.get().route.scope !== undefined,
   );
 }

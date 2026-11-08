@@ -160,4 +160,35 @@ describe('sweep completion and the visible scope lane', () => {
     expect(read).toHaveBeenLastCalledWith(source);
     expect(store.get().snapshot?.fetchedAt).toBe('fresh');
   });
+  it.each(['queued', 'in-flight'])(
+    'retains a %s sweep recheck when an explicit refresh is rejected',
+    async (stage) => {
+      const { old, read, refresh, store, navigation, sweep } = setup();
+      old.resolve(response(project, 'last-good'));
+      await vi.advanceTimersByTimeAsync(0);
+      const delayed = deferred<ScopeResponse>();
+      read.mockImplementationOnce(() => delayed.promise);
+      if (stage === 'queued') void navigation.check();
+      await sweep.refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read).toHaveBeenCalledTimes(2);
+      refresh.mockRejectedValueOnce(new Error('rejected'));
+      await navigation.refresh(project);
+      delayed.resolve(response(project, 'old'));
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(store.get().snapshot?.fetchedAt).toBe('fresh');
+    },
+  );
+  it('shows a failed post-sweep read without retrying indefinitely', async () => {
+    const { old, read, store, sweep } = setup();
+    old.resolve(response(project, 'last-good'));
+    await vi.advanceTimersByTimeAsync(0);
+    read.mockRejectedValueOnce(new Error('offline'));
+    await sweep.refresh();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.get().snapshot?.fetchedAt).toBe('last-good');
+    expect(store.get().refreshError).toBe('offline');
+  });
 });
