@@ -546,12 +546,49 @@ describe('getIssue: relation coverage', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it.each([
+    { options: undefined, native: 'not-requested', subIssues: 'not-requested' },
+    { options: NONE, native: 'not-requested', subIssues: 'not-requested' },
+    {
+      options: { native: true, subIssues: false },
+      native: 'complete',
+      subIssues: 'not-requested',
+    },
+    {
+      options: { native: false, subIssues: true },
+      native: 'not-requested',
+      subIssues: 'complete',
+    },
+    { options: BOTH, native: 'complete', subIssues: 'complete' },
+  ])(
+    'skips all relation requests for closed issues with options $options',
+    async ({ options, native, subIssues }) => {
+      const { p, calls } = provider((url) =>
+        url.pathname === '/repos/acme/api/issues/7'
+          ? json(
+              ghIssue(7, {
+                state: 'closed',
+                issue_dependencies_summary: { total_blocked_by: 2 },
+                sub_issues_summary: { total: 3 },
+              }),
+            )
+          : undefined,
+      );
+      expect(await p.getIssue(REPO, 7, options)).toMatchObject({
+        key: 'acme/api#7',
+        state: 'closed',
+        nativeRelations: [],
+        relationCoverage: { native, subIssues },
+      });
+      expect(calls.map((call) => call.url)).toEqual([`${API}/repos/acme/api/issues/7`]);
+    },
+  );
+
   it.each(RELATION_KINDS)(
-    'reads only the enabled $kind kind and paginates and maps its relations',
+    'reads only the enabled $kind kind for open issues and paginates and maps its relations',
     async ({ kind, endpoint, source }) => {
       const { p, calls } = provider((url) => {
-        if (url.pathname === '/repos/acme/api/issues/7')
-          return json(ghIssue(7, { state: 'closed' }));
+        if (url.pathname === '/repos/acme/api/issues/7') return json(ghIssue(7));
         if (url.pathname !== `/repos/acme/api/issues/7/${endpoint}`) return undefined;
         if (url.searchParams.get('page') === '2')
           return json([{ number: 4 }, { number: 12, repository_url: `${API}/repos/Other/Lib` }]);
@@ -565,7 +602,7 @@ describe('getIssue: relation coverage', () => {
         [kind]: true,
       });
       expect(issue).toMatchObject({
-        state: 'closed',
+        state: 'open',
         nativeRelations: [
           { kind: 'blocked-by', ref: { owner: 'acme', repo: 'api', number: 4 }, source },
           { kind: 'blocked-by', ref: { owner: 'other', repo: 'lib', number: 12 }, source },

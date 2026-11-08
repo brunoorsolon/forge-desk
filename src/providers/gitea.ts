@@ -341,7 +341,15 @@ export function createGiteaProvider(opts: GiteaProviderOptions): IssueProvider {
       if (err instanceof HttpError && (err.status === 404 || err.status === 410)) return null;
       throw err;
     }
-    // Preserve the legacy lookup's result shape and single request when no policy is supplied.
+    // The planner never traverses relations declared by closed issues.
+    if (issue.state === 'closed') {
+      issue.relationCoverage = {
+        native: options?.native ? 'complete' : 'not-requested',
+        subIssues: options?.subIssues ? 'complete' : 'not-requested',
+      };
+      return issue;
+    }
+    // Preserve the legacy open lookup's result shape when no policy is supplied.
     if (options === undefined) return issue;
     issue.relationCoverage = {
       native: 'not-requested',
