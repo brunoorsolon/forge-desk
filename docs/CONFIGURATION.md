@@ -46,9 +46,9 @@ The schema is **strict**: an unknown key is an error, and all errors are reporte
 
 ### `cache`
 
-| Key                | Type               | Default | Description                                                                                                                                    |
-| ------------------ | ------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cache.ttlSeconds` | integer, 0 or more | `300`   | TTL for named-view snapshots and project/source observations. `0` requires revalidation and disables sweep work. Overridden by `FD_CACHE_TTL`. |
+| Key                | Type               | Default | Description                                                                                                                                                                 |
+| ------------------ | ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache.ttlSeconds` | integer, 0 or more | `300`   | TTL for named-view snapshots and project/source observations. `0` requires revalidation, disables closed-issue reuse and disables sweep work. Overridden by `FD_CACHE_TTL`. |
 
 ### `ui`
 

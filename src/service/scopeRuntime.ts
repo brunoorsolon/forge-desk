@@ -42,7 +42,7 @@ export function createScopeRuntime(config: AppConfig, deps: ScopeRuntimeDeps = {
     };
   });
   const store = new ObservationStore();
-  const jobs = new ScopeRefreshJobs({ sources, store, now });
+  const jobs = new ScopeRefreshJobs({ sources, store, cache: config.cache, now });
   // Exports share observations and providers, but never enter an admission context.
   // Their jobs still coalesce with other exports, and the provider's ordinary
   // cooldown guard still applies, just as it does for named views and the CLI.
@@ -61,7 +61,12 @@ export function createScopeRuntime(config: AppConfig, deps: ScopeRuntimeDeps = {
       status: { delayed: false, delayedUntil: null, inFlight: 0 },
     },
   }));
-  const exportJobs = new ScopeRefreshJobs({ sources: exportSources, store, now });
+  const exportJobs = new ScopeRefreshJobs({
+    sources: exportSources,
+    store,
+    cache: config.cache,
+    now,
+  });
   const reads = new ScopeReadService({
     sources,
     store,

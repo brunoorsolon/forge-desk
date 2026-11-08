@@ -69,7 +69,11 @@ function source(
 }
 function fixture(sources = [source()], options: { sweepHours?: number; ttlSeconds?: number } = {}) {
   const store = new ObservationStore();
-  const jobs = new ScopeRefreshJobs({ sources: sources.map((s) => s.config), store });
+  const jobs = new ScopeRefreshJobs({
+    sources: sources.map((s) => s.config),
+    store,
+    cache: { ttlSeconds: options.ttlSeconds ?? 300 },
+  });
   const scheduler = new SweepScheduler({
     sources: sources.map((s) => s.catalog),
     jobs,

@@ -59,7 +59,32 @@ function cdp(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+async function connectTarget(target) {
+  socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', reject, { once: true });
+  });
+  socket.addEventListener('message', (event) => {
+    const response = JSON.parse(event.data);
+    const call = pending.get(response.id);
+    if (!call) return;
+    clearTimeout(call.timer);
+    pending.delete(response.id);
+    if (response.error) call.reject(new Error(JSON.stringify(response.error)));
+    else call.resolve(response.result);
+  });
+  await cdp('Page.enable');
+  await cdp('Emulation.setDeviceMetricsOverride', {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+}
+let clockControlled = false;
 async function advanceBrowserClock(budget) {
+  clockControlled = true;
   const expired = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.removeEventListener('message', receive);
@@ -93,6 +118,8 @@ let visitNumber = 0;
 async function visit(fixture, hash = '') {
   const search = '?browser-case=' + ++visitNumber;
   await cdp('Page.navigate', { url: fixture.origin + '/' + search + hash });
+  // A spent virtual-time budget pauses navigation tasks too, not only app timers.
+  if (clockControlled) await advanceBrowserClock(1000);
   await until(
     () =>
       evaluate(
@@ -142,27 +169,7 @@ try {
   }, 'Chromium debugging port');
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const pageTarget = targets.find((target) => target.type === 'page');
-  socket = new WebSocket(pageTarget.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true });
-    socket.addEventListener('error', reject, { once: true });
-  });
-  socket.addEventListener('message', (event) => {
-    const response = JSON.parse(event.data);
-    const call = pending.get(response.id);
-    if (!call) return;
-    clearTimeout(call.timer);
-    pending.delete(response.id);
-    if (response.error) call.reject(new Error(JSON.stringify(response.error)));
-    else call.resolve(response.result);
-  });
-  await cdp('Page.enable');
-  await cdp('Emulation.setDeviceMetricsOverride', {
-    width: 1280,
-    height: 800,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
+  await connectTarget(pageTarget);
   const fixture = await navigationFixture({ sweeps: true });
   fixtures.push(fixture);
   await visit(fixture, '#/project/alpha/demo/one/graph');
@@ -225,16 +232,27 @@ try {
     'active source job response',
     20000,
   );
+  // Advance the browser's real timers virtually so the minute cadence does not
+  // add minutes to CI. Server-side upstream gates and request handling stay real.
+  await cdp('Emulation.setVirtualTimePolicy', { policy: 'pause' });
   const beforeFollow = snapshotRequests(fixture).length;
+  await advanceBrowserClock(59_000);
+  assert.equal(
+    snapshotRequests(fixture).length,
+    beforeFollow,
+    'No scope follow-up before a minute',
+  );
+  await advanceBrowserClock(2_000);
   await until(
     () => snapshotRequests(fixture).length > beforeFollow,
-    'two-second scope job follow-up',
-    5000,
+    '60-second scope job follow-up',
   );
+  assert.equal(snapshotRequests(fixture).length, beforeFollow + 1);
   checks.push(
-    'A bounded source refresh response with an active job follows the normal scope-read lane',
+    'A bounded source refresh response follows the normal scope-read lane after 60 seconds, not before',
   );
   releaseProject();
+  await advanceBrowserClock(60_000);
   await until(
     () =>
       evaluate(
@@ -284,21 +302,18 @@ try {
   }
   await shot('sweep-running-joined');
   const activeReads = sweepReads(fixture).length;
-  await sleep(2200);
-  assert.ok(sweepReads(fixture).length > activeReads, 'Active sweep must be followed');
-  const recent = sweepReads(fixture).slice(-2);
-  assert.ok(
-    recent[1].at - recent[0].at >= 1900,
-    'Sweep polling must not run faster than two seconds',
-  );
-  checks.push('Running sweep is followed every two seconds through GET /api/refresh');
+  await advanceBrowserClock(59_999);
+  assert.equal(sweepReads(fixture).length, activeReads, 'No sweep follow-up before a minute');
+  await advanceBrowserClock(1);
+  await until(() => sweepReads(fixture).length === activeReads + 1, '60-second sweep follow-up');
+  checks.push('Running sweep is followed every 60 seconds through GET /api/refresh');
 
   const other = await cdp('Target.createTarget', { url: 'about:blank' });
   await cdp('Target.activateTarget', { targetId: other.targetId });
   await until(() => evaluate(`document.visibilityState === 'hidden'`), 'real tab hidden');
   await sleep(100);
   const hiddenReads = sweepReads(fixture).length;
-  await sleep(2200);
+  await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, hiddenReads);
   releaseSweep();
   await until(() => fixture.sweep().state === 'completed', 'sweep completes while tab hidden');
@@ -313,7 +328,7 @@ try {
   );
   await cdp('Target.closeTarget', { targetId: other.targetId });
   const completedReads = sweepReads(fixture).length;
-  await sleep(2200);
+  await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, completedReads);
   checks.push('Real hidden tab stops sweep polling; return shows completion, then polling stops');
   await shot('sweep-completed');
@@ -363,9 +378,14 @@ try {
   await click('Refresh all sources');
   await until(() => sweepReads(conflicted).length > 0, 'conflicted-scope sweep read');
   const conflictReads = sweepReads(conflicted).length;
-  await sleep(2200);
-  assert.ok(sweepReads(conflicted).length > conflictReads);
+  await advanceBrowserClock(61_000);
+  await until(
+    () => sweepReads(conflicted).length === conflictReads + 1,
+    'conflicted-scope minute follow-up',
+  );
   releaseHealthy();
+  await until(() => conflicted.sweep().state === 'partial', 'conflicted-scope upstream completes');
+  await advanceBrowserClock(60_000);
   await until(
     () =>
       evaluate(`document.querySelector('.scope-sweep-summary')?.textContent.startsWith('Partial')`),
@@ -385,6 +405,13 @@ try {
 
   const authenticated = await navigationFixture({ sweeps: true, login: true });
   fixtures.push(authenticated);
+  // The login flow redirects across documents. Give it a fresh target with the
+  // normal browser clock, independent of the paused polling scenarios above.
+  const loginTarget = await cdp('Target.createTarget', { url: 'about:blank' });
+  const loginTargets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  socket.close();
+  await connectTarget(loginTargets.find((target) => target.id === loginTarget.targetId));
+  await cdp('Target.closeTarget', { targetId: pageTarget.id });
   await cdp('Page.navigate', { url: authenticated.origin + '/login' });
   await until(
     () => evaluate(`Boolean(document.querySelector('input[name="username"]'))`),

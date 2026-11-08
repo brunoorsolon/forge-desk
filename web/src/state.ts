@@ -17,6 +17,7 @@ import type { ViewSummary } from './api.js';
 import { compileFilter, type FilterTarget } from './filter.js';
 import { buildAdjacency, criticalPathEdges, edgeId, type Adjacency } from './graph-model.js';
 import { priorityName } from './priority.js';
+import { ACTIVE_POLL_MS } from './polling.js';
 import { DEFAULT_ROUTE, type Route, type Tab } from './route.js';
 
 // ---------------------------------------------------------------------------
@@ -61,9 +62,33 @@ export function indexSnapshot(
   };
 }
 
-/** Number shown on the Problems tab: every warning of the plan (cycles are warnings too). */
+const STRUCTURAL_WARNING_CODES = new Set(['cycle', 'blocked-by-cycle']);
+
+/** Shared grouping for the Problems view and its tab badge. */
+export function problemSections(snapshot: Snapshot): {
+  cycles: IssueKey[][];
+  blockedByCycle: IssueKey[];
+  warningGroups: Map<string, PlanWarning[]>;
+  total: number;
+} {
+  const { plan } = snapshot;
+  const nodes = new Map(plan.nodes.map((node) => [node.key, node]));
+  const blockedByCycle = plan.unschedulable.filter(
+    (key) => nodes.get(key)?.status === 'blocked-by-cycle',
+  );
+  const warningGroups = warningsByCode(plan.warnings);
+  for (const code of STRUCTURAL_WARNING_CODES) warningGroups.delete(code);
+  return {
+    cycles: plan.cycles,
+    blockedByCycle,
+    warningGroups,
+    total: plan.cycles.length + (blockedByCycle.length > 0 ? 1 : 0) + warningGroups.size,
+  };
+}
+
+/** Number of problem sections, not individual warnings or affected issues. */
 export function problemCount(snapshot: Snapshot): number {
-  return snapshot.plan.warnings.length;
+  return problemSections(snapshot).total;
 }
 
 export function warningsByCode(warnings: readonly PlanWarning[]): Map<string, PlanWarning[]> {
@@ -185,7 +210,7 @@ export function nextScopeRequestAt(input: {
   )
     return input.visibleSince;
   return isActiveScopeJob(input.job) && input.respondedAt !== null
-    ? input.respondedAt + 2000
+    ? input.respondedAt + ACTIVE_POLL_MS
     : null;
 }
 
