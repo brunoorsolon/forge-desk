@@ -62,9 +62,33 @@ export function indexSnapshot(
   };
 }
 
-/** Number shown on the Problems tab: every warning of the plan (cycles are warnings too). */
+const STRUCTURAL_WARNING_CODES = new Set(['cycle', 'blocked-by-cycle']);
+
+/** Shared grouping for the Problems view and its tab badge. */
+export function problemSections(snapshot: Snapshot): {
+  cycles: IssueKey[][];
+  blockedByCycle: IssueKey[];
+  warningGroups: Map<string, PlanWarning[]>;
+  total: number;
+} {
+  const { plan } = snapshot;
+  const nodes = new Map(plan.nodes.map((node) => [node.key, node]));
+  const blockedByCycle = plan.unschedulable.filter(
+    (key) => nodes.get(key)?.status === 'blocked-by-cycle',
+  );
+  const warningGroups = warningsByCode(plan.warnings);
+  for (const code of STRUCTURAL_WARNING_CODES) warningGroups.delete(code);
+  return {
+    cycles: plan.cycles,
+    blockedByCycle,
+    warningGroups,
+    total: plan.cycles.length + (blockedByCycle.length > 0 ? 1 : 0) + warningGroups.size,
+  };
+}
+
+/** Number of problem sections, not individual warnings or affected issues. */
 export function problemCount(snapshot: Snapshot): number {
-  return snapshot.plan.warnings.length;
+  return problemSections(snapshot).total;
 }
 
 export function warningsByCode(warnings: readonly PlanWarning[]): Map<string, PlanWarning[]> {

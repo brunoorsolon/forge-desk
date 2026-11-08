@@ -10,6 +10,7 @@ import {
   effectiveViewId,
   indexSnapshot,
   problemCount,
+  problemSections,
   reducer,
   warningsByCode,
   withTab,
@@ -222,10 +223,56 @@ describe('snapshot helpers', () => {
 
   it('counts problems and groups warnings by code in order', () => {
     const snap = snapshot(['o/r#1']);
-    expect(problemCount(snap)).toBe(3);
+    expect(problemCount(snap)).toBe(2);
     const groups = warningsByCode(snap.plan.warnings);
     expect([...groups.keys()]).toEqual(['dangling-reference', 'fetch-error']);
     expect(groups.get('dangling-reference')).toHaveLength(2);
+  });
+
+  it('counts many warnings of one code as one section without dropping warning rows', () => {
+    const snap = snapshot(['o/r#1']);
+    snap.plan.warnings = Array.from({ length: 28 }, (_, i) => ({
+      code: 'stale-data',
+      message: `Stale observation ${i}`,
+      issues: [],
+    }));
+    expect(problemCount(snap)).toBe(1);
+    expect(problemSections(snap).warningGroups.get('stale-data')).toEqual(snap.plan.warnings);
+  });
+
+  it('adds each cycle, one blocked-by-cycle group and each other warning code', () => {
+    const snap = snapshot(['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4', 'o/r#5', 'o/r#6']);
+    snap.plan.cycles = [['o/r#1', 'o/r#2'], ['o/r#3']];
+    snap.plan.unschedulable = ['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4', 'o/r#5'];
+    snap.plan.nodes.forEach((n, i) => {
+      n.status = i < 3 ? 'in-cycle' : 'blocked-by-cycle';
+    });
+    snap.plan.warnings.push(
+      { code: 'cycle', message: 'First cycle', issues: ['o/r#1', 'o/r#2'] },
+      { code: 'cycle', message: 'Second cycle', issues: ['o/r#3'] },
+      { code: 'blocked-by-cycle', message: 'Waiting on cycles', issues: ['o/r#4', 'o/r#5'] },
+    );
+    const sections = problemSections(snap);
+    expect(problemCount(snap)).toBe(5);
+    expect(sections.cycles).toEqual(snap.plan.cycles);
+    expect(sections.blockedByCycle).toEqual(['o/r#4', 'o/r#5']);
+    expect([...sections.warningGroups.keys()]).toEqual(['dangling-reference', 'fetch-error']);
+    expect(sections.warningGroups.get('dangling-reference')).toHaveLength(2);
+
+    // Structural warnings are represented by plan sections, never counted again.
+    snap.plan.warnings = [];
+    expect(problemCount(snap)).toBe(3);
+  });
+
+  it('does not invent structural sections for warnings without matching plan structure', () => {
+    const snap = snapshot(['o/r#1']);
+    snap.plan.warnings = [
+      { code: 'cycle', message: 'Cycle', issues: [] },
+      { code: 'blocked-by-cycle', message: 'Blocked', issues: [] },
+    ];
+    expect(problemCount(snap)).toBe(0);
+    snap.plan.warnings = [];
+    expect(problemCount(snap)).toBe(0);
   });
 });
 
