@@ -3,7 +3,7 @@ import { clear, h, icon } from '../dom.js';
 import { plural, shortKey } from '../format.js';
 import { cyclePath, edgeId } from '../graph-model.js';
 import type { IconName } from '../icons.js';
-import { warningsByCode, type SnapshotIndex } from '../state.js';
+import { problemSections, type SnapshotIndex } from '../state.js';
 import { getIndex, sourceTag, type View, type ViewCtx } from './shared.js';
 
 /**
@@ -54,8 +54,6 @@ export const WARNING_EXPLANATIONS: Record<string, { title: string; text: string 
   },
 };
 
-const STRUCTURAL = new Set(['cycle', 'blocked-by-cycle']);
-
 export function createProblemsView(ctx: ViewCtx): View {
   const root = h('div', { class: 'pane pane-scroll problems-pane' });
   const wrap = h('div', { class: 'problems-wrap' });
@@ -97,11 +95,7 @@ export function createProblemsView(ctx: ViewCtx): View {
   function build(snapshot: Snapshot, index: SnapshotIndex): void {
     clear(wrap);
     const { plan } = snapshot;
-    const blockedByCycle = plan.unschedulable.filter(
-      (k) => index.nodes.get(k)?.status === 'blocked-by-cycle',
-    );
-    const other = [...warningsByCode(plan.warnings)].filter(([code]) => !STRUCTURAL.has(code));
-    const total = plan.cycles.length + (blockedByCycle.length > 0 ? 1 : 0) + other.length;
+    const { cycles, blockedByCycle, warningGroups, total } = problemSections(snapshot);
 
     if (total === 0) {
       wrap.append(
@@ -135,7 +129,7 @@ export function createProblemsView(ctx: ViewCtx): View {
       ),
     );
 
-    plan.cycles.forEach((scc, i) => {
+    cycles.forEach((scc, i) => {
       const { path, extra } = cyclePath(scc, plan.edges);
       const loop = path.length > 0 ? path.slice(0, -1) : scc;
       const items: Node[] = [];
@@ -166,7 +160,7 @@ export function createProblemsView(ctx: ViewCtx): View {
           head(
             'alert',
             'cycle',
-            plan.cycles.length > 1 ? `Dependency cycle ${i + 1}` : 'Dependency cycle',
+            cycles.length > 1 ? `Dependency cycle ${i + 1}` : 'Dependency cycle',
             plural(scc.length, 'issue'),
           ),
           h(
@@ -241,7 +235,7 @@ export function createProblemsView(ctx: ViewCtx): View {
       );
     }
 
-    for (const [code, list] of other) wrap.append(warningSection(code, list, index));
+    for (const [code, list] of warningGroups) wrap.append(warningSection(code, list, index));
   }
 
   function warningSection(code: string, list: PlanWarning[], index: SnapshotIndex): HTMLElement {
