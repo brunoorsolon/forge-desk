@@ -45,14 +45,38 @@ function setup(
 afterEach(() => vi.useRealTimers());
 
 describe('scope refresh wiring', () => {
-  it('shows the refresh result and follows its active job every two seconds', async () => {
+  it('applies a manual response immediately while an active job is awaiting its next poll', async () => {
+    let finish!: (result: ScopeResponse) => void;
+    const refresh = vi.fn(
+      () =>
+        new Promise<ScopeResponse>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const read = vi.fn(async (scope: Scope) => response(scope, true));
+    const { store, navigation } = setup(refresh, read);
+    await vi.advanceTimersByTimeAsync(0);
+    const previous = store.get().snapshot;
+    const pending = navigation.refresh(project);
+    expect(store.get().snapshot).toBe(previous);
+    const refreshed = response(project);
+    finish(refreshed);
+    await pending;
+    expect(store.get().snapshot).toBe(refreshed.snapshot);
+    expect(store.get().freshness).toBe(refreshed.freshness);
+    expect(store.get().job).toBeNull();
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+  it('shows the refresh result and follows its active job every 60 seconds', async () => {
     const refresh = vi.fn(async (scope: Scope) => response(scope, true));
     const { store, navigation, read } = setup(refresh);
     await vi.advanceTimersByTimeAsync(0);
     await navigation.refresh(project);
     expect(refresh).toHaveBeenCalledWith(project);
     expect(store.get().job?.id).toBe('joined');
-    await vi.advanceTimersByTimeAsync(1999);
+    await vi.advanceTimersByTimeAsync(59_999);
     expect(read).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(read).toHaveBeenCalledTimes(2);
@@ -75,7 +99,7 @@ describe('scope refresh wiring', () => {
     await pending;
     expect(scopeFromRoute(store.get().route)).toEqual(source);
     expect(store.get().job?.scope).toEqual(source);
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenLastCalledWith(source);
   });
   it.each([0, 403, 404, 409, 500])(
