@@ -327,19 +327,33 @@ describe('cache-first scope reads', () => {
     expect(f.lookup).toHaveBeenCalledTimes(200);
   });
 
-  it('keeps reused closed prerequisites satisfied in a zero-TTL response', async () => {
-    const f = fixture(0);
-    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on external/repo#1')]));
-    await f.service.refresh(project());
-    expect(f.lookup).toHaveBeenCalledTimes(1);
-    vi.setSystemTime(Date.now() + 86_400_000);
-    const refreshed = await f.service.refresh(project());
-    expect(f.list).toHaveBeenCalledTimes(2);
-    expect(f.lookup).toHaveBeenCalledTimes(1);
-    expect(refreshed.freshness.outsideIssues).toMatchObject({ count: 1, provisionalCount: 0 });
-    expect(refreshed.snapshot?.plan.warnings).toEqual([]);
-    expect(refreshed.snapshot?.plan.nodes).toMatchObject([{ key: 'o/a#1', status: 'ready' }]);
-  });
+  it.each(['open', 'closed', 'failed'] as const)(
+    'revalidates a previously closed prerequisite and uses the %s result with zero TTL',
+    async (outcome) => {
+      const f = fixture(0);
+      f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on external/repo#1')]));
+      await f.service.refresh(project());
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 86_400_000);
+      if (outcome === 'failed') f.lookup.mockRejectedValueOnce(new Error('offline'));
+      else f.lookup.mockResolvedValueOnce(issue('external/repo#1', '', outcome));
+      const refreshed = await f.service.refresh(project());
+      expect(f.list).toHaveBeenCalledTimes(2);
+      expect(f.lookup).toHaveBeenCalledTimes(2);
+      expect(refreshed.freshness.outsideIssues).toMatchObject({
+        count: 1,
+        provisionalCount: outcome === 'failed' ? 1 : 0,
+      });
+      expect(refreshed.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+        outcome === 'closed' ? 'ready' : 'blocked',
+      );
+      expect(
+        refreshed.snapshot?.plan.warnings.some(
+          (warning) => warning.code === 'dependency-provisional',
+        ),
+      ).toBe(outcome === 'failed');
+    },
+  );
 
   it('settles capped dependency work for one TTL, then retries or honors explicit refresh', async () => {
     const f = fixture();

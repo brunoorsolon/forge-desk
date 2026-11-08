@@ -330,18 +330,39 @@ describe('scope refresh jobs', () => {
     });
   });
 
-  it('does not expire trusted closed observations when the TTL is zero', async () => {
-    const f = fixture(() => json(listing([issue('owner/a#1', 'Depends on other/lib#1')])));
-    const store = new ObservationStore();
-    const jobs = new ScopeRefreshJobs({ sources: [f.input], store, cache: { ttlSeconds: 0 } });
-    const ref = { source: 'gh', key: 'other/lib#1' };
-    store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
-      result: { status: 'found', issue: issue(ref.key, '', 'closed') },
-    });
-    vi.setSystemTime(Date.now() + 86_400_000);
-    expect((await jobs.refresh(project()).completion).state).toBe('completed');
-    expect(f.calls.map((call) => call.path)).toEqual(['/repos/owner/a']);
-  });
+  it.each([0, 86_400_000])(
+    'rechecks a closed observation aged %i ms with zero TTL',
+    async (age) => {
+      const f = fixture((path) =>
+        json(
+          path === '/repos/owner/a'
+            ? listing([issue('owner/a#1', 'Depends on other/lib#1')])
+            : issue('other/lib#1'),
+        ),
+      );
+      const store = new ObservationStore();
+      const jobs = new ScopeRefreshJobs({ sources: [f.input], store, cache: { ttlSeconds: 0 } });
+      const ref = { source: 'gh', key: 'other/lib#1' };
+      store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
+        result: { status: 'found', issue: issue(ref.key, '', 'closed') },
+      });
+      vi.setSystemTime(Date.now() + age);
+      const result = await jobs.refresh(project()).completion;
+      expect(result.state).toBe('completed');
+      expect(result.units).toMatchObject([
+        { kind: 'repository', state: 'checked' },
+        { kind: 'outside-issue', key: ref.key, state: 'checked' },
+      ]);
+      expect(f.calls.map((call) => call.path)).toEqual([
+        '/repos/owner/a',
+        '/repos/other/lib/issues/1',
+      ]);
+      expect(store.readOutsideIssue(ref)?.observation.result).toMatchObject({
+        status: 'found',
+        issue: { state: 'open' },
+      });
+    },
+  );
 
   it.each(['verified', 'expired', 'invalidated', 'failed'])(
     'checks the shared observation again for a later breadth-first level after it is %s',

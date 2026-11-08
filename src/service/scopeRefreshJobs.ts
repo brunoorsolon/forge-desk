@@ -78,21 +78,20 @@ const isPartial = (coverage: RelationCoverage | undefined): boolean =>
   Object.values(coverage).some((v) => v === 'failed' || v === 'unsupported');
 
 /** A closed result can be trusted without submitting a new lookup unit. */
-export function reusableClosedIssue(
+function reusableClosedIssue(
   record: StoredObservation<OutsideIssueObservation> | undefined,
   ttlSeconds: number,
   now: number,
 ): OutsideIssueLookup | undefined {
-  if (!record) return undefined;
+  if (!record || ttlSeconds <= 0) return undefined;
   const { observation } = record;
   if (
     observation.result?.status === 'found' &&
     observation.result.issue.state === 'closed' &&
     !record.invalidated &&
     observation.lastAttempt?.outcome !== 'failed' &&
-    (ttlSeconds === 0 ||
-      (observation.lastCheckedAt !== null &&
-        now - Date.parse(observation.lastCheckedAt) <= ttlSeconds * 1000))
+    observation.lastCheckedAt !== null &&
+    now - Date.parse(observation.lastCheckedAt) <= ttlSeconds * 1000
   )
     return observation.result;
   return undefined;

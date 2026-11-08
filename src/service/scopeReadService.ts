@@ -8,7 +8,6 @@ import type { ObservationStore, StoredObservation, OutsideIssueRef } from './obs
 import { AdmissionShutdownError } from './admissionQueue.js';
 import { deriveScopePlan, type ScopePlanResult } from './scopePlan.js';
 import {
-  reusableClosedIssue,
   ScopeRefreshError,
   type ScopeRefreshJob,
   type ScopeRefreshJobs,
@@ -142,7 +141,6 @@ export class ScopeReadService {
         .filter(
           (r) =>
             !units ||
-            reusableClosedIssue(r, this.options.cache.ttlSeconds, this.now().getTime()) ||
             units.some(
               (u) =>
                 u.kind === 'outside-issue' && u.key === r.observation.key && u.state === 'checked',

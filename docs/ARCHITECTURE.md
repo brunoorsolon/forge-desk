@@ -1309,7 +1309,8 @@ and other sources progress independently.
 sharing repository and outside-issue work between overlapping scopes. Jobs expose per-unit state,
 coverage and check/error times. Before each breadth-first lookup batch, jobs reuse stored closed
 issues when they are not invalidated, their last attempt did not fail, and their successful check
-is within `cache.ttlSeconds` (zero disables the age limit). Reused observations do not enter the
+is within a positive `cache.ttlSeconds`. Zero TTL disables reuse and requires revalidation.
+Reused observations do not enter the
 admission queue or consume the 200-lookup budget, and keep their original check time. Unknown,
 open, failed, invalidated and expired observations still require individual lookups.
 The queue's fetch context keeps provider-level in-flight
@@ -1398,9 +1399,8 @@ not register HTTP routes or change named-view caching.
   bypass it.
 - First-load and explicit refresh reads wait at most 15 seconds. Missing data
   remains a null snapshot; a successful empty listing is a real empty plan.
-- Zero TTL always waits for revalidation and derives from that job's successful units
-  plus trustworthy closed prerequisites reused without a lookup, excluding unrelated
-  cached listings. An unfinished revalidation
+- Zero TTL always waits for revalidation and derives only from that job's successful units,
+  excluding unrelated cached listings. An unfinished revalidation
   returns no snapshot. A partial failure preserves that job's successful updates
   and provisional dependency edges without falling back to failed units' cached
   data. Successful zero-TTL observations report fresh regardless of elapsed time.
