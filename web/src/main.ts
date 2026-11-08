@@ -22,7 +22,7 @@ import { createProjectSidebar } from './views/project-sidebar.js';
 import { createScopeHeading } from './views/scope-heading.js';
 import { createSweepRefresh, type SweepRefreshState } from './sweep-refresh.js';
 import { h } from './dom.js';
-import { parseHash, serializeHash, type Route, type Tab } from './route.js';
+import { DEFAULT_ROUTE, parseHash, serializeHash, type Route, type Tab } from './route.js';
 import { parseReleaseHash } from './release-route.js';
 import { createReleasesView } from './views/releases.js';
 import {
@@ -86,7 +86,10 @@ function retryPreferences(): void {
 }
 
 function resolveLocation(): void {
-  if (parseReleaseHash(location.hash) !== null) return;
+  if (parseReleaseHash(location.hash) !== null) {
+    render();
+    return;
+  }
   const route = parseHash(location.hash);
   // Existing view links do not depend on the catalog being available.
   if (route.scope === undefined && route.viewId !== null) {
@@ -183,9 +186,15 @@ function navigate(route: Route, replace = false): void {
   } else {
     return;
   }
+  syncArea();
   // Dispatch synchronously so a caller that acts right after navigate, or a
   // microtask that resolves before the hashchange event, sees the new route.
   resolveLocation();
+}
+
+function openReleases(): void {
+  if (parseReleaseHash(location.hash) === null) location.hash = '#/releases';
+  syncArea();
 }
 
 function currentRoute(): Route {
@@ -235,6 +244,7 @@ const actions: Actions = {
     navigate({ ...currentRoute(), tab: 'graph' });
   },
   setTab: (tab: Tab) => navigate({ ...currentRoute(), tab }),
+  openReleases,
   setView: (viewId) => {
     const { scope: _scope, ...route } = currentRoute();
     navigate({ ...route, viewId });
@@ -303,6 +313,7 @@ const scopeEmpty = h(
 );
 
 const main = h('main', { class: 'main' }, graph.el, order.el, problems.el, panel.el);
+const releases = createReleasesView();
 const app = document.getElementById('app');
 if (!app) throw new Error('missing #app');
 const planningContent = h(
@@ -316,42 +327,39 @@ const planningContent = h(
   scopeStates.el,
   scopeEmpty,
   main,
+  releases.el,
 );
 const planning = h('div', { class: 'planning-shell' }, sidebar.el, planningContent);
-const releases = createReleasesView();
-const planningLink = h('a', { class: 'tab', href: serializeHash(currentRoute()) }, 'Planning');
-const releasesLink = h('a', { class: 'tab', href: '#/releases' }, 'Releases');
-const areas = h(
-  'nav',
-  { class: 'area-nav', 'aria-label': 'Forge Desk areas' },
-  planningLink,
-  releasesLink,
-);
-app.append(areas, planning, releases.el);
+app.append(planning);
 
 function syncArea(): void {
   const route = parseReleaseHash(location.hash);
-  planning.hidden = route !== null;
+  header.setReleasesActive(route !== null);
+  releases.el.hidden = route === null;
   scopeNavigation.setVisible(!document.hidden && route === null);
   syncRefreshVisibility();
-  planningLink.setAttribute('aria-current', route === null ? 'page' : 'false');
-  releasesLink.setAttribute('aria-current', route === null ? 'false' : 'page');
   if (route !== null) {
     lastDestination = 'releases';
     preferences.selectProject(null);
     document.title = 'Releases · Forge Desk';
+    render();
     void releases.open(route);
   } else {
     releases.close();
     document.title = titleFor(store.get());
+    render();
   }
 }
 
 const views: View[] = [header, summary, states, graph, order, problems, panel];
 
 function layoutMain(state: ReturnType<Store['get']>): void {
-  main.hidden = navigationPanel !== null || !states.showsContent(state);
-  main.classList.toggle('panel-open', state.selected !== null && state.route.tab !== 'problems');
+  const onReleases = parseReleaseHash(location.hash) !== null;
+  main.hidden = onReleases || navigationPanel !== null || !states.showsContent(state);
+  main.classList.toggle(
+    'panel-open',
+    !onReleases && state.selected !== null && state.route.tab !== 'problems',
+  );
 }
 
 function render(): void {
@@ -376,7 +384,6 @@ store.subscribe((state) => {
   updateNavigation(state);
   prevState = state;
   if (parseReleaseHash(location.hash) === null) document.title = titleFor(state);
-  planningLink.href = serializeHash(currentRoute());
   // A snapshot for another view is needed when the effective view changed.
   const viewId = effectiveViewId(state);
   if (
@@ -397,14 +404,30 @@ store.subscribe((state) => {
 });
 
 function updateNavigation(state: ReturnType<Store['get']>): void {
+  const onReleases = parseReleaseHash(location.hash) !== null;
   const preferenceState = preferences.get();
-  sidebar.update(state, preferenceState, catalog);
+  sidebar.update(onReleases ? { ...state, route: DEFAULT_ROUTE } : state, preferenceState, catalog);
+  if (onReleases) {
+    header.el.hidden = false;
+    preferenceFeedback.hidden = true;
+    heading.el.hidden = true;
+    summary.el.hidden = true;
+    states.el.hidden = true;
+    scopeStates.el.hidden = true;
+    scopeEmpty.hidden = true;
+    releases.el.hidden = false;
+    scopeNavigation.open(null);
+    syncRefreshVisibility();
+    return;
+  }
+  releases.el.hidden = true;
   heading.update(
     sweepState.error === null
       ? state
       : { ...state, refreshError: `All sources refresh: ${sweepState.error}` },
     preferenceState,
     sweepState.sweep,
+    catalog,
   );
   preferenceError.textContent = preferenceState.error ?? '';
   preferenceError.hidden = preferenceState.error === null;
@@ -436,15 +459,18 @@ function updateNavigation(state: ReturnType<Store['get']>): void {
 
 function titleFor(state: ReturnType<Store['get']>): string {
   const scope = state.route.scope;
-  if (scope !== undefined)
-    return `${scope.kind === 'project' ? `${scope.owner}/${scope.repo}` : 'All projects'} · ${scope.source} · Forge Desk`;
+  if (scope !== undefined) {
+    const sourceTitle =
+      catalog?.sources.find((entry) => entry.id === scope.source)?.title ?? scope.source;
+    return `${scope.kind === 'project' ? `${scope.owner}/${scope.repo}` : 'All projects'} · ${sourceTitle} · Forge Desk`;
+  }
   const view = state.views?.find((v) => v.id === effectiveViewId(state));
   return view ? `${view.title} · Forge Desk` : 'Forge Desk';
 }
 
 window.addEventListener('hashchange', () => {
-  if (parseReleaseHash(location.hash) === null) resolveLocation();
   syncArea();
+  if (parseReleaseHash(location.hash) === null) resolveLocation();
 });
 
 // Clear before leaving, not after the logout response. Late requests cannot restore it.

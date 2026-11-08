@@ -63,6 +63,7 @@ ui:
 sources:
   # GitHub.com
   - id: gh
+    # title: GitHub # optional; defaults to the single view's title or the id
     kind: github
     baseUrl: https://api.github.com # default for github
     # webUrl: https://github.com # optional; derived from baseUrl when omitted

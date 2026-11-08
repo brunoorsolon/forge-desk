@@ -1300,12 +1300,14 @@ describe('project catalog and source planning policies', () => {
       sources: [
         {
           id: 'second',
+          title: 'second',
           kind: 'github',
           projects: [{ source: 'second', repo: 'acme/api' }],
           policy: { status: 'usable' },
         },
         {
           id: 'gh',
+          title: 'gh',
           kind: 'github',
           projects: ['aaa/zzz', 'acme/api', 'acme/web', 'zed/web'].map((repo) => ({
             source: 'gh',
@@ -1313,7 +1315,13 @@ describe('project catalog and source planning policies', () => {
           })),
           policy: { status: 'usable' },
         },
-        { id: 'unused', kind: 'github', projects: [], policy: { status: 'usable' } },
+        {
+          id: 'unused',
+          title: 'unused',
+          kind: 'github',
+          projects: [],
+          policy: { status: 'usable' },
+        },
       ],
     });
     expect(cfg.sources.map((s) => s.planning)).toEqual([defaultPolicy, defaultPolicy, null]);
@@ -1587,6 +1595,7 @@ describe('project catalog and source planning policies', () => {
       sources: [
         {
           id: 'default',
+          title: 'default',
           kind: 'github',
           projects: ['acme/api', 'zed/web'].map((repo) => ({ source: 'default', repo })),
           policy: { status: 'usable' },
@@ -1602,5 +1611,34 @@ describe('project catalog and source planning policies', () => {
       mode: 'waves',
     });
     expect(cfg.sources[0]!.planning!.dependencies.subIssues).toBe(true);
+  });
+
+  it('resolves catalog source title from explicit source title, single view title, or source id', () => {
+    const cfg = parseConfig(
+      JSON.stringify({
+        sources: [
+          { id: 'explicit', title: 'Explicit Title', kind: 'github' },
+          { id: 'single-titled', kind: 'github' },
+          { id: 'single-untitled', kind: 'github' },
+          { id: 'multi-titled', kind: 'github' },
+          { id: 'unused', kind: 'github' },
+        ],
+        views: [
+          { id: 'v1', title: 'View Title Ignored', source: 'explicit', repos: ['acme/api'] },
+          { id: 'v2', title: 'PugLab (Gitea)', source: 'single-titled', repos: ['acme/api'] },
+          { id: 'v3', source: 'single-untitled', repos: ['acme/api'] },
+          { id: 'v4', title: 'First', source: 'multi-titled', repos: ['acme/api'] },
+          { id: 'v5', title: 'Second', source: 'multi-titled', repos: ['acme/web'] },
+        ],
+      }),
+      {},
+    );
+    expect(cfg.catalog.sources.map((s) => ({ id: s.id, title: s.title }))).toEqual([
+      { id: 'explicit', title: 'Explicit Title' },
+      { id: 'single-titled', title: 'PugLab (Gitea)' },
+      { id: 'single-untitled', title: 'single-untitled' },
+      { id: 'multi-titled', title: 'multi-titled' },
+      { id: 'unused', title: 'unused' },
+    ]);
   });
 });

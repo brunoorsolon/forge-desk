@@ -211,6 +211,7 @@ function resolveSource(
 
   return {
     id: raw.id,
+    ...(raw.title !== undefined ? { title: raw.title } : {}),
     kind: raw.kind,
     baseUrl,
     webUrl: deriveWebUrl(raw.kind, baseUrl, raw.webUrl),
@@ -274,9 +275,20 @@ function policySettings(policy: ResolvedPlanningPolicy): Record<string, unknown>
   };
 }
 
+function resolveSourceTitle(rawSource: RawSource, rawViews: readonly RawView[]): string {
+  if (rawSource.title !== undefined) return rawSource.title;
+  const sourceViews = rawViews.filter((view) => view.source === rawSource.id);
+  if (sourceViews.length === 1 && sourceViews[0]!.title !== undefined) {
+    return sourceViews[0]!.title;
+  }
+  return rawSource.id;
+}
+
 /** Resolve the catalog and infer a source policy without affecting any named view. */
 function resolveCatalogSource(
   source: ResolvedSource,
+  rawSource: RawSource,
+  rawViews: readonly RawView[],
   views: ResolvedView[],
   warnings: string[],
 ): CatalogSource {
@@ -288,6 +300,7 @@ function resolveCatalogSource(
     .map((repo) => ({ source: source.id, repo }));
   const catalog: CatalogSource = {
     id: source.id,
+    title: resolveSourceTitle(rawSource, rawViews),
     kind: source.kind,
     projects,
     policy: { status: 'usable' },
@@ -492,7 +505,9 @@ function resolveConfig(input: unknown, env: Env, baseDir: string): AppConfig {
   const sources = raw.sources.map((s) => resolveSource(s, env, baseDir, warnings));
   const views = raw.views.map(resolveView);
   const catalog = {
-    sources: sources.map((source) => resolveCatalogSource(source, views, warnings)),
+    sources: sources.map((source, index) =>
+      resolveCatalogSource(source, raw.sources[index]!, raw.views, views, warnings),
+    ),
   };
   for (const v of views) {
     if (v.dependencies.subIssues && kindById.get(v.source) !== 'github') {

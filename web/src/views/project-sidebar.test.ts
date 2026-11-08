@@ -172,7 +172,39 @@ describe('project sidebar', () => {
     ).toEqual(['All projects from gitea', 'Open gitea / acme/api']);
     const buttons = descendants(root, (el) => el.tagName === 'button');
     expect(buttons.at(-1)?.getAttribute('aria-label')).toBe('Views');
+    expect(byClass(root, 'brand-name')[0]?.textContent).toBe('Forge Desk');
     expect(named(root, 'Open gitea / acme/api')[0]?.textContent).toBe('acme/apigitea');
+    expect(named(root, 'Open gitea / acme/api')[1]?.textContent).toBe('acme/api');
+    expect(named(root, 'All projects from github')[0]?.textContent).toBe('All projects');
+  });
+
+  it('displays friendly source titles and omits repeated source subtitles in source sections', () => {
+    const titledCatalog: CatalogResponse = {
+      sources: [
+        {
+          id: 'tea',
+          title: 'PugLab (Gitea)',
+          kind: 'gitea',
+          projects: [{ source: 'tea', repo: 'acme/api' }],
+          policy: { status: 'usable' },
+        },
+      ],
+    };
+    const { root } = setup(
+      DEFAULT_ROUTE,
+      preferences([{ source: 'tea', repo: 'acme/api', inCatalog: true }]),
+      titledCatalog,
+    );
+    const sections = byClass(root, 'project-sidebar-section');
+    expect(sections.map((section) => section.getAttribute('aria-label'))).toEqual([
+      'Favorites',
+      'Source PugLab (Gitea)',
+    ]);
+    expect(descendants(sections[1]!, (el) => el.tagName === 'h2')[0]?.textContent).toBe(
+      'PugLab (Gitea)',
+    );
+    expect(byClass(sections[0]!, 'project-sidebar-source')[0]?.textContent).toBe('PugLab (Gitea)');
+    expect(byClass(sections[1]!, 'project-sidebar-source')).toHaveLength(0);
   });
 
   it('reports project, source and named-view choices through separate callbacks', () => {

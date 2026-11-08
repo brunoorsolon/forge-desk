@@ -1,4 +1,9 @@
-import type { ProjectRef, RepositoryFreshness, SweepStatus } from '../../../src/core/scope.js';
+import type {
+  CatalogResponse,
+  ProjectRef,
+  RepositoryFreshness,
+  SweepStatus,
+} from '../../../src/core/scope.js';
 import { clear, h, icon } from '../dom.js';
 import { absoluteTime, plural, relativeTime } from '../format.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
@@ -17,7 +22,12 @@ type HeadingState = Pick<AppState, 'route' | 'status' | 'snapshot' | 'freshness'
 
 export interface ScopeHeading {
   el: HTMLElement;
-  update(state: HeadingState, preferences: PreferenceState, sweep?: SweepStatus | null): void;
+  update(
+    state: HeadingState,
+    preferences: PreferenceState,
+    sweep?: SweepStatus | null,
+    catalog?: CatalogResponse | null,
+  ): void;
 }
 
 /** Upstream check times and computation times deliberately have separate labels. */
@@ -211,7 +221,7 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
 
   return {
     el,
-    update(state, preferences, sweep = null) {
+    update(state, preferences, sweep = null, catalog = null) {
       const scope = state.route.scope;
       source = scope?.source ?? null;
       project =
@@ -220,7 +230,9 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
           : null;
       el.hidden = scope === undefined;
       if (scope === undefined) return;
-      sourceName.textContent = `Source: ${scope.source}`;
+      const sourceTitle =
+        catalog?.sources.find((entry) => entry.id === scope.source)?.title ?? scope.source;
+      sourceName.textContent = `Source: ${sourceTitle}`;
       title.textContent = project?.repo ?? 'All projects';
 
       const preferenceView = preferences.view;

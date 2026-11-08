@@ -39,6 +39,7 @@ export type SourcePolicyStatus =
 
 export interface CatalogSource {
   id: string;
+  title?: string;
   kind: ProviderKind;
   /** Distinct projects, sorted by canonical owner/repo, including empty repositories. */
   projects: ProjectRef[];

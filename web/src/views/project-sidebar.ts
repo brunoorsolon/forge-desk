@@ -26,6 +26,12 @@ let nextSidebarId = 0;
  */
 export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSidebar {
   const id = `project-sidebar-${++nextSidebarId}`;
+  const brand = h(
+    'div',
+    { class: 'brand project-sidebar-brand' },
+    h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('graph', 15)),
+    h('span', { class: 'brand-name' }, 'Forge Desk'),
+  );
   const nav = h('nav', { id, class: 'project-sidebar-nav', 'aria-label': 'Projects and views' });
   const toggle = h(
     'button',
@@ -42,6 +48,7 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
   const el = h(
     'aside',
     { class: 'project-sidebar', 'aria-label': 'Project navigation' },
+    brand,
     toggle,
     nav,
   );
@@ -112,6 +119,8 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
         favorites.some(
           (favorite) => favorite.source === project.source && favorite.repo === project.repo,
         );
+      const sourceTitle = (sourceId: string): string =>
+        catalog?.sources.find((source) => source.id === sourceId)?.title ?? sourceId;
 
       function choose(scope: Scope): void {
         close();
@@ -127,7 +136,8 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
         const favorite = isFavorite(project);
         const key = (area: string, action: string): string =>
           JSON.stringify([area, action, project.source, project.repo]);
-        const name = `${project.source} / ${project.repo}`;
+        const displaySource = sourceTitle(project.source);
+        const name = `${displaySource} / ${project.repo}`;
         return h(
           'li',
           { class: 'project-sidebar-row' },
@@ -147,7 +157,9 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
                 },
               },
               h('span', { class: 'project-sidebar-repo' }, project.repo),
-              h('span', { class: 'project-sidebar-source' }, project.source),
+              section === 'favorites'
+                ? h('span', { class: 'project-sidebar-source' }, displaySource)
+                : null,
               !available
                 ? h('span', { class: 'project-sidebar-unavailable' }, 'Unavailable')
                 : null,
@@ -235,11 +247,12 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
         nav.append(h('p', { class: 'project-sidebar-note' }, 'Projects have not loaded.'));
       for (const source of catalog?.sources ?? []) {
         const scope: Scope = { kind: 'source', source: source.id };
+        const displaySource = source.title ?? source.id;
         nav.append(
           h(
             'section',
-            { class: 'project-sidebar-section', 'aria-label': `Source ${source.id}` },
-            h('h2', null, source.id),
+            { class: 'project-sidebar-section', 'aria-label': `Source ${displaySource}` },
+            h('h2', null, displaySource),
             h(
               'ul',
               { class: 'project-sidebar-list' },
@@ -253,12 +266,11 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
                     {
                       class: 'project-sidebar-entry',
                       type: 'button',
-                      'aria-label': `All projects from ${source.id}`,
+                      'aria-label': `All projects from ${displaySource}`,
                       'aria-current': current === scopeId(scope) ? 'page' : null,
                       onclick: () => choose(scope),
                     },
                     h('span', { class: 'project-sidebar-repo' }, 'All projects'),
-                    h('span', { class: 'project-sidebar-source' }, source.id),
                   ),
                 ),
               ),
