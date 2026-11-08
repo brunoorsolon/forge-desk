@@ -11,30 +11,45 @@ Contents:
 - [Endpoints](#endpoints)
 - [Common behaviour](#common-behaviour)
 - [Authentication](#authentication)
+- [All-source sweeps](#all-source-sweeps)
+- [Account preferences](#account-preferences)
 - [Snapshot schema](#snapshot-schema)
 - [Examples](#examples)
 
 ## Endpoints
 
-| Method | Path                                  | Description                                                                             | Success                                  |
-| ------ | ------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------- |
-| GET    | `/healthz`                            | Liveness check. **No authentication.**                                                  | `200` `{"status":"ok"}`                  |
-| GET    | `/api/views`                          | The configured views                                                                    | `200` array of view summaries            |
-| GET    | `/api/settings`                       | Settings for the web UI and the running version                                         | `200` `{"refreshMinutes":5,...}`         |
-| GET    | `/api/views/:id/snapshot`             | The plan and layout of a view                                                           | `200` snapshot with `ETag`, or `304`     |
-| POST   | `/api/views/:id/refresh`              | Force a refetch from the tracker, ignoring the cache                                    | `200` snapshot with `ETag`               |
-| GET    | `/api/views/:id/export.:format`       | The snapshot rendered as a file: `json`, `md`, `mmd` (Mermaid) or `dot`                 | `200` text with `Content-Disposition`    |
-| POST   | `/api/webhooks/github`                | Webhook receiver for GitHub issue and pull-request events (only with a secret)          | `202` `{"invalidated":[...]}`            |
-| POST   | `/api/webhooks/gitea`                 | Webhook receiver for Gitea / Forgejo issue and pull-request events (only with a secret) | `202` `{"invalidated":[...]}`            |
-| GET    | `/api/session`                        | The signed-in user and session CSRF token (only with a login configured)                | `200` `{"username","csrfToken"}`         |
-| GET    | `/api/releases/repositories`          | Configured release repositories and their capability (releases only)                    | `200` array of capabilities              |
-| POST   | `/api/releases/plans/:planId/publish` | Approve a stored plan digest and start publication (releases only)                      | `202` durable job and `statusUrl`        |
-| POST   | `/api/releases/jobs/:jobId/reconcile` | Inspect a publication through reads only (releases only)                                | `202` reconciliation job and `statusUrl` |
-| GET    | `/api/releases/jobs/:jobId/receipt`   | Human-readable publication evidence (releases only)                                     | `200` plain text                         |
-| GET    | `/login`                              | The login page (only with a login configured). **No authentication.**                   | `200` HTML                               |
-| POST   | `/login`                              | Form login: `username` and `password`, form-encoded                                     | `303` to the UI, with session cookie     |
-| POST   | `/logout`                             | Ends the session and clears the cookie                                                  | `303` to the login page                  |
-| GET    | `/` and other paths                   | The web UI (static files)                                                               | `200` HTML/JS/CSS                        |
+| Method | Path                                                | Description                                                                             | Success                                  |
+| ------ | --------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------- |
+| GET    | `/healthz`                                          | Liveness check. **No authentication.**                                                  | `200` `{"status":"ok"}`                  |
+| GET    | `/api/views`                                        | The configured views                                                                    | `200` array of view summaries            |
+| GET    | `/api/projects`                                     | Configured project catalog and policy status                                            | `200` catalog                            |
+| GET    | `/api/projects/:source/:owner/:repo/snapshot`       | Project snapshot and freshness                                                          | `200` scope response                     |
+| GET    | `/api/sources/:source/snapshot`                     | All projects in a source                                                                | `200` scope response                     |
+| POST   | `/api/projects/:source/:owner/:repo/refresh`        | Start/join a protected project recheck                                                  | `200` scope response                     |
+| POST   | `/api/sources/:source/refresh`                      | Start/join a protected source recheck                                                   | `200` scope response                     |
+| GET    | `/api/projects/:source/:owner/:repo/export.:format` | Project export, optional `?refresh=1`                                                   | `200` file                               |
+| GET    | `/api/sources/:source/export.:format`               | Source export, optional `?refresh=1`                                                    | `200` file                               |
+| POST   | `/api/refresh`                                      | Start/join a protected all-source sweep                                                 | `200` sweep status                       |
+| GET    | `/api/refresh`                                      | Current/most recent sweep, without starting work                                        | `200` sweep status or `null`             |
+| GET    | `/api/preferences`                                  | Application account preferences                                                         | `200` available/unavailable state        |
+| POST   | `/api/preferences/favorites`                        | Add a catalog project                                                                   | `200` authoritative preferences          |
+| DELETE | `/api/preferences/favorites/:source/:owner/:repo`   | Remove a favorite                                                                       | `200` authoritative preferences          |
+| PUT    | `/api/preferences/remembered-project`               | Remember a catalog project                                                              | `200` authoritative preferences          |
+| GET    | `/api/settings`                                     | Settings for the web UI and the running version                                         | `200` `{"refreshMinutes":5,...}`         |
+| GET    | `/api/views/:id/snapshot`                           | The plan and layout of a view                                                           | `200` snapshot with `ETag`, or `304`     |
+| POST   | `/api/views/:id/refresh`                            | Force a refetch from the tracker, ignoring the cache                                    | `200` snapshot with `ETag`               |
+| GET    | `/api/views/:id/export.:format`                     | The snapshot rendered as a file: `json`, `md`, `mmd` (Mermaid) or `dot`                 | `200` text with `Content-Disposition`    |
+| POST   | `/api/webhooks/github`                              | Webhook receiver for GitHub issue and pull-request events (only with a secret)          | `202` `{"invalidated":[...]}`            |
+| POST   | `/api/webhooks/gitea`                               | Webhook receiver for Gitea / Forgejo issue and pull-request events (only with a secret) | `202` `{"invalidated":[...]}`            |
+| GET    | `/api/session`                                      | The signed-in user and session CSRF token (only with a login configured)                | `200` `{"username","csrfToken"}`         |
+| GET    | `/api/releases/repositories`                        | Configured release repositories and their capability (releases only)                    | `200` array of capabilities              |
+| POST   | `/api/releases/plans/:planId/publish`               | Approve a stored plan digest and start publication (releases only)                      | `202` durable job and `statusUrl`        |
+| POST   | `/api/releases/jobs/:jobId/reconcile`               | Inspect a publication through reads only (releases only)                                | `202` reconciliation job and `statusUrl` |
+| GET    | `/api/releases/jobs/:jobId/receipt`                 | Human-readable publication evidence (releases only)                                     | `200` plain text                         |
+| GET    | `/login`                                            | The login page (only with a login configured). **No authentication.**                   | `200` HTML                               |
+| POST   | `/login`                                            | Form login: `username` and `password`, form-encoded                                     | `303` to the UI, with session cookie     |
+| POST   | `/logout`                                           | Ends the session and clears the cookie                                                  | `303` to the login page                  |
+| GET    | `/` and other paths                                 | The web UI (static files)                                                               | `200` HTML/JS/CSS                        |
 
 ### `GET /api/views`
 
@@ -59,17 +74,51 @@ Returns one summary per configured view:
 `GET /api/projects` returns `{ sources: [{ id, kind, projects: [{ source, repo }], policy }] }`.
 Sources retain configuration order; each project's lowercase `owner/repo` is sorted and distinct.
 `policy` is `{ status: "usable" }` or `{ status: "conflict", conflict }`, where `conflict`
-names the source, differing settings, affected views and an explanation. No source tokens are returned.
+is `{ source, differingSettings, views, explanation }`. Sources without views have an empty
+project list. The catalog is the union of named-view repositories, including repositories with no open issues; release-only and dependency-only repositories are not catalog projects. A catalog
+conflict is returned in this successful response, not as a route error. No source tokens are returned.
 
 - `GET /api/projects/:source/:owner/:repo/snapshot`
 - `GET /api/sources/:source/snapshot`
 
-Both return the scope read response `{ scope, snapshot, freshness, job }`. The snapshot is the
+Both return `200` with the scope read response `{ scope, snapshot, freshness, job }`.
+`scope` is `{ kind: "project", source, repo }` (canonical lowercase `owner/repo`) or
+`{ kind: "source", source }`. Source IDs identify separate catalogs even if two sources point
+at the same forge. Snapshot GETs are cache-first and do not interpret `refresh=1`; use the
+protected refresh POST for an explicit recheck. The query flag belongs to scope exports. The snapshot is the
 existing snapshot shape, or `null` while loading or unavailable. Its `viewId` is
 `project:<source>/<owner>/<repo>` or `source:<source>` and `fetchedAt` is the oldest contributing
 repository check, not computation time. `freshness` reports `computedAt`, each repository's
 `lastCheckedAt`, state, partial coverage, error and cooldown end, plus outside-issue counts and age.
-`job` is an active refresh job or `null`.
+`freshness` has this exact shape:
+
+```ts
+interface ScopeFreshness {
+  computedAt: string | null;
+  repositories: {
+    project: { source: string; repo: string };
+    lastCheckedAt: string | null;
+    state: 'fresh' | 'stale' | 'updating' | 'invalidated' | 'delayed' | 'failed' | 'unavailable';
+    partial: boolean;
+    error: string | null;
+    delayedUntil: string | null;
+  }[];
+  outsideIssues: { count: number; oldestObservedAt: string | null; provisionalCount: number };
+}
+```
+
+All timestamps are ISO UTC strings. Partial dependency coverage is independent of freshness;
+last-good data and its original check time survive a failed refresh. A verified empty listing
+produces a real empty snapshot; missing/unavailable data does not.
+
+`job` is an active refresh job or `null`. Its common fields are `id`, `scope`, `trigger`
+(`interactive` or `scheduled`), `state` (`queued`, `running`, `completed`, `partial`, `failed`),
+`queuedAt`, nullable `startedAt`, `finishedAt`, `delayedUntil` and `error`. Scope jobs additionally
+expose `priority` (`interactive` or `sweep`) and `units`. Each unit identifies a repository
+(`{ kind: "repository", project }`) or targeted dependency (`{ kind: "outside-issue", source, key }`)
+and includes `state` (`queued`, `checking`, `checked`, `failed`), nullable `startedAt`, `finishedAt`,
+`lastCheckedAt`, `error`, and boolean `partial`. The complete contracts are in
+[`src/core/scope.ts`](../src/core/scope.ts).
 
 Cached data returns immediately; stale or invalidated data starts a paced background job. A first
 read waits at most 15 seconds, returning a null snapshot and live job when still loading. A known
@@ -78,16 +127,20 @@ serving cached observations; a cooldown returns `503` with `code: "source-cooldo
 `delayedUntil`. Scope reads have no `ETag` or `304`: freshness can change independently of plan content.
 
 Unknown sources and projects return `404` with `unknown-source` or `unknown-project`; policy
-conflicts return `409` with `policy-conflict` and the explanation. All these routes use the existing
-planning login when configured, and are open otherwise. Responses are `Cache-Control: no-store`.
+conflicts return `409` with `policy-conflict` and the explanation. The same code applies if
+a source has no resolved planning policy (for example an unused source with no explicit policy).
+All these routes use the existing
+planning login when configured, and are open otherwise. Responses are `Cache-Control: no-store`, with no CORS headers. Scope errors use
+`{ code, error }`; a cooldown also includes `delayedUntil`. Closing the runtime returns
+`503` with `code: "server-closing"`.
 
 ### Explicit scope refresh
 
 - `POST /api/projects/:source/:owner/:repo/refresh`
 - `POST /api/sources/:source/refresh`
 
-Both start or join a paced recheck even when observations are fresh, wait up to the same
-15-second bound, and return `{ scope, snapshot, freshness, job }` just like snapshot reads.
+Send no body. Both start or join a paced recheck even when observations are fresh, wait up to
+the same 15-second bound, and return `200` with `{ scope, snapshot, freshness, job }` just like snapshot reads.
 A project refresh lists only that repository and looks up the outside issues its plan needs.
 A source refresh covers its entire configured catalog, including empty projects. Concurrent
 requests join queued or running work rather than duplicating upstream requests. A timeout
@@ -110,7 +163,7 @@ rejects new work with `503` and `code: "server-closing"`. Named-view refresh beh
 - `GET /api/projects/:source/:owner/:repo/export.:format`
 - `GET /api/sources/:source/export.:format`
 
-Formats are the same `json`, `md`, `mmd` and `dot` as named views. JSON remains a Snapshot, not a
+Successful exports return `200`. Formats are the same `json`, `md`, `mmd` and `dot` as named views; an unknown format returns `404 { "error": "Not found" }` without fetching. JSON remains a Snapshot, not a
 ScopeResponse. All formats include freshness and dependency coverage warnings. Mermaid and DOT
 include those warnings as line comments; named-view/CLI output is unchanged. Filenames replace
 scope ID separators with hyphens.
@@ -120,7 +173,139 @@ A cold download fetches its scope; `?refresh=1` (or `true`) explicitly rechecks 
 always revalidates. Export revalidation shares providers and observations but is not paced, like
 named-view and CLI traffic; the provider's ordinary cooldown still applies. If no snapshot can be
 returned, the route answers `503` with `code: "scope-unavailable"` and the scope response, never
-an empty fabricated plan. Existing last-good data is retained with warnings on failed revalidation.
+an empty fabricated plan. With caching enabled, existing last-good data is retained with warnings on failed revalidation.
+Identity/policy errors, zero-TTL cooldown and shutdown use the snapshot `404`/`409`/`503` codes.
+Exports use ordinary planning authentication, not the refresh-launch header/CSRF gate, even with
+`refresh=1`. Only `1` and `true` trigger explicit revalidation; other query values are ignored.
+
+### All-source sweeps
+
+- `POST /api/refresh` starts a sweep or joins the one already queued/running. Send no body.
+  It returns `200` with the current `SweepStatus` immediately, without waiting for completion.
+- `GET /api/refresh` returns `200` with the current or most recent `SweepStatus`, or JSON `null`
+  before any sweep. This read starts no work.
+
+Both use `Cache-Control: no-store` and send no CORS headers. The POST uses exactly the
+[refresh-launch protection](#explicit-scope-refresh) above, including the launch header,
+Origin, session CSRF and Basic-auth rules and their `401`/`403` codes. The GET uses ordinary
+planning authentication: with a configured login, missing credentials return `401`
+`{"error":"Unauthorized"}`; otherwise it is open.
+
+The status fields are:
+
+| Field                     | Shape / meaning                                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `id`                      | Sweep identifier. Joining keeps the same ID, trigger and original start time.                                           |
+| `trigger`                 | `interactive` for a manual launch, `scheduled` for startup or the timer.                                                |
+| `state`                   | `queued`, `running`, `completed`, `partial`, `failed` or `skipped`.                                                     |
+| `startedAt`, `finishedAt` | ISO UTC timestamps; finish is `null` while active.                                                                      |
+| `skipReason`              | Present as `caching-disabled` when zero TTL prevents sweep work.                                                        |
+| `sources`                 | In configuration order; each entry is `{ source, state, delayedUntil, error, policyConflict, projects }`.               |
+| Source `state`            | `queued`, `running`, `completed`, `partial`, `failed`, `conflict` or `delayed`.                                         |
+| `delayedUntil`            | ISO UTC cooldown end or `null`. One delayed source does not stop the others.                                            |
+| `policyConflict`          | The catalog conflict object described above, or `null`.                                                                 |
+| `projects`                | Catalog order; entries `{ project: { source, repo }, state, lastCheckedAt, error }`.                                    |
+| Project `state`           | `queued`, `checking`, `checked` or `failed`.                                                                            |
+| `lastCheckedAt`, `error`  | Last successful upstream check or `null`, and error string or `null`; failure retains an earlier successful check time. |
+
+A source policy conflict is recorded inside the `200` sweep status, not returned as an HTTP
+`409` for the whole sweep. Progress and failures belong to the status; a successful POST
+means launched/joined, not that every source refreshed successfully. Status is in memory
+and resets on restart.
+
+With `refresh.sweepHours > 0`, server startup launches a scheduled sweep and the next timer
+runs that many hours after completion. `0` disables automatic sweeps, not manual launches.
+With `cache.ttlSeconds: 0`, manual or startup launches finish as `skipped` with
+`skipReason: "caching-disabled"`, no sources and no upstream requests; no further timer is
+scheduled. See [quota and pacing](DEPLOYMENT.md#background-sweeps-and-api-quota) before enabling sweeps.
+
+### Account preferences
+
+These four routes store the one application account's favorites and remembered project.
+They are separate from the planning cache and release storage. All responses are
+`Cache-Control: no-store`, with no CORS headers.
+
+| Method | Path                                              | Request                                       | Success                                                  |
+| ------ | ------------------------------------------------- | --------------------------------------------- | -------------------------------------------------------- |
+| GET    | `/api/preferences`                                | No body                                       | `200` available or unavailable response below            |
+| POST   | `/api/preferences/favorites`                      | JSON `{ "source": "gh", "repo": "acme/api" }` | `200` full authoritative available response after commit |
+| DELETE | `/api/preferences/favorites/:source/:owner/:repo` | Path names the favorite; no body              | `200` full authoritative available response after commit |
+| PUT    | `/api/preferences/remembered-project`             | JSON `{ "source": "gh", "repo": "acme/api" }` | `200` full authoritative available response after commit |
+
+An available response has this shape (the on-disk `version` field is not exposed):
+
+```json
+{
+  "available": true,
+  "revision": 7,
+  "favorites": [{ "source": "gh", "repo": "acme/api", "inCatalog": true }],
+  "rememberedProject": { "source": "gh", "repo": "acme/api" }
+}
+```
+
+`rememberedProject` can be `null`. Favorites are unique, retained in insertion order and capped
+at 200. Repository names are normalized to lowercase; source IDs retain their configured identity.
+Each committed change increments `revision`; adding an existing favorite, removing an absent one,
+or remembering the already remembered project is a no-op and keeps the revision. A duplicate add
+does not move a favorite. The mutation response, not the client's optimistic state, is authoritative.
+
+POST and PUT accept **only** `source` and `repo`, matching the configuration ID and `owner/repo`
+grammars. They do not accept a username, profile owner, storage path, revision or extra fields.
+The body limit is **1 KiB (1,024 bytes)**. DELETE takes the same project identity from the path
+and rejects a body. Add/remember requires membership in `/api/projects`, independently of forge
+health or policy usability. A favorite that leaves the catalog remains with `inCatalog: false`
+and can still be removed. The remembered project is retained as its reference, without an
+`inCatalog` field; setting it to `null` is not a supported mutation.
+
+An unavailable GET still returns `200`, for example:
+
+```json
+{
+  "available": false,
+  "reason": "storage-not-configured",
+  "message": "Preference storage is not configured."
+}
+```
+
+| `reason`                 | Meaning                                                                                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `login-disabled`         | No application login; stored data is neither opened nor exposed.                                                                        |
+| `storage-not-configured` | `preferences.dir` / `FD_PREFERENCES_DIR` is unset.                                                                                      |
+| `storage-missing`        | The configured directory does not exist. A missing `preferences.json` in a valid directory instead means an empty profile.              |
+| `store-locked`           | Another process owns the directory, ownership was lost, or the runtime is closing.                                                      |
+| `unreadable`             | Storage or locking cannot be safely used: permissions, filesystem/platform/helper, file I/O, or uncertain rollback. Repair and restart. |
+| `corrupt`                | The file is invalid UTF-8/JSON or fails the profile schema.                                                                             |
+| `unsupported-version`    | The file declares a schema version other than the supported version 1. It is not overwritten or silently migrated.                      |
+
+Preference errors are `{ "code": "...", "error": "..." }`, with `reason` also present for
+`preferences-unavailable`. Values and filesystem paths are not echoed in errors.
+
+| Status | Code                                                                    | Cause                                                                                                                                                                                                                                           |
+| ------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`  | `invalid-request`                                                       | Malformed JSON/project reference, unexpected fields, unsupported content type, DELETE body, or a body over 1 KiB.                                                                                                                               |
+| `401`  | `unauthenticated`                                                       | Missing, expired or invalid application credentials when login is configured.                                                                                                                                                                   |
+| `403`  | `forbidden-origin`, `missing-csrf`, `invalid-csrf`, `mixed-credentials` | Request protection failed.                                                                                                                                                                                                                      |
+| `409`  | `not-in-catalog`                                                        | Adding or remembering a project outside the configured catalog.                                                                                                                                                                                 |
+| `409`  | `favorites-limit`                                                       | Adding a new favorite beyond the 200-entry limit.                                                                                                                                                                                               |
+| `503`  | `preferences-unavailable`                                               | Mutations are unavailable; `reason` is one of the values above.                                                                                                                                                                                 |
+| `500`  | `save-failed`                                                           | No successful durable commit was acknowledged. Ordinary failures preserve the prior profile; if rollback durability is uncertain, storage becomes unavailable until repaired and restarted. Read/reconcile before retrying an uncertain result. |
+
+**Access:** with a configured login, GET requires a live application session or explicit Basic
+authentication. Browser mutations also require a matching `Origin` and the live session's
+`x-csrf-token` from `GET /api/session`. Scripts use Basic auth **without** a session cookie;
+Origin and CSRF need not be sent, but an Origin that is sent must match. On reads as well as
+writes, an Authorization header together with any application session cookie is rejected,
+as is a foreign Origin. No `x-forge-desk-request` launch header is required for preferences.
+
+The trusted host and port come from `server.publicOrigin` when configured, otherwise the
+request's `Host`; forwarded headers do not establish trust. These planning checks compare
+host/port rather than the scheme-sensitive `releases.publicOrigin` rule. Without a configured
+login, GET returns `login-disabled` and mutations return `503 preferences-unavailable` with that
+reason, even when a directory exists. Re-enabling login with the same directory restores the
+profile. Neither setting a preference directory nor a public origin enables login or releases.
+
+For volume preparation, recovery and the single-writer limit, see
+[deployment](DEPLOYMENT.md#personal-preferences).
 
 ### `GET /api/settings`
 
@@ -130,7 +315,7 @@ Returns the settings the web UI reads at startup:
 { "refreshMinutes": 5, "version": "2.0.1" }
 ```
 
-`refreshMinutes` is `ui.refreshMinutes` (or `FD_REFRESH_MINUTES`): the UI calls `GET /api/views/:id/snapshot` for the view it shows at that interval, respecting the shared snapshot cache. Only an explicit click on Refresh uses `POST /api/views/:id/refresh`. `0` means no automatic refresh.
+`refreshMinutes` is `ui.refreshMinutes` (or `FD_REFRESH_MINUTES`): periodic reads use the snapshot route for the open project/source or named view and respect the shared cache. Scope checks pause while the tab is hidden or Releases is open; while a scope job is active, visible scope browsing checks progress every two seconds after the prior response. `0` disables periodic freshness polling, not active-job progress reads. Explicit refresh uses the corresponding POST route.
 
 `version` is the running server's version. The theme menu shows it at the bottom.
 
@@ -197,16 +382,19 @@ Everything else is served from the built web UI directory (`dist/web`). A `GET` 
 
 ## Common behaviour
 
+The table below describes legacy planning/named-view errors. Scope, sweep, preference and
+release routes have the additional statuses and structured codes documented in their sections.
+
 | Status | When                                                                                                              | Body                                                        |
 | ------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `200`  | Success                                                                                                           | See above                                                   |
-| `304`  | `If-None-Match` matches the snapshot's `ETag`                                                                     | none (headers `ETag`, `Cache-Control`)                      |
+| `304`  | `If-None-Match` matches the named-view snapshot's `ETag`                                                          | none (headers `ETag`, `Cache-Control`)                      |
 | `401`  | The login is enabled and there is no valid session cookie or basic-auth header                                    | `{"error":"Unauthorized"}`                                  |
 | `404`  | Unknown view id, unknown export format, or unknown path                                                           | `{"error":"Unknown view: nope"}` or `{"error":"Not found"}` |
 | `502`  | The tracker could not be reached or answered with an error (bad token, rate limit, network, repository not found) | `{"error":"<message>"}`, with tokens redacted               |
 | `500`  | Unexpected internal error                                                                                         | `{"error":"Internal Server Error"}`                         |
 
-- Every response under `/api/` carries `Cache-Control: no-store`. Caching is done by the server (see `cache.ttlSeconds`) and by `ETag`.
+- Every response under `/api/` carries `Cache-Control: no-store`. Caching is done by the server (see `cache.ttlSeconds`); named-view snapshots also support `ETag`. Scope responses always carry fresh status metadata and do not use `304`.
 - Successful fetches are cached in memory per view for `cache.ttlSeconds` (default 300). The snapshot's `fetchedAt` tells you when the data was read. A failed fetch is not cached.
 - Concurrent requests for the same view share one fetch.
 - Planning requests to the tracker are `GET`s. Only explicitly approved release publication can create remote tags and releases; webhook receivers only invalidate cached planning data.
@@ -222,7 +410,7 @@ Scripts send basic auth preemptively; there is no `WWW-Authenticate` challenge, 
 curl -u admin:change-me http://localhost:8080/api/views
 ```
 
-Without credentials, a browser page load (`GET` with `Accept: text/html`) is redirected to the login page, and everything else gets:
+The preference and refresh-launch gates return their specific `unauthenticated` errors above. For ordinary planning routes, without credentials, a browser page load (`GET` with `Accept: text/html`) is redirected to the login page, and everything else gets:
 
 ```text
 HTTP/1.1 401 Unauthorized
@@ -270,7 +458,7 @@ These routes use stable `{ "code": "...", "error": "..." }` errors: invalid inpu
 
 ## Snapshot schema
 
-A snapshot is the JSON document returned by the snapshot, refresh and `export.json` endpoints. The authoritative TypeScript definitions are in [`src/core/types.ts`](../src/core/types.ts) (`Snapshot`, `Plan`, `PlanNode`, `Layout`, ...).
+A snapshot is the JSON document returned by named-view snapshot/refresh routes and every `export.json` route. Project/source snapshot and refresh routes wrap it in `ScopeResponse.snapshot`; sweep and preference routes return their own contracts. The authoritative TypeScript definitions are in [`src/core/types.ts`](../src/core/types.ts) (`Snapshot`, `Plan`, `PlanNode`, `Layout`, ...).
 
 | Field            | Description                                                                                                                                                                                                                                                                                                                           |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -285,18 +473,18 @@ A snapshot is the JSON document returned by the snapshot, refresh and `export.js
 
 ### `plan`
 
-| Field           | Description                                                                                                                                                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `viewId`        | The view id                                                                                                                                                                                                               |
-| `nodes`         | One entry per issue in the plan, sorted by key (see below)                                                                                                                                                                |
-| `edges`         | `{ from, to, sources }`: `from` must be closed before `to` can start. `sources` is a sorted subset of `native`, `body`, `sub-issue`                                                                                       |
-| `order`         | Keys of all schedulable issues in execution order                                                                                                                                                                         |
-| `waves`         | `waves[i]` are the keys of parallel wave `i` (0-based), in `order` position                                                                                                                                               |
-| `cycles`        | Each dependency cycle as a list of keys                                                                                                                                                                                   |
-| `unschedulable` | Keys of issues in a cycle or blocked by one                                                                                                                                                                               |
-| `criticalPath`  | The longest dependency chain, in execution order                                                                                                                                                                          |
-| `warnings`      | `{ code, message, issues }`. Codes: `cycle`, `blocked-by-cycle`, `self-reference`, `dangling-reference`, `external-unresolved`, `native-unsupported`, `fetch-error` ([meaning and fixes](PREREQUISITES.md#warning-codes)) |
-| `stats`         | `total`, `ready`, `blocked`, `unschedulable`, `external`, `edges`, `waves`                                                                                                                                                |
+| Field           | Description                                                                                                                                                                                                                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `viewId`        | The view id                                                                                                                                                                                                                                                                              |
+| `nodes`         | One entry per issue in the plan, sorted by key (see below)                                                                                                                                                                                                                               |
+| `edges`         | `{ from, to, sources }`: `from` must be closed before `to` can start. `sources` is a sorted subset of `native`, `body`, `sub-issue`                                                                                                                                                      |
+| `order`         | Keys of all schedulable issues in execution order                                                                                                                                                                                                                                        |
+| `waves`         | `waves[i]` are the keys of parallel wave `i` (0-based), in `order` position                                                                                                                                                                                                              |
+| `cycles`        | Each dependency cycle as a list of keys                                                                                                                                                                                                                                                  |
+| `unschedulable` | Keys of issues in a cycle or blocked by one                                                                                                                                                                                                                                              |
+| `criticalPath`  | The longest dependency chain, in execution order                                                                                                                                                                                                                                         |
+| `warnings`      | `{ code, message, issues }`. Codes: `cycle`, `blocked-by-cycle`, `self-reference`, `dangling-reference`, `external-unresolved`, `native-unsupported`, `fetch-error`, `repository-unlisted`, `stale-data`, `dependency-provisional` ([meaning and fixes](PREREQUISITES.md#warning-codes)) |
+| `stats`         | `total`, `ready`, `blocked`, `unschedulable`, `external`, `edges`, `waves`                                                                                                                                                                                                               |
 
 A node has: `key` (`owner/repo#number`, lowercase), `repo`, `number`, `title`, `url`, `labels`, `assignees`, `milestone` (or `null`), `updatedAt` (the issue's last-update timestamp, or `null` when the provider does not report one), `external` (boolean), `status` (`ready`, `blocked`, `in-cycle` or `blocked-by-cycle`), `wave` and `order` (0-based, `null` when unschedulable), `blockedBy` and `blocks` (keys of open direct prerequisites and dependents), `parents` and `children` (keys of the `Parent:` hierarchy; never dependencies), `closingPullRequests` (`{ key, number, title, url }[]`, open pull requests that declare a closing keyword for this issue, sorted by `key`), `priority` (index in `priorityLabels`, or `priorityLabels.length`) and `remainingDepth`.
 

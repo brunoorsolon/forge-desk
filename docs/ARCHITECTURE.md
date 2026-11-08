@@ -59,8 +59,8 @@
 >   `check` accept `--json`; `check` accepts several view ids. It exits `2`
 >   only for `cycle` and `dangling-reference`; other warnings do not change the
 >   exit code.
-> - HTTP: all `/api/` responses carry `Cache-Control: no-store`; the snapshot
->   endpoint honours `If-None-Match` with the content hash as `ETag`
+> - HTTP: all `/api/` responses carry `Cache-Control: no-store`; the
+>   named-view snapshot endpoint honours `If-None-Match` with the content hash as `ETag`
 >   (`304`); exports have no `ETag`.
 > - Static UI: files in `webDir` are resolved per request (no restart needed
 >   after a rebuild, and a `webDir` created after startup is served). `index.html`
@@ -74,7 +74,8 @@
 >   HMAC-SHA256 signature over the raw body (`X-Hub-Signature-256`,
 >   `X-Gitea-Signature`, `X-Forgejo-Signature`), are exempt from basic auth,
 >   accept JSON only (1 MiB), and call `PlanService.invalidate` for each view
->   returned by `PlanService.viewsForRepo(repository.full_name)`. Without a
+>   returned by `PlanService.viewsForRepo(repository.full_name)`, plus scope
+>   observation invalidation described below. Without a
 >   secret the routes do not exist (`404`). The cache TTL remains a safety net.
 > - Markdown and DOT exports number waves from 1; `PlanNode.wave` in JSON is
 >   0-based.
@@ -82,9 +83,9 @@
 >   of the Gitea provider use the same hedged wording for the dependencies
 >   setting (repository settings, or `DEFAULT_ENABLE_DEPENDENCIES` in `app.ini`).
 
-This document is the source of truth for the implementation. Every ticket refers
-to it. If a ticket and this document disagree, this document wins. Change it
-only in a dedicated PR.
+Current contracts and tests in the linked modules are authoritative. The project-first
+sections below describe the catalog, observations, pacing, sweeps and durable preferences
+alongside the original named-view pipeline.
 
 ## 1. Goal
 
@@ -120,7 +121,7 @@ locale. Every sort uses an explicit comparator with a total order.
 ```
 src/
   core/
-    types.ts        # all shared types (section 5), no runtime code
+    types.ts scope.ts preferences.ts # shared planning, scope and preference contracts
     keys.ts         # makeKey, parseKey, compareKeys, compareRefs
     hash.ts         # canonicalJson, contentHash
     parser.ts       # body dependency parser                       (ticket: parser)
@@ -134,9 +135,13 @@ src/
     http.ts         # shared fetch helpers: pagination, retries, concurrency limiter
     github.ts gitea.ts fixture.ts index.ts                         (provider tickets)
   service/
-    planService.ts resolve.ts                                      (ticket: service)
+    planService.ts resolve.ts # named-view planning
+    observationStore.ts scopePlan.ts scopeReadService.ts # shared observations and derivation
+    admissionQueue.ts scopeRefreshJobs.ts sweepScheduler.ts # paced refresh work
+    preferenceLock.ts preferenceStore.ts preferenceRuntime.ts # durable account profile
   server/
-    app.ts index.ts                                                (ticket: server)
+    app.ts index.ts # startup, shared authentication and lifecycle
+    scopeRoutes.ts scopeRefreshRoutes.ts sweepRoutes.ts preferenceRoutes.ts
   cli/
     index.ts                                                       (ticket: CLI)
 web/
@@ -235,8 +240,30 @@ export interface Issue {
   updatedAt: string | null;
   /** Relations reported by the provider API (native dependencies, sub-issues). */
   nativeRelations: RawRelation[];
+  /** Open pull requests that close this issue, when already attached to the issue. */
+  closingPullRequests?: ClosingPullRequest[];
   /** Absent on legacy reads. Missing coverage must never be treated as complete. */
   relationCoverage?: RelationCoverage;
+}
+
+/** An open pull request returned by a repository listing, before closing-reference resolution. */
+export interface OpenPullRequest {
+  key: IssueKey;
+  repo: RepoRef;
+  number: number;
+  title: string;
+  /** Browser URL of the pull request. */
+  url: string;
+  body: string;
+}
+
+/** An open pull request whose body declares that it closes an issue. */
+export interface ClosingPullRequest {
+  key: IssueKey;
+  number: number;
+  title: string;
+  /** Browser URL of the pull request. */
+  url: string;
 }
 
 /** `from` must be closed before `to` can start. */
@@ -255,6 +282,7 @@ export type WarningCode =
   | 'external-unresolved'
   | 'native-unsupported'
   | 'fetch-error'
+  | 'repository-unlisted'
   | 'stale-data'
   | 'dependency-provisional';
 
@@ -294,6 +322,8 @@ export interface PlanNode {
   parents: IssueKey[];
   /** Keys of issues whose `Parent:` relation line names this issue, present in the plan and sorted with compareKeys. */
   children: IssueKey[];
+  /** Open pull requests that close this issue, sorted by `key` with compareKeys. */
+  closingPullRequests: ClosingPullRequest[];
   /** Index of the first matching entry of ordering.priorityLabels; priorityLabels.length when none match. Lower = more urgent. */
   priority: number;
   /** Number of nodes on the longest dependent chain starting at this node (1 = nothing depends on it). 0 when unschedulable. */
@@ -397,6 +427,8 @@ export interface Snapshot {
 
 export interface FetchResult {
   issues: Issue[];
+  /** Open pull requests observed during listing, sorted by number ascending. */
+  pullRequests?: OpenPullRequest[];
   warnings: PlanWarning[];
   /** Coverage across this repository listing; absent on legacy providers. */
   relationCoverage?: RelationCoverage;
@@ -426,6 +458,7 @@ export interface IssueProvider {
 import type {
   Issue,
   IssueKey,
+  OpenPullRequest,
   PlanWarning,
   ProviderKind,
   RelationCoverage,
@@ -497,6 +530,8 @@ export interface RepositoryObservation extends ObservationMetadata {
   project: ProjectRef;
   /** Last-good open listing, or null before any successful listing. [] means verified empty. */
   issues: Issue[] | null;
+  /** Open pull requests observed with the last-good listing, when present. */
+  pullRequests?: OpenPullRequest[];
   warnings: PlanWarning[];
 }
 
@@ -551,6 +586,27 @@ export interface RefreshJobStatus {
   error: string | null;
 }
 
+/** A scope refresh exposes both repository listings and targeted dependency reads. */
+export type ScopeRefreshUnitStatus = (
+  | { kind: 'repository'; project: ProjectRef }
+  | { kind: 'outside-issue'; source: string; key: IssueKey }
+) & {
+  state: 'queued' | 'checking' | 'checked' | 'failed';
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** The retained successful observation time, including when this attempt failed. */
+  lastCheckedAt: string | null;
+  partial: boolean;
+  error: string | null;
+};
+
+/** Additive scope-job detail; generic consumers may keep using RefreshJobStatus. */
+export interface ScopeRefreshJobStatus extends RefreshJobStatus {
+  scope: Scope;
+  priority: 'interactive' | 'sweep';
+  units: ScopeRefreshUnitStatus[];
+}
+
 export interface ScopeResponse {
   scope: Scope;
   /** Same Snapshot contract. fetchedAt is the oldest contributing repository check. */
@@ -576,9 +632,11 @@ export interface SweepSourceStatus {
 }
 
 export interface SweepStatus {
+  /** Present only when no upstream work can be served from cache. */
+  skipReason?: 'caching-disabled';
   id: string;
   trigger: RefreshTrigger;
-  state: RefreshJobState;
+  state: RefreshJobState | 'skipped';
   startedAt: string;
   finishedAt: string | null;
   sources: SweepSourceStatus[];
@@ -656,18 +714,26 @@ export interface KeywordConfig {
   blockedBy: string[];
   blocks: string[];
 }
+
 export const DEFAULT_KEYWORDS: KeywordConfig = {
   blockedBy: ['depends on', 'blocked by', 'requires', 'dependencies'],
   blocks: ['blocks', 'blocking', 'required by'],
 };
+
 export interface ParseOptions {
   keywords?: KeywordConfig;
   /** Hostnames accepted in URL references (e.g. ['github.com']). Empty or undefined: URLs are ignored. */
   webHosts?: string[];
-  /** true: read only relation lines (rules 1 and 2 are ignored). Default false. */
+  /** When true, read only `Blocked by: [...]` / `Parent: [...]` relation lines and ignore the keyword-line and section forms. */
   strict?: boolean;
 }
+
+export interface ClosingParseOptions {
+  /** Hostnames accepted in URL references (e.g. ['github.com']). Empty or undefined: URLs are ignored. */
+  webHosts?: string[];
+}
 export function parseBodyRelations(body: string, options?: ParseOptions): RawRelation[];
+export function parseClosingIssues(body: string, options?: ClosingParseOptions): IssueRef[];
 ```
 
 Rules (these are the documented user contract, so tests must cover each one):
@@ -723,16 +789,27 @@ export interface PlanInput {
   externalKeys: IssueKey[];
   /** Edges between keys of `issues`. Edges referencing unknown keys are dropped. */
   edges: DependencyEdge[];
-  /** `Parent:` hierarchies between keys of `issues`. Links referencing unknown keys are dropped. Never an edge. */
+  /** `Parent` hierarchies between keys of `issues`. Links referencing unknown keys are dropped. Never an edge. */
   parentLinks?: ParentLink[];
+  /** Open pull requests that close keys of `issues`. Links referencing unknown keys are dropped. Never an edge. */
+  closingPullRequests?: ClosingPullRequestLink[];
   /** Warnings collected upstream; merged into the plan's warnings. */
   warnings: PlanWarning[];
   priorityLabels: string[];
+  /** How the linear order is built; default 'priority'. */
+  orderingMode?: OrderingMode;
 }
+
 /** A `Parent:` relation between two issues of the plan. A hierarchy link only. */
 export interface ParentLink {
   parent: IssueKey;
   child: IssueKey;
+}
+
+/** An open pull request that declares it closes an issue of the plan. */
+export interface ClosingPullRequestLink {
+  issue: IssueKey;
+  pullRequest: ClosingPullRequest;
 }
 export function buildPlan(input: PlanInput): Plan;
 ```
@@ -867,10 +944,14 @@ owner/repo, required), `FD_BASE_URL`, `FD_TOKEN` (falls back to
 message.
 
 These env vars override values in either mode: `FD_HOST`, `FD_PORT`,
-`FD_CACHE_TTL`, `FD_BASIC_AUTH` (`user:password`).
+`FD_CACHE_TTL`, `FD_REFRESH_MINUTES`, `FD_BASIC_AUTH` (`user:password`),
+`FD_WEBHOOK_SECRET`, `FD_PUBLIC_ORIGIN`, `FD_PREFERENCES_DIR` and `FD_SWEEP_HOURS`.
+See [CONFIGURATION](CONFIGURATION.md) for the complete keys, defaults and validation.
+The resolved types below come from `src/config/schema.ts`; `loadConfig` and `parseConfig`
+in `src/config/load.ts` produce this configuration, including the catalog and source policies.
 
-Until the next major release, every fixed `FD_` name also reads its
-pre-3.0.1 `EV_` spelling. A set `EV_` value wins over the `FD_` one, as
+The legacy fixed `FD_` names also read their pre-3.0.1 `EV_` spelling.
+The new `FD_PUBLIC_ORIGIN`, `FD_PREFERENCES_DIR` and `FD_SWEEP_HOURS` names have no `EV_` alias. A set `EV_` value wins over the `FD_` one, as
 it did before the rename, and adds a deprecation warning to
 `AppConfig.warnings`.
 
@@ -882,28 +963,82 @@ export interface ResolvedSource {
   webUrl: string;
   token: string | null;
   path: string | null;
+  /** Resolved source-wide policy, or null when no views need it or views conflict. */
+  planning: ResolvedPlanningPolicy | null;
 }
-export interface ResolvedView {
+
+export interface ResolvedPlanningPolicy {
+  dependencies: {
+    native: boolean;
+    body: boolean | 'strict';
+    subIssues: boolean;
+    keywords: KeywordConfig;
+  };
+  ordering: { priorityLabels: string[]; mode: OrderingMode };
+}
+
+export interface ResolvedView extends ResolvedPlanningPolicy {
   id: string;
   title: string;
   source: string;
   repos: RepoRef[];
-  dependencies: { native: boolean; body: boolean; subIssues: boolean; keywords: KeywordConfig };
   scope: { labels: string[]; excludeLabels: string[]; milestones: string[] };
-  ordering: { priorityLabels: string[] };
 }
+
+/** How a release repository's dedicated API token is supplied. Exactly one route, never a fallback. */
+export type ReleaseTokenSelector = { kind: 'file'; path: string } | { kind: 'env'; name: string };
+
+/** One explicitly allowlisted Gitea repository, resolved from the `releases` block. */
+export interface ResolvedReleaseRepository {
+  id: string;
+  /** Id of the existing Gitea source this repository belongs to. */
+  source: string;
+  repo: RepoRef;
+  /** `ssh://` origin used for tag pushes; never a scp-style or option-bearing string. */
+  origin: string;
+  /** Dedicated release token, separate from the planning source token. */
+  token: ReleaseTokenSelector;
+  expectedApiUser: string;
+  ci: { workflowPath: string };
+  ssh: { privateKeyFile: string; knownHostsFile: string };
+  tagger: { name: string; email: string };
+}
+
+/** Releases are off unless the operator explicitly enables and completes the block. */
+export type ResolvedReleases =
+  | { enabled: false }
+  | {
+      enabled: true;
+      publicOrigin: string;
+      stateDir: string;
+      repositories: ResolvedReleaseRepository[];
+    };
+
 export interface AppConfig {
-  server: { host: string; port: number; basicAuth: { username: string; password: string } | null };
+  server: {
+    host: string;
+    port: number;
+    publicOrigin: string | null;
+    basicAuth: { username: string; password: string } | null;
+  };
   cache: { ttlSeconds: number };
+  /** Admission pace and opt-in sweeps for project browsing (not named views). */
+  refresh: { sweepHours: number; requestsPerMinute: number; concurrency: number };
+  /** Optional persistent application-account preferences. */
+  preferences: { dir: string | null };
+  /** How often the web UI refreshes the open view; 0 turns the timer off. */
+  ui: { refreshMinutes: number };
+  /** The webhook endpoints are enabled when a secret is configured; null otherwise. */
+  webhooks: { secret: string } | null;
+  /** Computed once at load time, in source configuration order; contains no credentials. */
+  catalog: CatalogResponse;
   sources: ResolvedSource[];
   views: ResolvedView[];
+  /** Opt-in release publication; disabled by default so planning-only setups need nothing new. */
+  releases: ResolvedReleases;
+  /** Non-fatal problems found while loading (for example a tokenEnv naming an unset variable). */
+  warnings?: string[];
 }
-export function loadConfig(opts?: {
-  path?: string;
-  env?: Record<string, string | undefined>;
-  cwd?: string;
-}): AppConfig;
-export function parseConfig(yamlText: string, env: Record<string, string | undefined>): AppConfig;
 ```
 
 ## 12. Providers (`src/providers/*`)
@@ -1006,8 +1141,9 @@ The GitHub provider also retains up to 1,000 GET responses with ETag or Last-Mod
 
 ## 14. HTTP API (`src/server/*`)
 
-`buildApp(config, service, { webDir?: string }): FastifyInstance`, plus
-`index.ts` to start it.
+`buildApp(config, service, options)` returns a `FastifyInstance`; its
+`BuildAppOptions` in `src/server/app.ts` accepts the web directory and injected
+scope, sweep, preference and release runtimes. `index.ts` owns server startup.
 
 | Method | Path                                         | Response                                                                       |
 | ------ | -------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -1019,8 +1155,10 @@ The GitHub provider also retains up to 1,000 GET responses with ETag or Last-Mod
 | GET    | `/*`                                         | static web UI from `webDir` (default `dist/web`), SPA fallback to `index.html` |
 
 Errors: unknown view → 404 `{ error }`; a provider error → 502 `{ error }`
-(no token in the message). Optional basic auth protects everything except
-`/healthz`.
+(no token in the message). Optional application login protects planning reads; login/logout and signature-protected
+webhooks retain their own access rules. Scope reads/exports, protected refresh launches,
+sweeps and preferences are registered in dedicated modules. Their response/status and
+request-protection contracts are listed in [API.md](API.md).
 
 ## 15. CLI (`src/cli/index.ts`, bin `forge-desk`)
 
@@ -1086,13 +1224,143 @@ bundled at build time; nothing is loaded from a CDN.
 
 ## 17. Conventions for contributors (and agents)
 
-- Branch per ticket: `ticket/<issue#>-<slug>`, created from the integration
-  branch `claude/blissful-brown-20qnzf`. PRs target that branch.
+- Use one delivery branch and PR per issue, based on and targeting `main`. Reuse the
+  existing branch/PR for corrections; do not split an issue's remaining acceptance into a new PR.
 - Do not touch `package.json`, the lockfile, tsconfig files or CI unless your
   ticket says so. If you need a new dependency, stop and report it.
 - Before pushing, run `npm run typecheck && npm test && npm run format:check`.
   All must pass.
 - No network access in tests. Use fixtures and an injected `fetch`.
+
+## Project catalog and source policy
+
+`src/config/load.ts` computes `AppConfig.catalog` once at load time. Sources retain configuration
+order. Each source's projects are the distinct, lowercase, sorted union of its named views'
+repositories, including repositories with no open issues. Dependency-only and release-only
+repositories do not enter the catalog. A source without views has an empty catalog. Identities
+include the source ID, so the same forge/repository under two configured sources stays separate.
+
+Project and All projects scopes use `ResolvedSource.planning`. Explicit `sources[].planning`
+wins even when views agree. Otherwise the loader compares the views' fully resolved dependency
+and ordering settings: omitted and explicit defaults are equal; keyword lists compare as
+case-insensitive sets; priority labels compare in rank order. View `scope` filters are ignored
+for this comparison and are not applied to project/source browsing. A disagreement leaves the
+source policy unresolved and publishes a `SourcePolicyConflict` with the differing setting
+paths, view IDs and explanation. Scope routes refuse that source with `409 policy-conflict`;
+other sources and named views keep working. An empty source needs no inferred policy at
+configuration load; if it has none, a direct scope read/refresh also returns `409 policy-conflict`
+with the explanation that the source has no planning policy.
+
+The catalog contains identities and policy status, never source credentials. Preferences use
+catalog membership rather than availability or policy usability to validate adds and remembers.
+
+## Observations, derived plans and invalidation
+
+`ObservationStore` (`src/service/observationStore.ts`) holds source-qualified repository listings
+and targeted outside-issue observations in memory. A repository listing starts as `null`; `[]`
+means a successful empty check. Each entry has last-good data, per-kind relation coverage and
+observation times, the latest attempt/error, an invalidation generation and an opaque version.
+Failures retain successful data and times. An incomplete/unsupported relation read cannot prove
+that an earlier dependency disappeared; last-complete relations remain provisional until a
+complete supported read replaces them. Targeted results also retain closed dependency state.
+
+Every read captures a store token before I/O. Start ordering prevents an older response from
+overwriting a newer accepted one, and consumed/pruned tokens cannot write again. Invalidation
+increments the generation without deleting data. A response started before that invalidation
+cannot make the observation fresh, even if its payload is accepted as last-good data.
+
+`deriveScopePlan` (`src/service/scopePlan.ts`) is pure: it consumes those observations and the
+source's planning policy, reuses dependency resolution, `buildPlan`, layout and hashing, and
+returns the snapshot, computation time, contributing repositories and pending/referenced
+outside keys. The read service builds freshness from these observations. Project refresh lists
+no sibling repositories; it looks up required outside issues as context. A source scope includes its complete
+catalog, including empty projects. Cross-scope changes take effect through shared observations
+and recomputation, without fetching unrelated repositories. Latest targeted observations can
+supersede an older sibling listing as dependency context, and vice versa.
+
+`fetchedAt` is the oldest contributing repository check; `freshness.computedAt` is plan computation
+time. Neither replaces the other's meaning. `stale-data` and `dependency-provisional` warnings
+explain observation age and incomplete dependency proof. A missing or inaccessible dependency is
+not silently satisfied. The scope read service below retains and prunes only the context still
+referenced by derived plans, deferring pruning while either job lane is active.
+
+Verified GitHub and Gitea/Forgejo webhooks have no source ID, so `registerWebhooks` conservatively
+invalidates the repository listing and targeted issues in every source of the endpoint's provider
+kind. Every derived plan using those observations, including source-wide plans and external
+context, sees that invalidation on its next read. The webhook starts no source sweep or upstream
+request. Existing named-view invalidation, signature checks and the `{ invalidated: viewIds }`
+response are unchanged.
+
+## Admission queues and sweeps
+
+`AdmissionQueue` (`src/service/admissionQueue.ts`) is per source. It coalesces identical units,
+but its limits apply to **individual upstream fetch starts**, including pages, relation lookups
+and retries: `refresh.requestsPerMinute` in a sliding 60-second window and
+`refresh.concurrency` simultaneous requests. Interactive work takes priority, but a pending sweep
+request is admitted after at most three interactive starts, preventing starvation. Joining
+interactive work promotes its existing unit without duplicating the read. Fixture work bypasses
+pacing. Source cooldown pauses new admissions until expiry; already admitted requests can finish,
+and other sources progress independently.
+
+`ScopeRefreshJobs` coordinates complete project/source rechecks and targeted dependency traversal,
+sharing repository and outside-issue work between overlapping scopes. Jobs expose per-unit state,
+coverage and check/error times. The queue's fetch context keeps provider-level in-flight
+coalescing and provider concurrency lanes separate from ordinary reads, so paced work cannot
+bypass admission by joining an unpaced request.
+Named views, exports and CLI are not subject to the new admission pace, but server consumers share
+the source provider's conditional-response cache and cooldown.
+
+`SweepScheduler` (`src/service/sweepScheduler.ts`) starts one source job per catalog source and
+aggregates each project's progress. It joins an active sweep without changing its ID, trigger,
+original start time or project check times. Failures and policy conflicts are reported per source;
+a failed or delayed source does not prevent another from completing. Current/most-recent sweep
+status is in memory, not durable history. `POST /api/refresh` launches/joins and `GET /api/refresh`
+only reads status. The dedicated route module applies refresh-launch protection to the POST and
+ordinary planning authentication to the GET.
+
+`startServer` starts the scheduler after listening. Positive `refresh.sweepHours` launches at
+startup and schedules the next sweep that many hours after completion; zero disables scheduling
+but allows manual sweeps. Zero cache TTL skips sweep work with `skipReason: 'caching-disabled'`
+and schedules no future run. `preClose` stops the timer before the shared runtime stops admission;
+queued requests are abandoned and admitted fetches have the bounded drain described below.
+
+## Preference store and lifetime lock
+
+`openPreferenceRuntime` opens account preferences only when application login and
+`preferences.dir` are both configured. It does not create the directory. With no login it does
+not claim a lock or read/expose existing data. Preference availability is independent of planning
+and releases: a missing directory, unsafe filesystem, busy lock or bad file leaves planning usable.
+
+`acquirePreferenceLock` (`src/service/preferenceLock.ts`) checks an owned, non-symlink directory,
+not group/other writable, on a trusted local Linux filesystem. It opens a private regular
+`preferences.lock` with one link and supervises a util-linux `flock` holder for the server lifetime.
+A second writer fails closed. Ownership loss stops access; shutdown stops admission, drains
+accepted preference mutations and only then releases the lock. The lock is separate from release
+ownership. Never unlink or replace its inode while in use. See
+[operator storage requirements](DEPLOYMENT.md#personal-preferences).
+
+`PreferenceStore` (`src/service/preferenceStore.ts`) reads `preferences.json` once at startup.
+Version 1 is a single profile with monotonic `revision`, insertion-ordered unique favorites and a
+nullable remembered project; it contains no username or credentials. The API adds each favorite's
+current `inCatalog` value rather than storing membership. Login changes and logout do not erase
+this profile. A missing file means an empty profile; invalid UTF-8/JSON, invalid shape or unknown
+schema version makes it unavailable without overwriting it.
+
+Mutations are serialized, no-ops keep the revision and a real change increments it after a
+durable save. Saving writes a same-directory mode-0600 temporary file, fsyncs it, retains the old
+inode as a recovery link, atomically renames the new file and fsyncs the directory before updating
+memory or acknowledging success. Ordinary failures restore prior data. If rollback durability
+cannot be established, the store becomes unreadable and keeps recovery evidence for operator
+repair; it does not continue accepting writes. Restart/restore with the writer stopped is the
+operator boundary, not live file editing.
+
+`preferenceRoutes` validates strict source/repo-only requests, the 1 KiB limit, catalog membership
+and the 200-favorite cap, then returns authoritative state after the commit. Removal of retained
+out-of-catalog favorites remains possible. The shared `requestProtection` module enforces live
+session/CSRF/Origin for browser mutations or explicit Basic auth without a session cookie for
+scripts. `server.publicOrigin` overrides Host for these planning checks; forwarded headers never
+establish trust. Reads/mutations, unavailable reasons and structured errors are documented in
+[the API](API.md#account-preferences).
 
 ## Cache-first scope read service
 

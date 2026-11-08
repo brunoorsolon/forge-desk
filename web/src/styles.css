@@ -2546,3 +2546,11 @@ button.issue-pill:hover {
     overflow-y: auto;
   }
 }
+
+.preference-feedback {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.preference-feedback p {
+  margin: 0 0 8px;
+}

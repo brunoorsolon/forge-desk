@@ -1,7 +1,7 @@
 # Preference state integration contract
 
-`reducePreferences` is the pure state/effect boundary for the later preference API
-and view wiring. The caller dispatches `open` on app open and `tab-return` when
+`reducePreferences` is the pure state/effect boundary. `preference-controller.ts`
+executes its effects through `api.ts`; `main.ts` connects navigation and views. The caller dispatches `open` on app open and `tab-return` when
 returning to the tab; both produce a `read` effect. `reload` is an explicit retry.
 The caller executes effects and returns each result with its original `id`.
 
@@ -22,20 +22,25 @@ visible so the view can mark it unavailable.
 All mutations are refused when preferences are not writable (not loaded,
 unavailable, unverified, or awaiting a recovery read). A refused remembered-project
 mutation emits no effect, is not queued, and sets a notice that it was not saved.
-For an explicit project link on initial open, the later #193 wiring must wait for
-the first successful preference read before dispatching the latest explicit
-selection. Navigation itself must not wait. During unverified/unavailable recovery,
+For an explicit project link on initial open, the controller waits for
+the first preference read before dispatching the latest explicit
+selection. A failed initial read reports the refusal instead of replaying it later. Navigation itself must not wait. During unverified/unavailable recovery,
 report the refusal; do not replay earlier selections on a later tab return.
-This module does not implement that app wiring.
+Source/view destinations cancel an initial deferred selection. Only destination
+changes are explicit selections; tab, sort, query and preference responses never save
+the current project. Bare startup waits for the read, while explicit links load immediately.
 
 Save errors and remembered-project notices are separate. Each mutation clears
 only its own feedback field, and each failure sets only its own field. Navigation never waits
 for a save and this module produces no navigation effects. A reload changing the
 remembered project likewise does not navigate.
 
-Dispatch `logout` or `session-expired` immediately on those lifecycle events.
+The controller dispatches `logout` or `session-expired` immediately on those lifecycle events.
 These clear all private page state and pending effects without touching server
 storage. Request IDs are not reused, so late results cannot restore old-session
-data. Successful saves supersede reads already in flight; reads begun before an
+data. It aborts pending IO and refuses subsequent reads/writes until a new page session.
+`api.ts` notifies expiry listeners synchronously before redirecting to login. Logout
+form submission and `pagehide` clear preferences; a BFCache restore reloads the page
+to revalidate authentication. Successful saves supersede reads already in flight; reads begun before an
 uncertain save cannot clear its reread gate. Apply API unavailable responses as
 `read-success` with the unavailable payload; transport failures use `read-failure`.

@@ -13,10 +13,111 @@ import {
   prepareRelease,
   publishRelease,
   reconcileRelease,
+  fetchPreferences,
+  savePreference,
+  onSessionExpired,
 } from './api.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('preference caller boundary', () => {
+  const profile = { available: true, revision: 1, favorites: [], rememberedProject: null };
+  it('uses a passive relative read and fresh session CSRF for each mutation', async () => {
+    let proof = 0;
+    const fetch = vi.fn(async (path: string, _init: RequestInit) =>
+      Response.json(
+        path === 'api/session' ? { username: 'operator', csrfToken: `proof-${++proof}` } : profile,
+      ),
+    );
+    vi.stubGlobal('fetch', fetch);
+    await expect(fetchPreferences()).resolves.toEqual(profile);
+    const project = { source: 'source /', repo: 'owner/repo name' };
+    for (const kind of ['add-favorite', 'remove-favorite', 'remember-project'] as const)
+      await expect(savePreference({ kind, project })).resolves.toEqual(profile);
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      'api/preferences',
+      'api/session',
+      'api/preferences/favorites',
+      'api/session',
+      'api/preferences/favorites/source%20%2F/owner/repo%20name',
+      'api/session',
+      'api/preferences/remembered-project',
+    ]);
+    const writes = [fetch.mock.calls[2]![1], fetch.mock.calls[4]![1], fetch.mock.calls[6]![1]];
+    expect(writes.map((init) => init.method)).toEqual(['POST', 'DELETE', 'PUT']);
+    expect(writes.map((init) => (init.headers as Record<string, string>)['x-csrf-token'])).toEqual([
+      'proof-1',
+      'proof-2',
+      'proof-3',
+    ]);
+    expect(writes.map((init) => init.body)).toEqual([
+      JSON.stringify(project),
+      undefined,
+      JSON.stringify(project),
+    ]);
+  });
+
+  it('never sends a preference mutation without live browser proof', async () => {
+    const fetch = vi.fn(async () => Response.json({ username: 'operator', csrfToken: null }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      savePreference({ kind: 'add-favorite', project: { source: 'one', repo: 'o/r' } }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a truncated successful mutation response so the controller can reconcile it', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ username: 'operator', csrfToken: 'proof' }))
+      .mockResolvedValueOnce(new Response('{"available":true,"revision":2', { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      savePreference({ kind: 'remove-favorite', project: { source: 'one', repo: 'o/r' } }),
+    ).rejects.toMatchObject({ status: 200, message: 'The server returned an invalid response.' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not send a mutation if logout aborts the pending session read', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(async () => {
+      controller.abort();
+      return Response.json({ username: 'operator', csrfToken: 'old-session' });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      savePreference(
+        { kind: 'add-favorite', project: { source: 'one', repo: 'o/r' } },
+        controller.signal,
+      ),
+    ).rejects.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('signals expiry synchronously before redirecting, for any API request', async () => {
+    const events: string[] = [];
+    const unsubscribe = onSessionExpired(() => events.push('clear'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ error: 'Sign in again' }, { status: 401 })),
+    );
+    vi.stubGlobal('location', {
+      hash: '#/project/one/o/r',
+      assign: (path: string) => events.push(path),
+    });
+    try {
+      await expect(fetchViews()).rejects.toMatchObject({ status: 401 });
+      expect(events).toEqual(['clear', 'login#/project/one/o/r']);
+      unsubscribe();
+      events.length = 0;
+      await expect(fetchPreferences()).rejects.toMatchObject({ status: 401 });
+      expect(events).toEqual(['login#/project/one/o/r']);
+    } finally {
+      unsubscribe();
+    }
+  });
 });
 
 describe('snapshot refresh', () => {

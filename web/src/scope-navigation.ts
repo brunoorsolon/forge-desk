@@ -72,6 +72,7 @@ export function createScopeNavigation(
   let visible = true;
   let generation = 0;
   let pending = false;
+  let checkQueued = false;
   let respondedAt: number | null = null;
   let visibleSince: number | null = null;
   let interval = 0;
@@ -100,6 +101,7 @@ export function createScopeNavigation(
     const origin = scope!;
     const token = generation;
     pending = true;
+    checkQueued = false;
     store.dispatch({ type: 'scope-load-start', scope: origin });
     try {
       const response = await (explicit ? refresh : read)(target);
@@ -125,7 +127,11 @@ export function createScopeNavigation(
       if (token === generation) {
         pending = false;
         respondedAt = Date.now();
-        schedule();
+        // A completed sweep may request a recheck while the
+        // current read still holds an older snapshot. Coalesce those requests
+        // behind this lane instead of dropping the only post-sweep read.
+        if (checkQueued) void check();
+        else schedule();
       }
     }
   }
@@ -140,6 +146,7 @@ export function createScopeNavigation(
       cancelTimer();
       generation++;
       pending = false;
+      checkQueued = false;
       respondedAt = null;
       visibleSince = null;
       scope = next;
@@ -159,6 +166,11 @@ export function createScopeNavigation(
       schedule();
     },
     check,
+    recheck(): void {
+      if (scope === null) return;
+      checkQueued = true;
+      if (!pending) void check();
+    },
     async refresh(target: Scope): Promise<void> {
       if (!visible || scope === null) return;
       // Explicit intent supersedes an in-flight passive read. Repeated launches

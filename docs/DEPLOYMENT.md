@@ -1,12 +1,14 @@
 # Deployment
 
-Forge Desk is a single Node.js process: no database, and planning keeps no disk state. It listens on one port and serves the web UI and the API. Pick one of the setups below. Release publication is opt-in and adds a private state volume, a login and dedicated credentials; its deployment, permissions, backup and cutover guide is [RELEASES.md](RELEASES.md). Images are published to `ghcr.io/brunoorsolon/forge-desk`; the old `ghcr.io/brunoorsolon/execution-view` path stops at 2.0.5 (see [the name](../README.md#the-name)).
+Forge Desk is a single Node.js process: no database, and planning snapshots stay in memory. Optional account preferences persist favorites and the remembered project to a local directory. It listens on one port and serves the web UI and the API. Pick one of the setups below. Release publication is opt-in and adds a private state volume, a login and dedicated credentials; its deployment, permissions, backup and cutover guide is [RELEASES.md](RELEASES.md). Images are published to `ghcr.io/brunoorsolon/forge-desk`; the old `ghcr.io/brunoorsolon/execution-view` path stops at 2.0.5 (see [the name](../README.md#the-name)).
 
 Contents:
 
 - [Before you deploy](#before-you-deploy)
 - [Docker](#docker)
 - [docker-compose](#docker-compose)
+- [Personal preferences](#personal-preferences)
+- [Background sweeps and API quota](#background-sweeps-and-api-quota)
 - [Release publication](#release-publication)
 - [Bare Node.js](#bare-nodejs)
 - [systemd](#systemd)
@@ -42,7 +44,7 @@ To build the image yourself instead (for example to test unreleased changes), ru
 docker build -t forge-desk .
 ```
 
-The image is a multi-stage build on `node:22-alpine`: it compiles the server and the web UI, then keeps only production dependencies and the compiled output. Its final stage also contains real `git`, OpenSSH `ssh` and util-linux `flock`, so the same image can publish releases; a planning-only container never uses them. It runs as the non-root user `node`, exposes port 8080, has `FD_HOST=0.0.0.0` and `FD_PORT=8080` set, and its entrypoint is the CLI with the default command `serve`. So `docker run ghcr.io/brunoorsolon/forge-desk:3 check` runs the check instead of the server.
+The image is a multi-stage build on `node:22-alpine`: it compiles the server and the web UI, then keeps only production dependencies and the compiled output. Its final stage also contains real `git`, OpenSSH `ssh` and util-linux `flock`, so the same image can publish releases; planning-only browsing does not use git/ssh; preferences also use flock. It runs as the non-root user `node`, exposes port 8080, has `FD_HOST=0.0.0.0` and `FD_PORT=8080` set, and its entrypoint is the CLI with the default command `serve`. So `docker run ghcr.io/brunoorsolon/forge-desk:3 check` runs the check instead of the server.
 
 ### The demo (no token, no network)
 
@@ -108,9 +110,87 @@ What the compose file does:
 - has a commented-out `volumes:` entry that mounts `./config.yaml` at `/app/config.yaml` for config-file mode. Create the file before you uncomment it, otherwise Docker creates a directory with that name;
 - carries `wud.tag.include` / `wud.tag.exclude` labels so [What's Up Docker](https://getwud.github.io/wud/) reports new releases (exact `X.Y.Z` tags only). They do nothing without it.
 
-No data volume is needed for planning: the app has no database, and snapshots are cached in memory (`FD_CACHE_TTL`) and fetched again after a restart. Release publication is different: it requires the private state volume, login and dedicated credentials described in [RELEASES.md](RELEASES.md), and [`docker-compose.release.yml`](../docker-compose.release.yml) is the ready-made compose file for that mode.
+No data volume is needed for planning snapshots: they are cached in memory (`FD_CACHE_TTL`) and fetched again after a restart. Enabling [personal preferences](#personal-preferences) additionally needs a writable local directory and the application login. Release publication is different: it requires the private state volume, login and dedicated credentials described in [RELEASES.md](RELEASES.md), and [`docker-compose.release.yml`](../docker-compose.release.yml) is the ready-made compose file for that mode.
 
 To build from source instead of pulling, replace the `image:` line with `build: .` and run `docker compose up -d --build` from the repository root. To publish only on localhost (when a reverse proxy runs on the same host), change the port mapping to `'127.0.0.1:8080:8080'`.
+
+## Personal preferences
+
+Preferences are opt-in and store favorites and the remembered project for the **single application account**, shared by its browser sessions. They are not separate profiles per browser or person. They require both the application's login and `preferences.dir` (or `FD_PREFERENCES_DIR`); proxy authentication alone does not enable them. Without these, planning remains available and preferences report unavailable.
+
+Use a persistent directory on a trusted **local Linux filesystem**. The runtime requires util-linux `flock` (included in the repository's Docker image); NFS, SMB/CIFS and unknown filesystem types are refused. The directory must already exist, be owned by the runtime user and not be group- or world-writable. Use mode `0700`. Do not use a symlink for the directory or preference file. The app does not create the directory for you.
+
+Merge this into your existing config (keep your sources and views):
+
+```yaml
+server:
+  basicAuth:
+    username: admin
+    passwordEnv: FD_BASIC_AUTH_PASSWORD
+  publicOrigin: https://desk.example.com
+preferences:
+  dir: /var/lib/forge-desk-preferences
+```
+
+For Docker, prepare a host directory owned by the container's uid/gid 1000 (run with sufficient host privileges, and adapt ownership for rootless/user-remapped Docker):
+
+```sh
+install -d -m 0700 -o 1000 -g 1000 preferences
+```
+
+Mount the **directory**, not just `preferences.json`: writes need temporary files and an atomic rename in the same directory. Add this to your usual `docker run` command:
+
+```sh
+--mount "type=bind,src=$PWD/preferences,dst=/var/lib/forge-desk-preferences"
+```
+
+For Compose, add the following under the existing `forge-desk` service, merging rather than duplicating its `environment` and `volumes` keys. Keep the token environment lines, remove env-only source settings if switching to a config file, and set `FD_BASIC_AUTH_PASSWORD` in `.env`:
+
+```yaml
+services:
+  forge-desk:
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - FD_BASIC_AUTH_PASSWORD=${FD_BASIC_AUTH_PASSWORD:?Set the application login password}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./preferences:/var/lib/forge-desk-preferences
+```
+
+The preference volume must be writable; the config stays read-only. Use an image version containing preference support, or build this checkout. The stock Compose example does not mount preference storage. A named volume is also possible, but initialize its ownership and permissions before enabling preferences; do not assume Docker's newly created root-owned directory is usable. Keep preference and release state in separate directories. For bare Node, install util-linux and prepare the directory for the service account. With the hardened systemd unit below, add `ReadWritePaths=/var/lib/forge-desk-preferences` under `[Service]` after preparing that directory.
+
+### Ownership and failure recovery
+
+Only **one process may own a preference directory**. Its supervised OS lock is held for the process lifetime in `preferences.lock`; a second process reports preferences unavailable (`store-locked`), without overwriting the file or preventing planning. Stop the old owner before starting a replacement during upgrades. This is not a replicated or multi-writer store.
+
+Never delete, replace or rotate `preferences.lock` while any owner may be running: changing the inode can defeat mutual exclusion. A leftover lock file after shutdown is normal, not proof of a stuck owner. The OS releases ownership when the holder exits. Graceful shutdown drains admitted writes before releasing the lock. If ownership is lost, writes fail closed; repair the cause and restart the server.
+
+A missing `preferences.json` starts with an empty profile and is created on the first effective change, with mode `0600`. Invalid JSON or shape (`corrupt`), an unsupported schema version, missing storage, or unsafe/unreadable storage disables preferences without silently resetting them. Stop the server, preserve the original bytes, repair permissions or restore a known-good compatible backup, then restart. Do not change a version field to force an incompatible file to load. Preference state is read once at startup, so editing a file while running is neither a supported restore nor a reset. `/healthz` only checks process liveness; inspect the preferences response/UI to verify recovery.
+
+### Backup, restore and reset
+
+1. Stop the writer (`docker compose stop forge-desk`, or stop the corresponding container/systemd service) and verify no other process is using this directory. Keep it stopped throughout backup, restore or reset.
+2. Back up `preferences.json` if present to a private location, preserving its bytes and recording the application version. Protect backups as private account data. Keep any `.preferences-*.backup` recovery files when diagnosing a failed write; do not overwrite or discard them before identifying the known-good state. The lock file is not preference data and does not need restoring.
+3. To restore, put the compatible backed-up `preferences.json` into the prepared directory as a regular file, owned by the runtime user, mode `0600`. Keep the directory owned by that user, mode `0700`. Do not restore a lock from another machine or replace a live lock.
+4. To deliberately **reset all favorites and the remembered project**, back up first, then delete only `preferences.json` **with the server stopped**. Leave the directory and `preferences.lock` in place. On restart the profile is empty; this does not delete tracker data, release state or configuration.
+5. Start one server and verify preferences are available and contain the expected profile. Keep the volume mounted across image/container replacements.
+
+## Background sweeps and API quota
+
+Sweeps refresh the complete configured project catalog across sources, not only favorites or the current named view. They are disabled by default (`refresh.sweepHours: 0`, or `FD_SWEEP_HOURS=0`); manual sweeps remain possible. To opt in:
+
+```yaml
+refresh:
+  sweepHours: 6
+  requestsPerMinute: 60
+  concurrency: 4
+```
+
+The interval is an integer from 0 to 168 hours. When enabled, a sweep starts at server startup and the next starts a full interval **after completion**. Repeated manual/scheduled launches join an existing sweep rather than overlap; a manual sweep also resets the next deadline from its finish. With `cache.ttlSeconds: 0`, sweeps are skipped and no recurring sweep timer is armed. Sweeps do not need preference storage or the login.
+
+The default admission limits are 60 requests per minute and 4 concurrent requests **per source**. They pace individual provider HTTP requests, including pagination, relation reads and retries, rather than counting repositories. Interactive project work has priority over sweep work, and provider cooldowns delay the affected source while healthy sources continue. Status exposes queued/delayed/failed work and successful check times; a finished sweep may report partial or failed results rather than a fully refreshed catalog.
+
+Budget quota for startup sweeps after every restart and for the entire catalog. These limits are not a global token quota: sources/processes may share tracker credentials, and named-view reads, exports and CLI operations do not use this admission pacing. Leave headroom for those and other tools using the same account. Increase the sweep interval or lower pacing when quota is tight; webhooks and cache TTL remain useful independently. Observations and sweep status are in memory and are not part of preference backups.
 
 ## Release publication
 
@@ -125,7 +205,7 @@ docker compose -f docker-compose.release.yml run --rm forge-desk check
 docker compose -f docker-compose.release.yml up -d
 ```
 
-Planning-only deployments do not need any of it: they keep the env-only or config-file setup above, with no volume, no release credentials and no login.
+Planning deployments without releases do not need release credentials or release state. Preferences separately require their own directory and the application login; otherwise the env-only or config-file setup can remain volume-free and login-free.
 
 ## Bare Node.js
 
@@ -231,6 +311,8 @@ ev.example.com {
 }
 ```
 
+For preference mutations and project/sweep refresh launches behind a proxy that rewrites `Host`, set `server.publicOrigin: https://ev.example.com` (or `FD_PUBLIC_ORIGIN`) to the browser-facing origin, including any non-default port. Use HTTPS, no path, query, fragment or credentials; plain HTTP is allowed only for isolated loopback tests. The configured origin supplies the trusted host and port; without it the app compares the browser's `Origin` to the request `Host`. Forwarded host headers do not establish trust. Preserve `Origin`, cookies and the UI's CSRF/launch headers. This setting does not enable login or preferences. Release publication has its own `releases.publicOrigin` and stricter request checks; follow [RELEASES.md](RELEASES.md).
+
 Notes:
 
 - A cold refresh of a large view makes many requests to the tracker and can take a while: allow a generous read timeout (the nginx example uses 120 s).
@@ -257,7 +339,7 @@ The password crosses the network in clear text on the login form and with basic 
 
 ## Webhooks
 
-By default a view is refetched when its cache entry expires (`cache.ttlSeconds`, 300 s) or when someone presses Refresh. With webhooks, GitHub, Gitea or Forgejo tells the app when an issue or pull request changes, and the app drops the cached snapshot of the views that include that repository; the next page load or API call refetches. The app does not refetch by itself.
+By default a view is refetched when its cache entry expires (`cache.ttlSeconds`, 300 s) or when someone presses Refresh. With webhooks, GitHub, Gitea or Forgejo tells the app when an issue or pull request changes, and the app drops the cached snapshot of the views that include that repository; the next page load or API call refetches. Webhook invalidation alone does not refetch; an enabled background sweep can also perform the later refresh.
 
 The UI labels below may vary between versions of GitHub, Gitea and Forgejo.
 
@@ -307,7 +389,7 @@ curl -fsS http://localhost:8080/healthz
 
 ## Resource needs
 
-Small for planning. There is no database, and planning keeps no persistent state: the process keeps one snapshot per view in memory, and the cost of a refresh is a burst of HTTP requests to your tracker (see [API usage](PREREQUISITES.md#8-api-usage-and-rate-limits)) plus a graph computation that is fast for hundreds or thousands of issues. A small container or VM is enough (for example 256 MB of memory and a fraction of a CPU). Release publication adds one private state volume, the Git/SSH binaries and a short-lived candidate checkout; it does not change the memory profile materially. These are rough sizing hints; the project has no published benchmarks.
+Small for planning. There is no database, and planning snapshots are not persistent: the process keeps one snapshot per view in memory, and the cost of a refresh is a burst of HTTP requests to your tracker (see [API usage](PREREQUISITES.md#8-api-usage-and-rate-limits)) plus a graph computation that is fast for hundreds or thousands of issues. A small container or VM is enough (for example 256 MB of memory and a fraction of a CPU). Optional preferences add a small private JSON store. Release publication adds one private state volume, the Git/SSH binaries and a short-lived candidate checkout; it does not change the memory profile materially. These are rough sizing hints; the project has no published benchmarks.
 
 ## Security notes
 
@@ -323,7 +405,7 @@ Small for planning. There is no database, and planning keeps no persistent state
 
 ## Upgrading
 
-The application itself keeps no persistent state in planning mode, so a planning-only upgrade means replacing the code and restarting. With releases enabled, keep the private state volume: stop the owner, replace the image and start it again, then let startup reconcile interrupted jobs ([RELEASES.md](RELEASES.md#upgrading-state-schema-and-rollback)).
+Planning snapshots are in memory, so upgrading without preferences or releases means replacing the code and restarting. With preferences enabled, stop the writer, back up the profile, retain its volume and start one replacement process as described [above](#backup-restore-and-reset). With releases enabled, keep the private state volume: stop the owner, replace the image and start it again, then let startup reconcile interrupted jobs ([RELEASES.md](RELEASES.md#upgrading-state-schema-and-rollback)).
 
 Docker with compose:
 
