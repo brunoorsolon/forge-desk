@@ -99,6 +99,53 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it.each(['closed', 'failed'] as const)(
+    'serves last-known dropped issue details while its lookup waits, then handles %s',
+    async (outcome) => {
+      const f = fixture();
+      const prerequisite = {
+        ...issue('o/a#2'),
+        title: 'Waiting prerequisite',
+        url: 'https://github.com/o/a/issues/2',
+        labels: ['P0'],
+      };
+      f.seed('o/a', [issue('o/a#1', 'Blocked by #2'), prerequisite]);
+      f.list.mockResolvedValue(listing([issue('o/a#1', 'Blocked by #2')]));
+      const lookup = gate();
+      f.lookup.mockImplementation(async () => {
+        await lookup.promise;
+        if (outcome === 'failed') throw new Error('offline');
+        return issue('o/a#2', '', 'closed');
+      });
+      const job = f.jobs.refresh(project());
+      await tick();
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      const pending = await f.service.get(project());
+      expect(pending.snapshot!.plan.nodes.find((n) => n.key === 'o/a#2')).toMatchObject({
+        title: prerequisite.title,
+        url: prerequisite.url,
+        labels: prerequisite.labels,
+      });
+      expect(pending.freshness.outsideIssues.provisionalCount).toBe(1);
+      expect(pending.snapshot!.plan.warnings.some((w) => w.code === 'fetch-error')).toBe(false);
+      expect(
+        pending.snapshot!.plan.warnings.find((w) => w.code === 'dependency-provisional')!.issues,
+      ).toEqual(['o/a#1', 'o/a#2']);
+      lookup.resolve();
+      await job.completion;
+      const settled = await f.service.get(project());
+      expect(settled.snapshot!.plan.nodes.find((n) => n.key === 'o/a#1')!.status).toBe(
+        outcome === 'closed' ? 'ready' : 'blocked',
+      );
+      expect(settled.snapshot!.plan.nodes.find((n) => n.key === 'o/a#2')?.title).toBe(
+        outcome === 'closed' ? undefined : prerequisite.title,
+      );
+      expect(settled.freshness.outsideIssues.provisionalCount).toBe(outcome === 'closed' ? 0 : 1);
+      expect(settled.snapshot!.plan.warnings.some((w) => w.code === 'fetch-error')).toBe(false);
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(['closed', 'open', 'missing', 'failed', 'partial'] as const)(
     'rechecks sibling context after a newer listing replaces its lookup, then paces the %s result',
     async (outcome) => {

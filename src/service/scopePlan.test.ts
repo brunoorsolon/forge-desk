@@ -6,6 +6,7 @@ import type {
   RepositoryObservation,
 } from '../core/scope.js';
 import type { Issue } from '../core/types.js';
+import { ObservationStore } from './observationStore.js';
 import { deriveScopePlan, type DerivationObservation, type ScopePlanInput } from './scopePlan.js';
 
 const checked = '2026-11-06T12:00:00.000Z';
@@ -78,6 +79,85 @@ const warnings = (o: ScopePlanInput, code: string) =>
   deriveScopePlan(o).snapshot!.plan.warnings.filter((w) => w.code === code);
 
 describe('scope plan derivation', () => {
+  it.each(['closed', 'open', 'failed', 'missing'] as const)(
+    'retains dropped listing details provisionally until the lookup returns %s',
+    (outcome) => {
+      const o = input();
+      const store = new ObservationStore({ now: () => o.now });
+      const project = { source: 's', repo: 'a/r' };
+      const prerequisite = {
+        ...issue(2),
+        title: 'Last known prerequisite',
+        url: 'https://github.com/a/r/issues/2',
+        labels: ['P0', 'agent:claimed'],
+      };
+      const list = (issues: Issue[]) =>
+        store.writeRepository(store.beginRepositoryRead(project), {
+          issues,
+          warnings: [],
+          relationCoverage: { native: 'complete', subIssues: 'complete' },
+        });
+      const derive = () => {
+        o.repositories = [store.readRepository(project)!];
+        o.outsideIssues = store.listOutsideIssues('s');
+        return deriveScopePlan(o);
+      };
+      list([issue(1, 'Blocked by #2'), prerequisite]);
+      expect(derive().snapshot!.plan.nodes.find((n) => n.key === 'a/r#2')!.title).toBe(
+        prerequisite.title,
+      );
+      o.now = new Date('2026-11-06T12:00:01.000Z');
+      list([issue(1, 'Blocked by #2')]);
+      const dropped = derive();
+      expect(dropped.snapshot!.plan.nodes.find((n) => n.key === 'a/r#2')).toMatchObject({
+        title: prerequisite.title,
+        url: prerequisite.url,
+        labels: prerequisite.labels,
+      });
+      expect(dropped.snapshot!.plan.nodes.find((n) => n.key === 'a/r#1')!.status).toBe('blocked');
+      expect(warnings(o, 'fetch-error')).toEqual([]);
+      expect(warnings(o, 'dependency-provisional')[0]!.issues).toEqual(['a/r#1', 'a/r#2']);
+      expect(dropped.referencedOutsideIssues).toEqual(['a/r#2']);
+      expect(store.readOutsideIssue({ source: 's', key: 'a/r#2' })!.observation.result).toEqual({
+        status: 'found',
+        issue: prerequisite,
+      });
+
+      const token = store.beginOutsideIssueRead({ source: 's', key: 'a/r#2' });
+      if (outcome === 'failed') store.fail(token, 'upstream unavailable');
+      else
+        store.writeOutsideIssue(token, {
+          result:
+            outcome === 'missing'
+              ? { status: 'missing' }
+              : { status: 'found', issue: { ...prerequisite, state: outcome, title: 'Updated' } },
+          relationCoverage: { native: 'complete', subIssues: 'complete' },
+        });
+      const refreshed = derive();
+      const node = refreshed.snapshot!.plan.nodes.find((n) => n.key === 'a/r#2');
+      expect(warnings(o, 'fetch-error')).toEqual([]);
+      if (outcome === 'closed') {
+        expect(node).toBeUndefined();
+        expect(refreshed.snapshot!.plan.edges).toEqual([]);
+        expect(refreshed.snapshot!.plan.nodes[0]!.status).toBe('ready');
+        expect(warnings(o, 'dependency-provisional')).toEqual([]);
+      } else {
+        expect(node!.title).toBe(outcome === 'open' ? 'Updated' : prerequisite.title);
+        expect(refreshed.snapshot!.plan.nodes.find((n) => n.key === 'a/r#1')!.status).toBe(
+          'blocked',
+        );
+        expect(warnings(o, 'dependency-provisional')).toHaveLength(outcome === 'open' ? 0 : 1);
+      }
+    },
+  );
+
+  it('still uses an unavailable placeholder and fetch warning for a never-observed issue', () => {
+    const o = input();
+    o.repositories = [repository('a/r', [issue(1, 'Blocked by #2')])];
+    expect(nodes(o).find((n) => n.key === 'a/r#2')!.title).toBe('(unavailable)');
+    expect(warnings(o, 'fetch-error')).toHaveLength(1);
+  });
+
   it('includes all project issues ignoring view filters and retains existing ordering/layout', () => {
     const o = input();
     o.repositories = [
