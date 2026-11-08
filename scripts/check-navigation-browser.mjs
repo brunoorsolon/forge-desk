@@ -367,7 +367,7 @@ try {
   await until(
     () =>
       evaluate(
-        `location.hash === '#/view/alpha-view/problems' && document.querySelector('.project-sidebar')?.hidden === false && document.querySelector('.releases')?.hidden === true && document.querySelector('.main')?.hidden === false && document.querySelector('#tab-problems')?.getAttribute('aria-selected') === 'true' && document.querySelector('.problems')?.textContent.includes('No open issues in this view')`,
+        `location.hash === '#/view/alpha-view/problems' && document.querySelector('.project-sidebar')?.hidden === false && document.querySelector('.releases')?.hidden === true && document.querySelector('.main')?.hidden === false && document.querySelector('#tab-problems')?.getAttribute('aria-selected') === 'true' && document.querySelector('.problems-pane')?.textContent.includes('No problems found')`,
       ),
     'leaving direct Releases through a planning tab renders the view and hides releases',
   );
