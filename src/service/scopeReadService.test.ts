@@ -636,7 +636,7 @@ describe('cache-first scope reads', () => {
     f.store.invalidateRepository({ source: 'gh', repo: 'o/a' });
     f.cooldown(Date.now() + 3600_000);
     const response = await f.service.get(project());
-    expect(response.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(true);
+    expect(response.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(false);
     expect(response.freshness.repositories[0]).toMatchObject({
       state: 'delayed',
       delayedUntil: '2026-01-01T01:00:00.000Z',

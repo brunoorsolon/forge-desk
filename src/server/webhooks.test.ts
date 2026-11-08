@@ -162,14 +162,12 @@ describe('webhook invalidation of scopes', () => {
           source.kind === kind ? 'invalidated' : 'fresh',
           'fresh',
         ]);
-        expect(cached.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(
-          source.kind === kind,
-        );
-        // Cached exports see the invalidation too, without starting a source refresh.
+        expect(cached.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(false);
+        // Cached exports keep invalidation out of Problems and do not start a source refresh.
         const exported = await f.app.inject(`/api/sources/${source.id}/export.json`);
         expect(exported.statusCode).toBe(200);
         expect(exported.json<Snapshot>().plan.warnings.some((w) => w.code === 'stale-data')).toBe(
-          source.kind === kind,
+          false,
         );
       }
       expect(f.callCounts()).toEqual(calls);
@@ -222,9 +220,7 @@ describe('webhook invalidation of scopes', () => {
       expect(observation?.invalidated).toBe(kind === 'github');
       for (const scope of [project(id), { kind: 'source', source: id } as Scope]) {
         const cached = f.runtime.reads.cached(scope);
-        expect(cached.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(
-          kind === 'github',
-        );
+        expect(cached.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(false);
       }
     }
     expect(f.callCounts()).toEqual(before);
@@ -251,7 +247,7 @@ describe('webhook invalidation of scopes', () => {
     const before = f.callCounts();
     await deliver(f.app, 'github', 'o/b');
     const affected = f.runtime.reads.cached(project());
-    expect(affected.snapshot?.plan.warnings).toContainEqual(
+    expect(affected.snapshot?.plan.warnings).not.toContainEqual(
       expect.objectContaining({ code: 'stale-data', issues: ['o/b#1'] }),
     );
     expect(f.callCounts()).toEqual(before);
@@ -295,7 +291,7 @@ describe('webhook invalidation of scopes', () => {
       expect(f.callCounts()).toEqual(before);
       release.resolve();
       const raced = (await read).json<ScopeResponse>();
-      expect(raced.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(true);
+      expect(raced.snapshot?.plan.warnings.some((w) => w.code === 'stale-data')).toBe(false);
       const observation = () =>
         unit === 'repository'
           ? f.runtime.store.readRepository({ source: 'gh-one', repo: 'o/a' })

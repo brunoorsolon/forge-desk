@@ -1279,10 +1279,13 @@ and recomputation, without fetching unrelated repositories. Latest targeted obse
 supersede an older sibling listing as dependency context, and vice versa.
 
 `fetchedAt` is the oldest contributing repository check; `freshness.computedAt` is plan computation
-time. Neither replaces the other's meaning. `stale-data` and `dependency-provisional` warnings
-explain observation age and incomplete dependency proof. A missing or inaccessible dependency is
-not silently satisfied. The scope read service below retains and prunes only the context still
-referenced by derived plans, deferring pruning while either job lane is active.
+time. Neither replaces the other's meaning. `stale-data` warns only when the latest refresh failed
+and either no check has ever succeeded or, with a positive cache TTL, its last successful check is
+older than `cache.ttlSeconds + 900` seconds. `dependency-provisional` explains incomplete dependency
+proof. Live freshness states and refresh scheduling still use the cache TTL without this warning
+grace period. A missing or inaccessible dependency is not silently satisfied. The scope read service
+below retains and prunes only the context still referenced by derived plans, deferring pruning while
+either job lane is active.
 
 Verified GitHub and Gitea/Forgejo webhooks have no source ID, so `registerWebhooks` conservatively
 invalidates the repository listing and targeted issues in every source of the endpoint's provider
