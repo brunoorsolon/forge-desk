@@ -265,6 +265,7 @@ describe('scope HTTP observations and freshness', () => {
   it('serves stale data immediately and coalesces polling into one background job', async () => {
     const f = setup();
     f.seed();
+    const original = f.runtime.reads.cached(project).snapshot!;
     vi.setSystemTime(Date.now() + 61_000);
     const blocked = gate();
     cleanups.push(blocked.resolve);
@@ -278,8 +279,9 @@ describe('scope HTTP observations and freshness', () => {
     expect(first.json().snapshot.fetchedAt).toBe(START);
     expect(first.json().job.id).toBe(second.json().job.id);
     expect(second.json().freshness.repositories[0].state).toBe('updating');
+    expect(second.json().snapshot.contentHash).toBe(original.contentHash);
     expect(first.json().snapshot.plan.warnings).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
+      expect.not.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
     );
     expect(f.list).toHaveBeenCalledTimes(1);
     blocked.resolve();
@@ -342,7 +344,7 @@ describe('scope HTTP observations and freshness', () => {
       job: null,
     });
     expect(invalidated.json().snapshot.plan.warnings).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
+      expect.not.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
     );
     f.list.mockResolvedValue(listing([issue('o/a#2')]));
     await f.app.inject(`${PROJECT}/snapshot`);
@@ -413,7 +415,7 @@ describe('scope HTTP observations and freshness', () => {
     });
     expect(response.json().job.delayedUntil).toBe('2026-01-01T01:00:00.000Z');
     expect(response.json().snapshot.plan.warnings).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
+      expect.not.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
     );
     expect(f.list).not.toHaveBeenCalled();
   });
@@ -453,6 +455,72 @@ describe('scope HTTP observations and freshness', () => {
   });
 });
 
+describe('scope exports with distinct failed observations', () => {
+  it('keeps each repository and outside failure while enriching only the repository rows', async () => {
+    const f = setup();
+    f.seed('o/a', [issue('o/a#1', 'Depends on outside/repo#9')]);
+    f.seed('o/b');
+    const outside = { source: 'gh', key: 'outside/repo#9' };
+    f.runtime.store.writeOutsideIssue(f.runtime.store.beginOutsideIssueRead(outside), {
+      result: { status: 'found', issue: issue(outside.key) },
+    });
+    vi.setSystemTime(Date.parse(START) + 960_001);
+    for (const repo of ['o/a', 'o/b'])
+      f.runtime.store.fail(f.runtime.store.beginRepositoryRead({ source: 'gh', repo }), 'offline');
+    f.runtime.store.fail(f.runtime.store.beginOutsideIssueRead(outside), 'offline');
+    const response = await f.app.inject(`${SOURCE}/export.json`);
+    expect(response.statusCode).toBe(200);
+    expect(
+      response
+        .json()
+        .plan.warnings.filter((warning: { code: string }) => warning.code === 'stale-data'),
+    ).toEqual([
+      {
+        code: 'stale-data',
+        message: `gh/o/a: failed; last checked ${START}; offline`,
+        issues: ['o/a#1'],
+      },
+      {
+        code: 'stale-data',
+        message: `gh/o/b: failed; last checked ${START}; offline`,
+        issues: ['o/b#1'],
+      },
+      {
+        code: 'stale-data',
+        message: 'Stale observation: outside/repo#9',
+        issues: ['outside/repo#9'],
+      },
+    ]);
+    expect(response.body).toContain('dependency-provisional');
+    expect(f.list).not.toHaveBeenCalled();
+    expect(f.lookup).not.toHaveBeenCalled();
+  });
+});
+
+describe('scope exports with missing repository observations', () => {
+  it.each(['json', 'md', 'mmd', 'dot'])(
+    'adds stale-data in %s only after a never-succeeded failure',
+    async (ext) => {
+      const f = setup();
+      f.seed();
+      const read = f.runtime.store.beginRepositoryRead({ source: 'gh', repo: 'o/b' });
+      const unavailable = await f.app.inject(`${SOURCE}/export.${ext}`);
+      expect(unavailable.statusCode).toBe(200);
+      expect(unavailable.body).not.toContain('stale-data');
+      f.runtime.store.fail(read, `offline ${TOKEN}`);
+      const failed = await f.app.inject(`${SOURCE}/export.${ext}`);
+      expect(failed.statusCode).toBe(200);
+      expect(failed.body.match(/stale-data/g)).toHaveLength(1);
+      expect(failed.body).toContain('gh/o/b: unavailable');
+      expect(failed.body).toContain('last checked never');
+      expect(failed.body).toContain('dependency-provisional');
+      expect(failed.body).toContain(START);
+      expect(failed.body).not.toContain(TOKEN);
+      expect(f.list).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe.each([
   ['project', PROJECT],
   ['source', SOURCE],
@@ -487,7 +555,8 @@ describe.each([
     vi.setSystemTime(Date.now() + 61_000);
     const cached = await f.app.inject(`${base}/export.${ext}`);
     expect(cached.statusCode).toBe(200);
-    expect(cached.body).toContain('stale-data');
+    expect(cached.body).toBe(first.body);
+    expect(cached.body).toContain('stale-data'); // The outside issue has never succeeded.
     expect(cached.body).toContain('dependency-provisional');
     expect(f.list).toHaveBeenCalledTimes(count);
     await f.app.inject(`${base}/export.${ext}?refresh=1`);
@@ -504,11 +573,91 @@ describe.each([
     expect(response.statusCode).toBe(200);
     expect(response.json().fetchedAt).toBe(START);
     expect(response.json().plan.warnings).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
+      expect.not.arrayContaining([expect.objectContaining({ code: 'stale-data' })]),
     );
     expect(f.list).not.toHaveBeenCalled();
     expect(f.runtime.jobs.active(base === PROJECT ? project : source)).toBeNull();
   });
+
+  it.each(formats)(
+    'applies failure plus grace in %s without changing live freshness',
+    async (ext) => {
+      const f = setup();
+      f.seed();
+      f.seed('o/b');
+      const scope = base === PROJECT ? project : source;
+      const original = await f.app.inject(`${base}/export.${ext}`);
+      const originalHash = f.runtime.reads.cached(scope).snapshot!.contentHash;
+      for (const age of [60_001, 960_001]) {
+        vi.setSystemTime(Date.parse(START) + age);
+        const expired = await f.app.inject(`${base}/export.${ext}`);
+        expect(expired.body).toBe(original.body);
+        expect(f.runtime.reads.cached(scope).freshness.repositories[0]).toMatchObject({
+          state: 'stale',
+          lastCheckedAt: START,
+        });
+      }
+      f.runtime.store.invalidateRepository({ source: 'gh', repo: 'o/a' });
+      const invalidated = await f.app.inject(`${base}/export.${ext}`);
+      expect(invalidated.body).toBe(original.body);
+      expect(f.runtime.reads.cached(scope).freshness.repositories[0]!.state).toBe('invalidated');
+
+      vi.setSystemTime(Date.parse(START) + 61_000);
+      f.runtime.store.fail(
+        f.runtime.store.beginRepositoryRead({ source: 'gh', repo: 'o/a' }),
+        `offline ${TOKEN}`,
+      );
+      for (const age of [61_000, 960_000]) {
+        vi.setSystemTime(Date.parse(START) + age);
+        const recentFailure = await f.app.inject(`${base}/export.${ext}`);
+        expect(recentFailure.body).toBe(original.body);
+        const response = f.runtime.reads.cached(scope);
+        expect(response.snapshot!.contentHash).toBe(originalHash);
+        expect(response.freshness.repositories[0]).toMatchObject({
+          state: 'failed',
+          lastCheckedAt: START,
+        });
+      }
+      vi.setSystemTime(Date.parse(START) + 960_001);
+      const derived = f.runtime.reads.cached(scope).snapshot!;
+      const overdueFailure = await f.app.inject(`${base}/export.${ext}`);
+      expect(overdueFailure.statusCode).toBe(200);
+      expect(overdueFailure.body.match(/stale-data/g)).toHaveLength(1);
+      expect(overdueFailure.body).toContain('gh/o/a: failed');
+      expect(overdueFailure.body).toContain(`last checked ${START}`);
+      expect(overdueFailure.body).toContain('offline ***');
+      if (ext === 'json') {
+        expect(overdueFailure.json().plan.warnings).toContainEqual({
+          code: 'stale-data',
+          issues: ['o/a#1'],
+          message: `gh/o/a: failed; last checked ${START}; offline ***`,
+        });
+      }
+      expect(f.runtime.reads.cached(scope).snapshot).toEqual(derived);
+      expect(overdueFailure.body).toContain(START);
+      expect(overdueFailure.body).not.toContain(TOKEN);
+      expect(f.list).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(formats)(
+    'keeps partial relation warnings in %s without inventing stale-data',
+    async (ext) => {
+      const f = setup();
+      f.runtime.store.writeRepository(
+        f.runtime.store.beginRepositoryRead({ source: 'gh', repo: 'o/a' }),
+        { ...listing([issue()]), relationCoverage: { native: 'failed', subIssues: 'complete' } },
+      );
+      f.seed('o/b');
+      vi.setSystemTime(Date.parse(START) + 960_001);
+      const response = await f.app.inject(`${base}/export.${ext}`);
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('dependency-provisional');
+      expect(response.body).not.toContain('stale-data');
+      expect(response.body).toContain(START);
+      expect(f.list).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects unknown formats before fetching', async () => {
     const f = setup();
@@ -667,7 +816,7 @@ describe('scope route authentication and runtime ownership', () => {
           `${PROJECT}/export.${format}${invalidated ? '?refresh=1' : ''}`,
         );
         expect(downloaded.statusCode).toBe(invalidated ? 200 : 503);
-        if (invalidated) expect(downloaded.body).toContain('stale-data');
+        if (invalidated) expect(downloaded.body).not.toContain('stale-data');
         else expect(downloaded.json()).toMatchObject({ code: 'scope-unavailable', snapshot: null });
       }
       const browsing = await f.app.inject(`${PROJECT}/snapshot`);

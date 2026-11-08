@@ -290,6 +290,27 @@ describe('scope heading identity and controls', () => {
 });
 
 describe('scope freshness', () => {
+  it('shows sub-minute ages as just now while keeping exact local timestamp tooltips', () => {
+    const { view, root } = heading();
+    const justChecked = '2026-01-01T11:59:30Z';
+    view.update(
+      state({
+        snapshot: { ...snapshot, fetchedAt: justChecked },
+        freshness: freshness([repository({ lastCheckedAt: justChecked })]),
+      }),
+      preferences(),
+    );
+    expect(cls(root, 'scope-check-time')[0]!.textContent).toBe('Last successful check: just now');
+    expect(cls(root, 'scope-fetch-time')[0]!.textContent).toBe(
+      'Data fetched: just now (oldest contributing repository check)',
+    );
+    for (const label of ['scope-check-time', 'scope-fetch-time']) {
+      const timestamp = all(cls(root, label)[0]!, (el) => el.tagName === 'time')[0]!;
+      expect(timestamp.getAttribute('datetime')).toBe(justChecked);
+      expect(timestamp.getAttribute('title')).toBe(absoluteTime(justChecked));
+    }
+  });
+
   it('shows mixed repository ages, every state, outside coverage, and separate fetch and computation times', () => {
     const { view, root } = heading();
     const states = [

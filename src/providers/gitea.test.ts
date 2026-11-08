@@ -512,6 +512,39 @@ describe('getIssue', () => {
 });
 
 describe('relation coverage', () => {
+  it.each([
+    undefined,
+    NONE,
+    NATIVE,
+    { native: false, subIssues: true },
+    { native: true, subIssues: true },
+  ])('skips all relation requests for a closed issue with options %j', async (options) => {
+    const { p, calls } = provider((url) =>
+      url.pathname === `${ISSUES_PATH}/4`
+        ? json(gtIssue(4, { state: 'closed', body: 'Depends on #9' }))
+        : list([gtIssue(9)]),
+    );
+    expect(await p.getIssue({ owner: 'Acme', repo: 'API' }, 4, options)).toEqual({
+      key: 'acme/api#4',
+      repo: REPO,
+      number: 4,
+      title: 'Issue 4',
+      state: 'closed',
+      url: `${ROOT}/acme/api/issues/4`,
+      body: 'Depends on #9',
+      labels: [],
+      assignees: [],
+      milestone: null,
+      updatedAt: null,
+      nativeRelations: [],
+      relationCoverage: {
+        native: options?.native ? 'complete' : 'not-requested',
+        subIssues: options?.subIssues ? 'complete' : 'not-requested',
+      },
+    });
+    expect(calls.map((call) => call.url)).toEqual([`${API}/repos/acme/api/issues/4`]);
+  });
+
   it('lookup paginates and maps the same native relations as a listing', async () => {
     const { p, calls } = provider((url) => {
       if (url.pathname === ISSUES_PATH) return list([gtIssue(4)]);
@@ -553,14 +586,14 @@ describe('relation coverage', () => {
     expect(result?.relationCoverage).toEqual({ native: 'complete', subIssues: 'not-requested' });
   });
 
-  it('keeps a closed issue with unsupported coverage when its dependencies return 404', async () => {
+  it('keeps an open issue with unsupported coverage when its dependencies return 404', async () => {
     const { p, calls } = provider((url) =>
-      url.pathname === `${ISSUES_PATH}/4` ? json(gtIssue(4, { state: 'closed' })) : status(404),
+      url.pathname === `${ISSUES_PATH}/4` ? json(gtIssue(4)) : status(404),
     );
     const result = await p.getIssue(REPO, 4, NATIVE);
     expect(result).toMatchObject({
       key: 'acme/api#4',
-      state: 'closed',
+      state: 'open',
       nativeRelations: [],
       relationCoverage: { native: 'unsupported', subIssues: 'not-requested' },
     });
@@ -572,12 +605,12 @@ describe('relation coverage', () => {
     async (code) => {
       const { p } = provider((url) =>
         url.pathname === `${ISSUES_PATH}/4`
-          ? json(gtIssue(4, { state: 'closed', body: 'Observed body' }))
+          ? json(gtIssue(4, { body: 'Observed body' }))
           : status(code),
       );
       expect(await p.getIssue(REPO, 4, NATIVE)).toMatchObject({
         key: 'acme/api#4',
-        state: 'closed',
+        state: 'open',
         body: 'Observed body',
         nativeRelations: [],
         relationCoverage: { native: 'failed', subIssues: 'not-requested' },

@@ -248,6 +248,7 @@ describe('scope plan derivation', () => {
       outcome: 'failed',
       error: 'Access denied',
     };
+    o.now = new Date('2026-11-06T12:16:00.001Z');
     expect(nodes(o).map((n) => n.key)).toEqual(['a/r#1']);
     expect(warnings(o, 'stale-data')[0]!.message).toBe('Stale observation: s/a/r');
     expect(warnings(o, 'repository-unlisted')[0]!.message).toContain('s/a/other');
@@ -453,44 +454,86 @@ describe('scope plan derivation', () => {
     ];
     expect(warnings(o, 'dependency-provisional')[0]!.issues).toEqual(['a/r#1', 'a/r#2']);
   });
-  it.each(['invalidated', 'failed', 'expired', 'relations'] as const)(
-    'warns stale %s contributing observations',
-    (reason) => {
-      const o = input();
-      const record = o.repositories[0]!;
-      if (reason === 'invalidated') record.invalidated = true;
-      if (reason === 'failed') record.observation.lastAttempt!.outcome = 'failed';
-      if (reason === 'expired') record.observation.lastCheckedAt = '2026-11-06T11:00:00.000Z';
-      if (reason === 'relations')
-        record.observation.relationsCheckedAt.native = '2026-11-06T11:00:00.000Z';
-      expect(warnings(o, 'stale-data')[0]!.message).toContain('s/a/r');
-      if (reason === 'expired' || reason === 'relations') {
+  describe.each(['repository', 'outside-open', 'outside-closed'] as const)(
+    'stale-data threshold for %s',
+    (kind) => {
+      function observed() {
+        const o = input();
+        o.repositories[0]!.observation.issues = [issue(1, 'Blocked by #2')];
+        const target = outside('a/r#2', {
+          status: 'found',
+          issue: { ...issue(2), state: kind === 'outside-closed' ? 'closed' : 'open' },
+        });
+        o.outsideIssues = [target];
+        return { o, record: kind === 'repository' ? o.repositories[0]! : target };
+      }
+
+      it.each(['expired', 'invalidated', 'relations', 'partial', 'recent-failure'] as const)(
+        'does not warn for %s',
+        (reason) => {
+          const { o, record } = observed();
+          const before = deriveScopePlan(o).snapshot!;
+          o.now = new Date('2026-11-06T12:01:00.001Z');
+          if (reason === 'invalidated') record.invalidated = true;
+          if (reason === 'relations')
+            record.observation.relationsCheckedAt.native = '2026-11-06T11:00:00.000Z';
+          if (reason === 'partial') record.observation.lastAttempt!.outcome = 'partial';
+          if (reason === 'recent-failure') record.observation.lastAttempt!.outcome = 'failed';
+          const after = deriveScopePlan(o).snapshot!;
+          expect(warnings(o, 'stale-data')).toEqual([]);
+          expect(after.fetchedAt).toBe(before.fetchedAt);
+          // A failed outside lookup still marks its dependencies provisional.
+          if (reason !== 'recent-failure' || kind === 'repository')
+            expect(after.contentHash).toBe(before.contentHash);
+          const afterTTL = after.contentHash;
+          o.now = new Date('2026-11-06T12:16:00.000Z');
+          expect(deriveScopePlan(o).snapshot!.contentHash).toBe(afterTTL);
+        },
+      );
+
+      it('warns only strictly beyond TTL plus grace after a failed attempt', () => {
+        const { o, record } = observed();
+        record.observation.lastAttempt!.outcome = 'failed';
+        o.now = new Date('2026-11-06T12:16:00.000Z');
+        const withinGrace = deriveScopePlan(o).snapshot!;
+        expect(warnings(o, 'stale-data')).toEqual([]);
+        o.now = new Date('2026-11-06T12:16:00.001Z');
+        expect(warnings(o, 'stale-data')).toEqual([
+          {
+            code: 'stale-data',
+            message: `Stale observation: ${kind === 'repository' ? 's/a/r' : 'a/r#2'}`,
+            issues: kind === 'repository' ? ['a/r#1'] : kind === 'outside-open' ? ['a/r#2'] : [],
+          },
+        ]);
+        expect(deriveScopePlan(o).snapshot!.contentHash).not.toBe(withinGrace.contentHash);
         o.cache.ttlSeconds = 0;
         expect(warnings(o, 'stale-data')).toEqual([]);
-      }
+      });
     },
   );
-  it('warns stale outside observations but excludes unrelated stale listings/lookups', () => {
+
+  it.each([0, 60])('warns on a never-succeeded outside failure with TTL %s', (ttlSeconds) => {
     const o = input();
+    o.cache.ttlSeconds = ttlSeconds;
     o.repositories[0]!.observation.issues = [issue(1, 'Blocked by #2')];
-    const observed = outside('a/r#2', { status: 'found', issue: issue(2) });
-    observed.invalidated = true;
-    o.outsideIssues = [
-      observed,
-      { ...outside('a/r#99', { status: 'found', issue: issue(99) }), invalidated: true },
-    ];
-    o.repositories[1]!.invalidated = true;
-    expect(warnings(o, 'stale-data').map((w) => w.message)).toEqual(['Stale observation: a/r#2']);
+    const target = outside('a/r#2', null);
+    target.observation.lastCheckedAt = null;
+    target.observation.lastAttempt = null;
+    o.outsideIssues = [target];
+    expect(warnings(o, 'stale-data')).toEqual([]);
+    target.observation.lastAttempt = { attemptedAt: checked, outcome: 'failed', error: 'offline' };
+    expect(warnings(o, 'stale-data')[0]!.message).toBe('Stale observation: a/r#2');
+    expect(warnings(o, 'dependency-provisional')[0]!.issues).toEqual(['a/r#1', 'a/r#2']);
   });
-  it('reports stale observed closures that satisfy a blocker without adding a closed node', () => {
+
+  it('excludes unrelated failed listings and lookups from stale warnings', () => {
     const o = input();
-    o.repositories[0]!.observation.issues = [issue(1, 'Blocked by #2')];
-    const closed = outside('a/r#2', { status: 'found', issue: { ...issue(2), state: 'closed' } });
-    closed.invalidated = true;
-    o.outsideIssues = [closed];
-    expect(nodes(o)).toHaveLength(1);
-    expect(nodes(o)[0]!.status).toBe('ready');
-    expect(warnings(o, 'stale-data')[0]!.message).toContain('a/r#2');
+    const unrelated = outside('a/r#99', { status: 'found', issue: issue(99) });
+    unrelated.observation.lastAttempt!.outcome = 'failed';
+    o.outsideIssues = [unrelated];
+    o.repositories[1]!.observation.lastAttempt!.outcome = 'failed';
+    o.now = new Date('2026-11-06T13:00:00.000Z');
+    expect(warnings(o, 'stale-data')).toEqual([]);
   });
   it('is deterministic without mutating inputs, and never uses generation alone as invalidation', () => {
     const o = input();
