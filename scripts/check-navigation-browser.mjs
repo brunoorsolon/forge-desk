@@ -360,6 +360,23 @@ try {
     'release tab mounted with sidebar visible and planning panes hidden',
   );
   await expect(`location.hash === '#/releases'`, 'Release deep link preserved');
+  const viewRequestsBefore = fixture.requests.filter(
+    (r) => r.url === '/api/views/alpha-view/snapshot',
+  ).length;
+  await evaluate(`document.querySelector('#tab-problems').click()`);
+  await until(
+    () =>
+      evaluate(
+        `location.hash === '#/view/alpha-view/problems' && document.querySelector('.project-sidebar')?.hidden === false && document.querySelector('.releases')?.hidden === true && document.querySelector('.main')?.hidden === false && document.querySelector('#tab-problems')?.getAttribute('aria-selected') === 'true' && document.querySelector('.problems')?.textContent.includes('No open issues in this view')`,
+      ),
+    'leaving direct Releases through a planning tab renders the view and hides releases',
+  );
+  assert.ok(
+    fixture.requests.filter((r) => r.url === '/api/views/alpha-view/snapshot').length >
+      viewRequestsBefore,
+    'Leaving direct Releases through a planning tab must request the view snapshot',
+  );
+  checks.push('Leaving direct Releases through a planning tab requests snapshot and shows main');
   const conflict = await navigationFixture({ conflicts: ['alpha'] });
   fixtures.push(conflict);
   await visit(conflict);

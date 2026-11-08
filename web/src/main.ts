@@ -90,11 +90,7 @@ function resolveLocation(): void {
     render();
     return;
   }
-  const parsed = parseHash(location.hash);
-  const route =
-    parsed.scope === undefined && parsed.viewId === null && parsed.tab === 'graph'
-      ? { ...parsed, tab: store.get().route.tab }
-      : parsed;
+  const route = parseHash(location.hash);
   // Existing view links do not depend on the catalog being available.
   if (route.scope === undefined && route.viewId !== null) {
     navigationPanel = null;
@@ -247,11 +243,7 @@ const actions: Actions = {
     store.dispatch({ type: 'select', key });
     navigate({ ...currentRoute(), tab: 'graph' });
   },
-  setTab: (tab: Tab) => {
-    const next = { ...currentRoute(), tab };
-    store.dispatch({ type: 'route', route: next });
-    navigate(next);
-  },
+  setTab: (tab: Tab) => navigate({ ...currentRoute(), tab }),
   openReleases,
   setView: (viewId) => {
     const { scope: _scope, ...route } = currentRoute();

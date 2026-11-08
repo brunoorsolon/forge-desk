@@ -20,7 +20,7 @@ export interface Actions {
   /** Select the node and switch to the graph tab. */
   showInGraph(key: IssueKey): void;
   setTab(tab: Tab): void;
-  openReleases?(): void;
+  openReleases(): void;
   setView(viewId: string): void;
   setQuery(q: string): void;
   /** Order the issues inside each wave; null keeps the server's order. */

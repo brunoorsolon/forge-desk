@@ -294,10 +294,7 @@ export function createHeader(ctx: ViewCtx): HeaderView {
       role: 'tab',
       id: 'tab-releases',
       'aria-selected': 'false',
-      onclick: () => {
-        if (ctx.actions.openReleases) ctx.actions.openReleases();
-        else location.hash = '#/releases';
-      },
+      onclick: () => ctx.actions.openReleases(),
     },
     icon('tag', 14),
     'Releases',

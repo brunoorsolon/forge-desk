@@ -382,10 +382,11 @@ describe('header export destination and named-view controls', () => {
     const releaseRoute = parseReleaseHash('#/releases/repo-1?plan=plan-1');
     expect(releaseRoute).toEqual({ repositoryId: 'repo-1', jobId: null, planId: 'plan-1' });
     h.header.setReleasesActive(releaseRoute !== null);
-    headingEl.hidden = releaseRoute !== null;
     expect(sidebarEl.hidden).toBe(false);
-    expect(headingEl.hidden).toBe(true);
     expect(h.toolbar.hidden).toBe(true);
     expect(h.tabs()[3]!.getAttribute('aria-selected')).toBe('true');
+
+    h.tabs()[2]!.click();
+    expect(h.actions.setTab).toHaveBeenCalledWith('problems');
   });
 });

@@ -56,7 +56,7 @@ for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
       };
       const heading = createScopeHeading({ toggleFavorite() {} });
       heading.update(state, initialPreferenceState(), sweeping ? sweep : null);
-      const ctx = { store: new Store(state), actions: { select() {}, showInGraph() {}, setTab() {}, setView() {}, setQuery() {}, setSort() {}, refresh() {}, reload() {} } };
+      const ctx = { store: new Store(state), actions: { select() {}, showInGraph() {}, setTab() {}, openReleases() {}, setView() {}, setQuery() {}, setSort() {}, refresh() {}, reload() {} } };
       const header = createHeader(ctx);
       const summary = createSummary(ctx);
       header.update(state, state);
