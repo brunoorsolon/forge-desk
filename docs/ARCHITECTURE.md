@@ -1307,7 +1307,13 @@ and other sources progress independently.
 
 `ScopeRefreshJobs` coordinates complete project/source rechecks and targeted dependency traversal,
 sharing repository and outside-issue work between overlapping scopes. Jobs expose per-unit state,
-coverage and check/error times. The queue's fetch context keeps provider-level in-flight
+coverage and check/error times. Before each breadth-first lookup batch, jobs reuse stored closed
+issues when they are not invalidated, their last attempt did not fail, and their successful check
+is within a positive `cache.ttlSeconds`. Zero TTL disables reuse and requires revalidation.
+Reused observations do not enter the
+admission queue or consume the 200-lookup budget, and keep their original check time. Unknown,
+open, failed, invalidated and expired observations still require individual lookups.
+The queue's fetch context keeps provider-level in-flight
 coalescing and provider concurrency lanes separate from ordinary reads, so paced work cannot
 bypass admission by joining an unpaced request.
 Named views, exports and CLI are not subject to the new admission pace, but server consumers share
@@ -1393,8 +1399,8 @@ not register HTTP routes or change named-view caching.
   bypass it.
 - First-load and explicit refresh reads wait at most 15 seconds. Missing data
   remains a null snapshot; a successful empty listing is a real empty plan.
-- Zero TTL always waits for revalidation and only derives from that job's
-  successful units, excluding unrelated cached listings. An unfinished revalidation
+- Zero TTL always waits for revalidation and derives only from that job's successful units,
+  excluding unrelated cached listings. An unfinished revalidation
   returns no snapshot. A partial failure preserves that job's successful updates
   and provisional dependency edges without falling back to failed units' cached
   data. Successful zero-TTL observations report fresh regardless of elapsed time.
@@ -1457,7 +1463,7 @@ opening a named view.
 
 Scope requests use the project/source snapshot endpoints. `scope-navigation.ts` owns one lane
 for the open scope, coalesces pending reads and rejects late responses after navigation, including
-a return to the same scope. Active jobs repeat a read two seconds after each response. The
+a return to the same scope. Active jobs repeat a read 60 seconds after each response. The
 configured `ui.refreshMinutes` schedules freshness reads for the open scope, with zero disabling
 that periodic timer. Hidden tabs and the Releases area suspend scope checks; returning checks
 once and resumes the active-job/periodic schedule. No unopened project is polled.

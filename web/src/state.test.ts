@@ -493,7 +493,7 @@ describe('project/source scope state', () => {
           visible: true,
           visibleSince: null,
         }),
-      ).toBe(3000);
+      ).toBe(61_000);
       const recovered = reducer(failed, {
         type: 'scope-response',
         response: response({ freshness: f }),
@@ -552,7 +552,8 @@ describe('project/source scope state', () => {
 
   it('plans follow-ups only while visible, and one freshness check after returning', () => {
     const input = { job, respondedAt: 1000, visible: true, visibleSince: null };
-    expect(nextScopeRequestAt(input)).toBe(3000);
+    expect(nextScopeRequestAt(input)).toBe(61_000);
+    expect(nextScopeRequestAt({ ...input, job: { ...job, state: 'queued' } })).toBe(61_000);
     expect(nextScopeRequestAt({ ...input, visible: false })).toBeNull();
     expect(nextScopeRequestAt({ ...input, job: null })).toBeNull();
     expect(nextScopeRequestAt({ ...input, job: { ...job, state: 'completed' } })).toBeNull();
@@ -560,7 +561,7 @@ describe('project/source scope state', () => {
     expect(
       nextScopeRequestAt({ ...input, job: null, visibleSince: 5000, respondedAt: 5000 }),
     ).toBeNull();
-    expect(nextScopeRequestAt({ ...input, visibleSince: 5000, respondedAt: 5001 })).toBe(7001);
+    expect(nextScopeRequestAt({ ...input, visibleSince: 5000, respondedAt: 5001 })).toBe(65_001);
     expect(nextScopeRequestAt({ ...input, visibleSince: 5000, respondedAt: null })).toBe(5000);
   });
 });

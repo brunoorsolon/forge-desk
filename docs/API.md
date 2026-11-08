@@ -315,7 +315,7 @@ Returns the settings the web UI reads at startup:
 { "refreshMinutes": 5, "version": "2.0.1" }
 ```
 
-`refreshMinutes` is `ui.refreshMinutes` (or `FD_REFRESH_MINUTES`): periodic reads use the snapshot route for the open project/source or named view and respect the shared cache. Scope checks pause while the tab is hidden or Releases is open; while a scope job is active, visible scope browsing checks progress every two seconds after the prior response. `0` disables periodic freshness polling, not active-job progress reads. Explicit refresh uses the corresponding POST route.
+`refreshMinutes` is `ui.refreshMinutes` (or `FD_REFRESH_MINUTES`): periodic reads use the snapshot route for the open project/source or named view and respect the shared cache. Scope checks pause while the tab is hidden or Releases is open; while a scope job is active, visible scope browsing checks progress every 60 seconds after the prior response. `0` disables periodic freshness polling, not active-job progress reads. Explicit refresh uses the corresponding POST route.
 
 `version` is the running server's version. The theme menu shows it at the bottom.
 

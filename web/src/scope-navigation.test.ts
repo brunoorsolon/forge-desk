@@ -56,37 +56,44 @@ describe('visible scope requests', () => {
     await vi.advanceTimersByTimeAsync(120_000);
     expect(read.mock.calls).toEqual([[project]]);
   });
-  it('follows active jobs every two seconds and stops after completion', async () => {
-    const read = vi.fn(async (scope: Scope) => response(scope, read.mock.calls.length < 3));
-    const { navigation } = setup(read);
-    navigation.open(project);
-    await vi.advanceTimersByTimeAsync(1999);
-    expect(read).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(read).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(read).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(read).toHaveBeenCalledTimes(3);
-  });
+  it.each(['queued', 'running'] as const)(
+    'follows %s jobs every 60 seconds and stops after completion',
+    async (state) => {
+      const read = vi.fn(async (scope: Scope) => {
+        const result = response(scope, read.mock.calls.length < 3);
+        if (result.job) result.job.state = state;
+        return result;
+      });
+      const { navigation } = setup(read);
+      navigation.open(project);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(read).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(read).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(read).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(read).toHaveBeenCalledTimes(3);
+    },
+  );
   it('pauses job and periodic checks while hidden and reads once on return', async () => {
     const { navigation, read } = setup(vi.fn(async (scope: Scope) => response(scope, true)));
-    navigation.setRefreshMinutes(0.1);
+    navigation.setRefreshMinutes(1);
     navigation.setVisible(false);
     navigation.open(project);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).not.toHaveBeenCalled();
     navigation.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(1);
     navigation.setVisible(false);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).toHaveBeenCalledTimes(1);
     navigation.setVisible(true);
     navigation.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenCalledTimes(3);
   });
   it('rechecks the open scope periodically without polling other projects', async () => {
@@ -117,7 +124,7 @@ describe('visible scope requests', () => {
     await navigation.check();
     navigation.setVisible(false);
     navigation.setVisible(true);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).toHaveBeenCalledTimes(1);
     finish(response());
     await vi.advanceTimersByTimeAsync(0);
@@ -145,7 +152,7 @@ describe('visible scope requests', () => {
     expect(store.get().status).toBe('loading');
     expect(store.get().job?.state).toBe('running');
     expect(store.get().error).toBeNull();
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenCalledTimes(4);
   });
   it('reports API failures and can recover with a visible-tab check', async () => {

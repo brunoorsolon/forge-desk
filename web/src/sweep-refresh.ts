@@ -1,5 +1,6 @@
 import type { SweepStatus } from '../../src/core/scope.js';
 import { errorMessage, fetchSweep, refreshAllSources } from './api.js';
+import { ACTIVE_POLL_MS } from './polling.js';
 
 export interface SweepRefreshState {
   sweep: SweepStatus | null;
@@ -29,7 +30,7 @@ export function createSweepRefresh(
   }
   function schedule(): void {
     cancelTimer();
-    if (visible && running() && !pending) timer = setTimeout(() => void check(), 2000);
+    if (visible && running() && !pending) timer = setTimeout(() => void check(), ACTIVE_POLL_MS);
   }
   async function check(): Promise<void> {
     if (!visible || !observed || pending) return;

@@ -49,18 +49,40 @@ function setup(
 afterEach(() => vi.useRealTimers());
 
 describe('all-source refresh follow-up', () => {
-  it('reads status after launch, follows every two seconds, and stops after completion', async () => {
-    const { controller, read, changed, settled } = setup();
-    read.mockResolvedValueOnce(running).mockResolvedValueOnce(complete);
-    await controller.refresh();
-    await vi.advanceTimersByTimeAsync(1999);
-    expect(read).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(read).toHaveBeenCalledTimes(2);
+  it.each(['queued', 'running'] as const)(
+    'reads status after launch, follows a %s sweep every 60 seconds, and stops after completion',
+    async (state) => {
+      const { controller, read, changed, settled } = setup();
+      read.mockResolvedValueOnce({ ...running, state }).mockResolvedValueOnce(complete);
+      await controller.refresh();
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(read).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
+      expect(settled).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(read).toHaveBeenCalledTimes(2);
+    },
+  );
+  it('publishes a manual launch response immediately, before any polling timer advances', async () => {
+    let finish!: (result: SweepStatus) => void;
+    const { controller, changed, settled, read } = setup(
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      ),
+      vi.fn(() => new Promise(() => {})),
+    );
+    const pending = controller.refresh();
+    expect(changed).toHaveBeenLastCalledWith({ sweep: null, error: null });
+    finish(complete);
+    await pending;
     expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
     expect(settled).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(1);
   });
   it('joins retain the original start, trigger and project check times', async () => {
     const { controller, changed, start } = setup();
@@ -76,7 +98,7 @@ describe('all-source refresh follow-up', () => {
     await controller.refresh();
     await vi.advanceTimersByTimeAsync(0);
     controller.setVisible(false);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).toHaveBeenCalledTimes(1);
     read.mockResolvedValue(complete);
     controller.setVisible(true);
@@ -92,7 +114,7 @@ describe('all-source refresh follow-up', () => {
     start.mockRejectedValueOnce(new Error('not allowed'));
     await controller.refresh();
     expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: 'not allowed' });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: 'not allowed' });
   });
   it('retains progress on a read failure and retries status, never the launch', async () => {
@@ -101,7 +123,7 @@ describe('all-source refresh follow-up', () => {
     await controller.refresh();
     await vi.advanceTimersByTimeAsync(0);
     expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: 'offline' });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
     expect(start).toHaveBeenCalledTimes(1);
   });
@@ -137,7 +159,7 @@ describe('all-source refresh follow-up', () => {
     controller.setVisible(false);
     finish(running);
     await pending;
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).not.toHaveBeenCalled();
     controller.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
