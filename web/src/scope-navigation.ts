@@ -1,5 +1,5 @@
 import type { CatalogResponse, Scope, ScopeResponse } from '../../src/core/scope.js';
-import { ApiError, errorMessage, fetchScopeSnapshot } from './api.js';
+import { ApiError, errorMessage, fetchScopeSnapshot, refreshScope } from './api.js';
 import type { Route } from './route.js';
 import { nextScopeRequestAt, scopeId, type AppState, type Store } from './state.js';
 import type { ScopePanelState } from './views/states.js';
@@ -66,11 +66,14 @@ export function scopePanel(state: AppState, catalog: CatalogResponse | null): Sc
 export function createScopeNavigation(
   store: Store,
   read: (scope: Scope) => Promise<ScopeResponse> = fetchScopeSnapshot,
+  refresh: (scope: Scope) => Promise<ScopeResponse> = refreshScope,
 ) {
   let scope: Scope | null = null;
   let visible = true;
   let generation = 0;
   let pending = false;
+  let requestedRecheck = 0;
+  let completedRecheck = 0;
   let respondedAt: number | null = null;
   let visibleSince: number | null = null;
   let interval = 0;
@@ -94,31 +97,52 @@ export function createScopeNavigation(
       followup === null ? periodic : periodic === null ? followup : Math.min(followup, periodic);
     if (due !== null) timer = setTimeout(() => void check(), Math.max(0, due - Date.now()));
   }
-  async function check(): Promise<void> {
-    if (!visible || scope === null || pending) return;
+  async function load(target: Scope, explicit: boolean): Promise<void> {
     cancelTimer();
-    const target = scope;
+    const origin = scope!;
     const token = generation;
+    const recheckAtStart = requestedRecheck;
+    let succeeded = false;
     pending = true;
-    store.dispatch({ type: 'scope-load-start', scope: target });
+    store.dispatch({ type: 'scope-load-start', scope: origin });
     try {
-      const response = await read(target);
-      if (token === generation) store.dispatch({ type: 'scope-response', response });
+      const response = await (explicit ? refresh : read)(target);
+      if (token === generation) {
+        // A source refresh from a project displays its returned All projects scope.
+        // Do not leave the old scope before success: rejected launches keep its data.
+        if (scopeId(response.scope) !== scopeId(origin)) {
+          scope = response.scope;
+          store.dispatch({ type: 'route', route: routeForScope(scope, store.get().route) });
+        }
+        store.dispatch({ type: 'scope-response', response });
+        succeeded = true;
+      }
     } catch (error) {
       if (token === generation)
         store.dispatch({
           type: 'scope-failed',
-          scope: target,
-          status: error instanceof ApiError ? error.status : 0,
+          scope: origin,
+          // Even a rejected explicit refresh must retain the data already on screen.
+          status: !explicit && error instanceof ApiError ? error.status : 0,
           error: errorMessage(error),
         });
     } finally {
       if (token === generation) {
         pending = false;
         respondedAt = Date.now();
-        schedule();
+        // Only a current read attempt or successful refresh satisfies earlier
+        // rechecks. A rejected refresh must not consume a sweep's recheck when
+        // it supersedes a pending read, and requests received during this load
+        // still need a later read. Failed passive reads stop with their error.
+        if (!explicit || succeeded) completedRecheck = recheckAtStart;
+        if (completedRecheck < requestedRecheck) void check();
+        else schedule();
       }
     }
+  }
+  async function check(): Promise<void> {
+    if (!visible || scope === null || pending) return;
+    await load(scope, false);
   }
   return {
     open(next: Scope | null): void {
@@ -127,6 +151,8 @@ export function createScopeNavigation(
       cancelTimer();
       generation++;
       pending = false;
+      requestedRecheck = 0;
+      completedRecheck = 0;
       respondedAt = null;
       visibleSince = null;
       scope = next;
@@ -146,5 +172,17 @@ export function createScopeNavigation(
       schedule();
     },
     check,
+    recheck(): void {
+      if (scope === null) return;
+      requestedRecheck++;
+      if (!pending) void check();
+    },
+    async refresh(target: Scope): Promise<void> {
+      if (!visible || scope === null) return;
+      // Explicit intent supersedes an in-flight passive read. Repeated launches
+      // may join on the server; only the latest response can update this page.
+      generation++;
+      await load(target, true);
+    },
   };
 }

@@ -1,0 +1,349 @@
+{
+  "applicationCommit": "9988b00ccb3a9c2fb8d9e06a8f9a29be2b65ea7d",
+  "workflowRun": "https://github.com/brunoorsolon/forge-desk/actions/runs/42426316353",
+  "artifact": "https://github.com/brunoorsolon/forge-desk/actions/runs/42426316353/artifacts/13594714276",
+  "checks": [
+    "All three controls appear in a project",
+    "Project refresh calls only its project and displays its returned check time",
+    "Project-only refresh is hidden in All projects",
+    "Source refresh displays All projects after success and lists the full source only",
+    "A bounded source refresh response with an active job follows the normal scope-read lane",
+    "Joined sweep displays the original start time",
+    "Joined sweep preserves a project successful check time",
+    "Joined sweep preserves a project successful check time",
+    "Running sweep is followed every two seconds through GET /api/refresh",
+    "Real hidden tab stops sweep polling; return shows completion, then polling stops",
+    "Rejected sweep retains the completed sweep data",
+    "Rejected scope and sweep refreshes show errors and keep existing data",
+    "Anonymous refreshes carry the required request header, without a session token",
+    "All three authenticated controls send session CSRF proof and succeed through real protected routes"
+  ],
+  "requests": [
+    [
+      {
+        "url": "/?browser-case=1",
+        "method": "GET",
+        "at": 1794094929999,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "method": "GET",
+        "at": 1794094930034,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/index-BAUTO21y.js",
+        "method": "GET",
+        "at": 1794094930035,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094930057,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/settings",
+        "method": "GET",
+        "at": 1794094930057,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/projects",
+        "method": "GET",
+        "at": 1794094930063,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/views",
+        "method": "GET",
+        "at": 1794094930065,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "method": "GET",
+        "at": 1794094930097,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "method": "GET",
+        "at": 1794094930098,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "method": "GET",
+        "at": 1794094930114,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094930281,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/refresh",
+        "method": "POST",
+        "at": 1794094930285,
+        "launchHeader": "1",
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094930340,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/refresh",
+        "method": "POST",
+        "at": 1794094930343,
+        "launchHeader": "1",
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094930453,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/refresh",
+        "method": "POST",
+        "at": 1794094930458,
+        "launchHeader": "1",
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/snapshot",
+        "method": "GET",
+        "at": 1794094947470,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/snapshot",
+        "method": "GET",
+        "at": 1794094949480,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094949517,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "POST",
+        "at": 1794094949520,
+        "launchHeader": "1",
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "GET",
+        "at": 1794094949524,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094949570,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "POST",
+        "at": 1794094949572,
+        "launchHeader": "1",
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "GET",
+        "at": 1794094949575,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "GET",
+        "at": 1794094951578,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "GET",
+        "at": 1794094954288,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/snapshot",
+        "method": "GET",
+        "at": 1794094954291,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094956561,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/refresh",
+        "method": "POST",
+        "at": 1794094956564,
+        "launchHeader": "1",
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094956675,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "POST",
+        "at": 1794094956679,
+        "launchHeader": "1",
+        "hasCsrf": false
+      }
+    ],
+    [
+      {
+        "url": "/login",
+        "method": "GET",
+        "at": 1794094956806,
+        "hasCsrf": false
+      },
+      {
+        "url": "/login",
+        "method": "POST",
+        "at": 1794094956841,
+        "hasCsrf": false
+      },
+      {
+        "url": "/",
+        "method": "GET",
+        "at": 1794094956846,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/index-D6kjjqmV.css",
+        "method": "GET",
+        "at": 1794094956855,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/index-BAUTO21y.js",
+        "method": "GET",
+        "at": 1794094956857,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094956870,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/settings",
+        "method": "GET",
+        "at": 1794094956870,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/projects",
+        "method": "GET",
+        "at": 1794094956875,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/views",
+        "method": "GET",
+        "at": 1794094956876,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/geist-latin-wght-normal-BgDaEnEv.woff2",
+        "method": "GET",
+        "at": 1794094956876,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/snapshot",
+        "method": "GET",
+        "at": 1794094956883,
+        "hasCsrf": false
+      },
+      {
+        "url": "/assets/geist-mono-latin-wght-normal-XN7g48iV.woff2",
+        "method": "GET",
+        "at": 1794094956889,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/snapshot",
+        "method": "GET",
+        "at": 1794094956936,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094956957,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/projects/alpha/demo/one/refresh",
+        "method": "POST",
+        "at": 1794094956959,
+        "launchHeader": "1",
+        "hasCsrf": true
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094957010,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/refresh",
+        "method": "POST",
+        "at": 1794094957012,
+        "launchHeader": "1",
+        "hasCsrf": true
+      },
+      {
+        "url": "/api/session",
+        "method": "GET",
+        "at": 1794094957069,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/refresh",
+        "method": "POST",
+        "at": 1794094957071,
+        "launchHeader": "1",
+        "hasCsrf": true
+      },
+      {
+        "url": "/api/refresh",
+        "method": "GET",
+        "at": 1794094957075,
+        "hasCsrf": false
+      },
+      {
+        "url": "/api/sources/alpha/snapshot",
+        "method": "GET",
+        "at": 1794094957078,
+        "hasCsrf": false
+      }
+    ]
+  ]
+}
