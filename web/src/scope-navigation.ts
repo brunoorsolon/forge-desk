@@ -106,10 +106,19 @@ export function createScopeNavigation(
     pending = true;
     store.dispatch({ type: 'scope-load-start', scope: origin });
     try {
-      const response = await (explicit ? refresh : read)(target);
+      let response = await (explicit ? refresh : read)(target);
+      if (token !== generation) return;
+      // Refresh the whole source without replacing an open project's route or
+      // displaying the source-wide plan. Re-read the project after the POST so
+      // its snapshot and freshness use the refreshed observations.
+      if (
+        explicit &&
+        target.kind === 'source' &&
+        origin.kind === 'project' &&
+        target.source === origin.source
+      )
+        response = await read(origin);
       if (token === generation) {
-        // A source refresh from a project displays its returned All projects scope.
-        // Do not leave the old scope before success: rejected launches keep its data.
         if (scopeId(response.scope) !== scopeId(origin)) {
           scope = response.scope;
           store.dispatch({ type: 'route', route: routeForScope(scope, store.get().route) });
