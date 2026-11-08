@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import type { PlanNode, Snapshot } from '../../../src/core/types.js';
-import { INITIAL_STATE, type AppState } from '../state.js';
+import { INITIAL_STATE, problemCount, type AppState } from '../state.js';
 import { DEFAULT_ROUTE, type Tab } from '../route.js';
 import { createProblemsView } from './problems.js';
 import { createSidePanel } from './side-panel.js';
@@ -213,6 +213,38 @@ describe('partial All projects warning', () => {
 });
 
 describe('scope freshness and coverage warnings', () => {
+  it('matches the badge and heading to rendered sections while keeping warning row counts', () => {
+    const scoped = structuredClone(snapshot);
+    scoped.plan.nodes.push(node('o/r#3', { status: 'blocked-by-cycle', blockedBy: ['o/r#1'] }));
+    scoped.plan.unschedulable.push('o/r#3');
+    scoped.plan.warnings.push(
+      { code: 'blocked-by-cycle', message: 'Waiting on cycle', issues: ['o/r#3'] },
+      ...Array.from({ length: 28 }, (_, i) => ({
+        code: 'stale-data' as const,
+        message: `Stale observation ${i}`,
+        issues: [],
+      })),
+      { code: 'dependency-provisional', message: 'Provisional dependency', issues: [] },
+    );
+    const problems = createProblemsView(ctx);
+    problems.update({ ...stateWith(null, 'problems'), snapshot: scoped }, INITIAL_STATE);
+    const root = problems.el as unknown as FakeElement;
+    expect(problemCount(scoped)).toBe(4);
+    expect(textOfClass(root, 'problems-lede')[0]).toContain('4 problems in this plan');
+    expect(textOfClass(root, 'p-section')).toHaveLength(problemCount(scoped));
+    expect(textOfClass(root, 'n')).toEqual(['2 issues', '1 issue', '28', '1']);
+    expect(textOfClass(root, 'warn-msg')).toHaveLength(29);
+
+    const clean = structuredClone(scoped);
+    clean.plan.cycles = [];
+    clean.plan.unschedulable = [];
+    clean.plan.warnings = [];
+    problems.update({ ...stateWith(null, 'problems'), snapshot: clean }, INITIAL_STATE);
+    expect(problemCount(clean)).toBe(0);
+    expect(textOfClass(root, 'p-section')).toEqual([]);
+    expect(root.textContent).toContain('No problems found');
+  });
+
   it('explains stale observations and that provisional dependencies are not fully verified', () => {
     const scoped = structuredClone(snapshot);
     scoped.plan.warnings = [
