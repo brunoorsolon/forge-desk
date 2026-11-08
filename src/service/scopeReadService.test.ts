@@ -549,6 +549,101 @@ describe('cache-first scope reads', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(['success', 'failure'] as const)(
+    'reports a covering source job after the refresh wait expires, then clears it on %s',
+    async (outcome) => {
+      const f = fixture(3600);
+      f.seed('o/a', [issue('o/a#1')]);
+      f.seed('o/b');
+      const blocked = gate();
+      f.list.mockImplementation(async ({ repo }) => {
+        await blocked.promise;
+        if (outcome === 'failure') throw new Error('source refresh failed');
+        return listing([issue(`o/${repo}#2`)]);
+      });
+      const pending = f.service.refresh(all);
+      await vi.advanceTimersByTimeAsync(15_000);
+      const refreshed = await pending;
+      expect(refreshed.job).toMatchObject({ scope: all, state: 'running' });
+      const active = f.jobs.active(all)!;
+
+      for (let n = 0; n < 3; n++) {
+        const response = await f.service.get(project());
+        expect(response.scope).toEqual(project());
+        expect(response.job).toMatchObject({ id: refreshed.job!.id, scope: all });
+        expect(response.snapshot?.plan.nodes[0]?.key).toBe('o/a#1');
+        expect(response.freshness.repositories[0]?.state).toBe('updating');
+        expect(f.jobs.active(project())).toBeNull();
+        await vi.advanceTimersByTimeAsync(2000);
+      }
+      expect(f.service.cached(project()).job?.id).toBe(refreshed.job!.id);
+      expect(f.list).toHaveBeenCalledTimes(2);
+
+      blocked.resolve();
+      await active.completion;
+      const settled = await f.service.get(project());
+      expect(settled.job).toBeNull();
+      expect(settled.snapshot?.plan.nodes[0]?.key).toBe(outcome === 'success' ? 'o/a#2' : 'o/a#1');
+      expect(settled.freshness.repositories[0]?.state).toBe(
+        outcome === 'success' ? 'fresh' : 'failed',
+      );
+      expect(f.list).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('keeps a queued source job visible on its project throughout cooldown', async () => {
+    const f = fixture(3600);
+    f.seed('o/a', [issue('o/a#1')]);
+    f.seed('o/b');
+    f.cooldown(Date.now() + 60_000);
+    f.list.mockImplementation(async ({ repo }) => listing([issue(`o/${repo}#2`)]));
+    const refreshed = await f.service.refresh(all);
+    const active = f.jobs.active(all)!;
+    expect(refreshed.job).toMatchObject({ scope: all, state: 'queued' });
+    const delayed = await f.service.get(project());
+    expect(delayed.job?.id).toBe(refreshed.job!.id);
+    expect(delayed.freshness.repositories[0]?.state).toBe('delayed');
+    expect(f.list).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await active.completion;
+    const settled = await f.service.get(project());
+    expect(settled.job).toBeNull();
+    expect(settled.snapshot?.plan.nodes[0]?.key).toBe('o/a#2');
+    expect(settled.freshness.repositories[0]?.state).toBe('fresh');
+  });
+
+  it('reports covering source jobs in related lanes but not unrelated project jobs', async () => {
+    const f = fixture(3600);
+    f.seed('o/a');
+    f.seed('o/b');
+    const related = new ScopeRefreshJobs({
+      sources: [f.source],
+      store: f.store,
+      cache: { ttlSeconds: 3600 },
+    });
+    const service = new ScopeReadService({
+      sources: [f.source],
+      store: f.store,
+      jobs: f.jobs,
+      relatedJobs: [related],
+      cache: { ttlSeconds: 3600 },
+    });
+    const blocked = gate();
+    f.list.mockImplementation(async () => {
+      await blocked.promise;
+      return listing();
+    });
+    const sibling = related.refresh(project('o/b'));
+    expect((await service.get(project())).job).toBeNull();
+    const source = related.refresh(all);
+    expect((await service.get(project())).job?.id).toBe(source.status.id);
+    const own = f.jobs.refresh(project());
+    expect((await service.get(project())).job?.id).toBe(own.status.id);
+    blocked.resolve();
+    await Promise.all([sibling.completion, source.completion, own.completion]);
+    expect((await service.get(project())).job).toBeNull();
+  });
+
   it('explicitly rechecks fresh data and joins repeated refreshes', async () => {
     const f = fixture();
     f.seed('o/a');

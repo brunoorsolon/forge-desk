@@ -82,7 +82,7 @@ describe('scope refresh wiring', () => {
     expect(read).toHaveBeenCalledTimes(2);
     expect(store.get().job).toBeNull();
   });
-  it('keeps the current project until a source launch succeeds, then follows that source', async () => {
+  it('keeps the project and follows its covering source job until it settles, with periodic checks disabled', async () => {
     let finish!: (r: ScopeResponse) => void;
     const { store, navigation, read } = setup(
       () =>
@@ -91,16 +91,29 @@ describe('scope refresh wiring', () => {
         }),
     );
     await vi.advanceTimersByTimeAsync(0);
+    navigation.setRefreshMinutes(0);
     const before = store.get().snapshot;
+    const updating = { ...response(project), job: response(source, true).job };
+    read.mockResolvedValueOnce(updating).mockResolvedValueOnce(updating);
     const pending = navigation.refresh(source);
     expect(store.get().snapshot).toBe(before);
     expect(scopeFromRoute(store.get().route)).toEqual(project);
     finish(response(source, true));
     await pending;
-    expect(scopeFromRoute(store.get().route)).toEqual(source);
+    expect(scopeFromRoute(store.get().route)).toEqual(project);
+    expect(store.get().job?.scope).toEqual(source);
+    expect(read.mock.calls).toEqual([[project], [project]]);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(3);
     expect(store.get().job?.scope).toEqual(source);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(read).toHaveBeenLastCalledWith(source);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(store.get().job).toBeNull();
+    expect(scopeFromRoute(store.get().route)).toEqual(project);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(read).toHaveBeenCalledTimes(4);
   });
   it.each([0, 403, 404, 409, 500])(
     'retains the visible data and route on rejected launches (%i)',
@@ -132,6 +145,19 @@ describe('scope refresh wiring', () => {
     old(response());
     await vi.advanceTimersByTimeAsync(0);
     expect(store.get().job?.id).toBe('joined');
+  });
+  it('retains the project data and route when the follow-up read fails', async () => {
+    const { store, navigation, read } = setup(async () => response(source));
+    await vi.advanceTimersByTimeAsync(0);
+    const before = store.get().snapshot;
+    read.mockRejectedValueOnce(new ApiError('project read failed', 404));
+    await navigation.refresh(source);
+    expect(store.get()).toMatchObject({
+      status: 'ready',
+      snapshot: before,
+      refreshError: 'project read failed',
+    });
+    expect(scopeFromRoute(store.get().route)).toEqual(project);
   });
   it('ignores refresh completions and errors after navigating away and back', async () => {
     let reject!: (e: Error) => void;
