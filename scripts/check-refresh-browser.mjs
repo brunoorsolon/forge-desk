@@ -59,6 +59,29 @@ function cdp(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+async function connectTarget(target) {
+  socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', reject, { once: true });
+  });
+  socket.addEventListener('message', (event) => {
+    const response = JSON.parse(event.data);
+    const call = pending.get(response.id);
+    if (!call) return;
+    clearTimeout(call.timer);
+    pending.delete(response.id);
+    if (response.error) call.reject(new Error(JSON.stringify(response.error)));
+    else call.resolve(response.result);
+  });
+  await cdp('Page.enable');
+  await cdp('Emulation.setDeviceMetricsOverride', {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+}
 let clockControlled = false;
 async function advanceBrowserClock(budget) {
   clockControlled = true;
@@ -146,27 +169,7 @@ try {
   }, 'Chromium debugging port');
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const pageTarget = targets.find((target) => target.type === 'page');
-  socket = new WebSocket(pageTarget.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true });
-    socket.addEventListener('error', reject, { once: true });
-  });
-  socket.addEventListener('message', (event) => {
-    const response = JSON.parse(event.data);
-    const call = pending.get(response.id);
-    if (!call) return;
-    clearTimeout(call.timer);
-    pending.delete(response.id);
-    if (response.error) call.reject(new Error(JSON.stringify(response.error)));
-    else call.resolve(response.result);
-  });
-  await cdp('Page.enable');
-  await cdp('Emulation.setDeviceMetricsOverride', {
-    width: 1280,
-    height: 800,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
+  await connectTarget(pageTarget);
   const fixture = await navigationFixture({ sweeps: true });
   fixtures.push(fixture);
   await visit(fixture, '#/project/alpha/demo/one/graph');
@@ -402,8 +405,14 @@ try {
 
   const authenticated = await navigationFixture({ sweeps: true, login: true });
   fixtures.push(authenticated);
+  // The login flow redirects across documents. Give it a fresh target with the
+  // normal browser clock, independent of the paused polling scenarios above.
+  const loginTarget = await cdp('Target.createTarget', { url: 'about:blank' });
+  const loginTargets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  socket.close();
+  await connectTarget(loginTargets.find((target) => target.id === loginTarget.targetId));
+  await cdp('Target.closeTarget', { targetId: pageTarget.id });
   await cdp('Page.navigate', { url: authenticated.origin + '/login' });
-  await advanceBrowserClock(1000);
   await until(
     () => evaluate(`Boolean(document.querySelector('input[name="username"]'))`),
     'login form',
@@ -411,7 +420,6 @@ try {
   await evaluate(
     `document.querySelector('input[name="username"]').value = 'fixture'; document.querySelector('input[name="password"]').value = 'fixture-only'; document.querySelector('form').requestSubmit()`,
   );
-  await advanceBrowserClock(1000);
   await until(
     () => evaluate(`Boolean(document.querySelector('.project-sidebar-entry'))`),
     'authenticated app',
