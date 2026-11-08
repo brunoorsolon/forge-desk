@@ -12,7 +12,7 @@
 server:
   host: 0.0.0.0 # default: 0.0.0.0
   port: 8080 # default: 8080
-  # Trusted origin for preferences and refresh launches once project browsing ships.
+  # Trusted origin for account preferences and project/source/sweep refresh launches.
   # Default: null (use request Host). Override: FD_PUBLIC_ORIGIN. Independent of releases.publicOrigin.
   # HTTPS origin only: no credentials, path, query or fragment; HTTP allowed only on loopback.
   # publicOrigin: https://forge-desk.example.com
@@ -29,25 +29,27 @@ server:
 cache:
   ttlSeconds: 300 # default: 300. 0 disables caching.
 
-# Accepted now; consumers ship with project browsing. Named views and CLI are unaffected.
+# Project/source browsing and sweeps. Named views, exports and CLI are not paced.
 refresh:
-  sweepHours: 0 # default: 0 (off), integer 0-168. Override: FD_SWEEP_HOURS.
-  # Hours after the previous sweep finishes. With cache.ttlSeconds: 0, warns and will not run.
+  sweepHours: 0 # default: 0 (automatic sweeps off), integer 0-168. Override: FD_SWEEP_HOURS.
+  # Positive values run at startup, then this many hours after each sweep finishes.
+  # With cache.ttlSeconds: 0, warns and skips all sweep work, including manual launches.
   requestsPerMinute: 60 # default: 60, positive integer; per-source request pace.
   concurrency: 4 # default: 4, positive integer; per-source simultaneous requests.
   # No environment overrides for pacing.
 
-# Account favorites and remembered project, once project browsing ships.
+# Application-account favorites and remembered project; separate from release state.
 # Default dir: null (disabled). Override: FD_PREFERENCES_DIR.
 # Must be a normalized absolute path; loading neither checks nor creates the directory.
 # Without application login, a warning is reported and preferences will be unavailable.
+# Pre-create an owned local Linux directory; one writer only. See docs/DEPLOYMENT.md.
 # preferences:
 #   dir: /var/lib/forge-desk/preferences
 
 ui:
-  refreshMinutes: 5 # default: 5. Poll the open view using the shared cache; 0 = only the Refresh button.
+  refreshMinutes: 5 # default: 5. Poll the open scope/view using the shared cache; 0 disables periodic polling.
 
-# Optional webhooks: GitHub/Gitea/Forgejo issue events invalidate the cached views of the repository
+# Optional webhooks: GitHub/Gitea/Forgejo events invalidate named views and scope observations
 # (POST /api/webhooks/github and /api/webhooks/gitea). Disabled without a secret. One of:
 #   secretEnv: name of the env var holding the secret (recommended; wins when set)
 #   secret:    inline value (discouraged)
@@ -92,7 +94,7 @@ sources:
   #   baseUrl: https://ghe.example.com/api/v3 # webUrl becomes https://ghe.example.com
   #   tokenEnv: GHES_TOKEN
 
-  # Gitea (Forgejo should work too, but is untested)
+  # Gitea / Forgejo (live compatibility checks run in CI)
   - id: gt
     kind: gitea
     baseUrl: https://gitea.example.com # required. Instance root; the API is at <baseUrl>/api/v1
