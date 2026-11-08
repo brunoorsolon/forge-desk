@@ -59,7 +59,9 @@ function cdp(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+let clockControlled = false;
 async function advanceBrowserClock(budget) {
+  clockControlled = true;
   const expired = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.removeEventListener('message', receive);
@@ -93,6 +95,8 @@ let visitNumber = 0;
 async function visit(fixture, hash = '') {
   const search = '?browser-case=' + ++visitNumber;
   await cdp('Page.navigate', { url: fixture.origin + '/' + search + hash });
+  // A spent virtual-time budget pauses navigation tasks too, not only app timers.
+  if (clockControlled) await advanceBrowserClock(1000);
   await until(
     () =>
       evaluate(

@@ -59,7 +59,9 @@ function cdp(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+let clockControlled = false;
 async function advanceBrowserClock(budget) {
+  clockControlled = true;
   const expired = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.removeEventListener('message', receive);
@@ -93,6 +95,8 @@ let visitNumber = 0;
 async function visit(fixture, hash = '') {
   const search = '?browser-case=' + ++visitNumber;
   await cdp('Page.navigate', { url: fixture.origin + '/' + search + hash });
+  // A spent virtual-time budget pauses navigation tasks too, not only app timers.
+  if (clockControlled) await advanceBrowserClock(1000);
   await until(
     () =>
       evaluate(
@@ -396,6 +400,7 @@ try {
   const authenticated = await navigationFixture({ sweeps: true, login: true });
   fixtures.push(authenticated);
   await cdp('Page.navigate', { url: authenticated.origin + '/login' });
+  await advanceBrowserClock(1000);
   await until(
     () => evaluate(`Boolean(document.querySelector('input[name="username"]'))`),
     'login form',
@@ -403,6 +408,7 @@ try {
   await evaluate(
     `document.querySelector('input[name="username"]').value = 'fixture'; document.querySelector('input[name="password"]').value = 'fixture-only'; document.querySelector('form').requestSubmit()`,
   );
+  await advanceBrowserClock(1000);
   await until(
     () => evaluate(`Boolean(document.querySelector('.project-sidebar-entry'))`),
     'authenticated app',
