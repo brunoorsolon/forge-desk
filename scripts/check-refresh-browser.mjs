@@ -375,8 +375,11 @@ try {
   await click('Refresh all sources');
   await until(() => sweepReads(conflicted).length > 0, 'conflicted-scope sweep read');
   const conflictReads = sweepReads(conflicted).length;
-  await advanceBrowserClock(60_000);
-  assert.equal(sweepReads(conflicted).length, conflictReads + 1);
+  await advanceBrowserClock(61_000);
+  await until(
+    () => sweepReads(conflicted).length === conflictReads + 1,
+    'conflicted-scope minute follow-up',
+  );
   releaseHealthy();
   await until(() => conflicted.sweep().state === 'partial', 'conflicted-scope upstream completes');
   await advanceBrowserClock(60_000);
