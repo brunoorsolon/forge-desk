@@ -18,8 +18,7 @@ export function relativeTime(iso: string, nowMs: number): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return 'unknown';
   const diff = Math.max(0, nowMs - t);
-  if (diff < 5 * SECOND) return 'just now';
-  if (diff < MINUTE) return `${Math.floor(diff / SECOND)}s ago`;
+  if (diff < MINUTE) return 'just now';
   if (diff < HOUR) return `${Math.floor(diff / MINUTE)} min ago`;
   if (diff < DAY) return `${Math.floor(diff / HOUR)} h ago`;
   return `${Math.floor(diff / DAY)} d ago`;

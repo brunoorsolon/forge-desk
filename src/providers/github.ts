@@ -360,6 +360,14 @@ export function createGitHubProvider(opts: GitHubProviderOptions): IssueProvider
       throw err;
     }
     const issue = mapIssue(raw, repo);
+    if (issue.state === 'closed') {
+      // The planner never follows relations declared by closed issues.
+      issue.relationCoverage = {
+        native: options?.native ? 'complete' : 'not-requested',
+        subIssues: options?.subIssues ? 'complete' : 'not-requested',
+      };
+      return issue;
+    }
     if (options === undefined) return issue;
 
     const relationCoverage: RelationCoverage = {
