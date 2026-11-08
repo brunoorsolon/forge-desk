@@ -2,6 +2,8 @@ import type { ProviderKind, Snapshot } from '../../src/core/types.js';
 import type { ReleaseJob, ReleasePlan, ReleasePlanWarning } from '../../src/core/release.js';
 import type { RouteScope } from './route.js';
 import type { CatalogResponse, Scope, ScopeResponse } from '../../src/core/scope.js';
+import type { PreferencesResponse } from '../../src/core/preferences.js';
+import type { PreferenceMutation } from './preferenceState.js';
 
 /** Shape of one entry of `GET /api/views` (ARCHITECTURE section 13/14). */
 export interface ViewSummary {
@@ -16,7 +18,7 @@ export type ExportFormat = 'json' | 'md' | 'mmd' | 'dot';
 
 export class ApiError extends Error {
   readonly status: number;
-  /** Stable release error code from the response body, when the server sent one. */
+  /** Stable API error code from the response body, when the server sent one. */
   readonly code: string | undefined;
   constructor(message: string, status: number, code?: string) {
     super(message);
@@ -29,6 +31,14 @@ export class ApiError extends Error {
 // Relative URLs, so the UI also works when it is served below a sub-path.
 const API = 'api';
 
+const sessionExpiredListeners = new Set<() => void>();
+
+/** Clear private page state synchronously, before any expired request redirects. */
+export function onSessionExpired(listener: () => void): () => void {
+  sessionExpiredListeners.add(listener);
+  return () => sessionExpiredListeners.delete(listener);
+}
+
 async function send(path: string, init?: RequestInit): Promise<Response> {
   let res: Response;
   try {
@@ -37,6 +47,7 @@ async function send(path: string, init?: RequestInit): Promise<Response> {
     throw new ApiError('Network error: could not reach the Forge Desk server.', 0);
   }
   if (res.status === 401) {
+    for (const listener of sessionExpiredListeners) listener();
     // The session ended (logout or a server restart): log in again, keeping the shared link.
     location.assign(`login${location.hash}`);
   }
@@ -76,10 +87,11 @@ async function requestText(path: string): Promise<string> {
   return await (await send(path)).text();
 }
 
-/** Session-bound CSRF proof for every release mutation; signing in again is required. */
-async function csrfHeaders(): Promise<Record<string, string>> {
-  const { csrfToken } = await fetchSession();
-  if (csrfToken === null) throw new ApiError('Sign in again before changing a release.', 403);
+/** Session-bound CSRF proof for protected browser mutations; signing in again is required. */
+async function csrfHeaders(signal?: AbortSignal): Promise<Record<string, string>> {
+  const { csrfToken } = await fetchSession(signal);
+  signal?.throwIfAborted();
+  if (csrfToken === null) throw new ApiError('Sign in again before making changes.', 403);
   return { 'x-csrf-token': csrfToken };
 }
 
@@ -127,8 +139,38 @@ export function refreshSnapshot(viewId: string, force = true): Promise<Snapshot>
 }
 
 /** The signed-in user; fails with 404 when the server has no login. */
-export function fetchSession(): Promise<{ username: string; csrfToken: string | null }> {
-  return request(`${API}/session`);
+export function fetchSession(
+  signal?: AbortSignal,
+): Promise<{ username: string; csrfToken: string | null }> {
+  return request(`${API}/session`, { signal });
+}
+
+export function fetchPreferences(signal?: AbortSignal): Promise<PreferencesResponse> {
+  return request(`${API}/preferences`, { signal });
+}
+
+/** Never cache session proof; a new mutation must belong to the live browser session. */
+export async function savePreference(
+  mutation: PreferenceMutation,
+  signal?: AbortSignal,
+): Promise<PreferencesResponse> {
+  const headers = await csrfHeaders(signal);
+  const project = { source: mutation.project.source, repo: mutation.project.repo };
+  if (mutation.kind === 'remove-favorite') {
+    const path = [project.source, ...project.repo.split('/')].map(encodeURIComponent).join('/');
+    return request(`${API}/preferences/favorites/${path}`, {
+      method: 'DELETE',
+      headers,
+      signal,
+    });
+  }
+  const remember = mutation.kind === 'remember-project';
+  return request(`${API}/preferences/${remember ? 'remembered-project' : 'favorites'}`, {
+    method: remember ? 'PUT' : 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify(project),
+    signal,
+  });
 }
 
 export interface ReleaseRepository {
