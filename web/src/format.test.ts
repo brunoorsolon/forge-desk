@@ -19,13 +19,20 @@ const NOW = Date.parse('2026-01-10T12:00:00Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
 
 describe('relativeTime', () => {
-  it('formats seconds, minutes, hours and days', () => {
-    expect(relativeTime(ago(0), NOW)).toBe('just now');
-    expect(relativeTime(ago(4_000), NOW)).toBe('just now');
-    expect(relativeTime(ago(12_000), NOW)).toBe('12s ago');
-    expect(relativeTime(ago(59_000), NOW)).toBe('59s ago');
+  it.each([0, 4_000, 5_000, 12_000, 30_000, 59_000, 59_999])(
+    'formats an age of %i ms as just now',
+    (age) => {
+      expect(relativeTime(ago(age), NOW)).toBe('just now');
+    },
+  );
+
+  it('uses whole minutes from one minute and preserves hour and day labels', () => {
     expect(relativeTime(ago(60_000), NOW)).toBe('1 min ago');
+    expect(relativeTime(ago(119_999), NOW)).toBe('1 min ago');
+    expect(relativeTime(ago(120_000), NOW)).toBe('2 min ago');
     expect(relativeTime(ago(5 * 60_000 + 30_000), NOW)).toBe('5 min ago');
+    expect(relativeTime(ago(3_599_999), NOW)).toBe('59 min ago');
+    expect(relativeTime(ago(3_600_000), NOW)).toBe('1 h ago');
     expect(relativeTime(ago(3 * 3_600_000), NOW)).toBe('3 h ago');
     expect(relativeTime(ago(23 * 3_600_000), NOW)).toBe('23 h ago');
     expect(relativeTime(ago(24 * 3_600_000), NOW)).toBe('1 d ago');
