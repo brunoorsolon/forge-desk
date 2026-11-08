@@ -1,7 +1,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseConfig } from '../../../src/config/load.js';
 import type { ViewSummary } from '../api.js';
+import { initialPreferenceState } from '../preferenceState.js';
+import { parseReleaseHash } from '../release-route.js';
 import { DEFAULT_ROUTE, type RouteScope } from '../route.js';
 import { INITIAL_STATE, Store, type AppState } from '../state.js';
+import { createProjectSidebar } from './project-sidebar.js';
+import { createScopeHeading } from './scope-heading.js';
 import type { Actions } from './shared.js';
 
 // Minimal DOM for the real header/menu interaction, without a browser dependency.
@@ -15,6 +20,8 @@ class FakeElement {
   value = '';
   private readonly listeners = new Map<string, ((event: unknown) => void)[]>();
   readonly classList = {
+    contains: (name: string): boolean =>
+      (this.getAttribute('class') ?? '').split(' ').includes(name),
     toggle: (name: string, on?: boolean): boolean => {
       const classes = new Set((this.getAttribute('class') ?? '').split(' '));
       const value = on ?? !classes.has(name);
@@ -147,6 +154,7 @@ function headerWith(extra: Partial<AppState> = {}) {
     select: vi.fn(),
     showInGraph: vi.fn(),
     setTab: vi.fn(),
+    openReleases: vi.fn(),
     setView: vi.fn(),
     setQuery: vi.fn(),
     setSort: vi.fn(),
@@ -165,9 +173,13 @@ function headerWith(extra: Partial<AppState> = {}) {
   return {
     store,
     actions,
+    header,
+    el,
     select: find((e) => e.getAttribute('id') === 'view-select'),
     viewSwitch: find((e) => e.getAttribute('class') === 'view-switch'),
-    crumb: find((e) => e.getAttribute('class') === 'crumb-sep'),
+    tabbar: find((e) => e.getAttribute('class') === 'tabbar'),
+    toolbar: find((e) => e.getAttribute('class') === 'toolbar'),
+    tabs: () => descendants(el, (e) => e.getAttribute('role') === 'tab'),
     refresh: find((e) => e.tagName === 'button' && e.textContent === 'Refresh'),
     exportButton: find((e) => e.tagName === 'button' && e.textContent === 'Export'),
     exportLinks: () =>
@@ -194,7 +206,6 @@ describe('header export destination and named-view controls', () => {
   ] as const)('exports cached %s data and hides view-only controls', (_name, scope, prefix) => {
     const header = headerWith({ route: { ...DEFAULT_ROUTE, scope, viewId: views[0]!.id } });
     expect(header.viewSwitch.hidden).toBe(true);
-    expect(header.crumb.hidden).toBe(true);
     expect(header.refresh.hidden).toBe(true);
     expect(header.refresh.disabled).toBe(true);
     expect(header.exportButton.disabled).toBe(false);
@@ -205,7 +216,6 @@ describe('header export destination and named-view controls', () => {
   it('keeps named-view exports, selection, and refresh behavior unchanged', () => {
     const header = headerWith();
     expect(header.viewSwitch.hidden).toBe(false);
-    expect(header.crumb.hidden).toBe(false);
     expect(header.refresh.hidden).toBe(false);
     expect(header.refresh.disabled).toBe(false);
     expect(header.select.disabled).toBe(false);
@@ -248,7 +258,6 @@ describe('header export destination and named-view controls', () => {
     header.store.dispatch({ type: 'route', route: { ...DEFAULT_ROUTE, viewId: 'second' } });
     expectExports(header, 'api/views/second');
     expect(header.viewSwitch.hidden).toBe(false);
-    expect(header.crumb.hidden).toBe(false);
     expect(header.refresh.hidden).toBe(false);
     expect(header.refresh.disabled).toBe(false);
     expect(header.select.value).toBe('second');
@@ -273,5 +282,110 @@ describe('header export destination and named-view controls', () => {
     expect(header.refresh.disabled).toBe(true);
     expect(header.exportButton.disabled).toBe(true);
     expect(header.exportLinks()).toEqual([]);
+  });
+
+  it('omits brand/crumb from topbar, renders Releases as 4th tab, and hides toolbar on Problems and Releases', () => {
+    const h = headerWith();
+    expect(descendants(h.el, (e) => e.getAttribute('class') === 'brand')).toHaveLength(0);
+    expect(descendants(h.el, (e) => e.getAttribute('class') === 'crumb-sep')).toHaveLength(0);
+    expect(h.tabs().map((t) => t.textContent)).toEqual([
+      'Graph',
+      'Execution order',
+      'Problems',
+      'Releases',
+    ]);
+    expect(h.tabs().map((t) => t.getAttribute('aria-selected'))).toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+    ]);
+    expect(h.toolbar.hidden).toBe(false);
+    expect(descendants(h.tabbar, (e) => e.getAttribute('id') === 'sort-button')).toHaveLength(0);
+    expect(descendants(h.toolbar, (e) => e.getAttribute('id') === 'sort-button')).toHaveLength(1);
+    expect(descendants(h.toolbar, (e) => e.getAttribute('id') === 'filter-button')).toHaveLength(1);
+    expect(descendants(h.toolbar, (e) => e.getAttribute('id') === 'filter-input')).toHaveLength(1);
+
+    h.store.dispatch({ type: 'route', route: { ...DEFAULT_ROUTE, tab: 'order' } });
+    expect(h.toolbar.hidden).toBe(false);
+
+    h.store.dispatch({ type: 'route', route: { ...DEFAULT_ROUTE, tab: 'problems' } });
+    expect(h.toolbar.hidden).toBe(true);
+
+    h.store.dispatch({ type: 'route', route: { ...DEFAULT_ROUTE, tab: 'graph' } });
+    expect(h.toolbar.hidden).toBe(false);
+
+    h.tabs()[3]!.click();
+    expect(h.actions.openReleases).toHaveBeenCalledOnce();
+    h.header.setReleasesActive(true);
+    expect(h.tabs().map((t) => t.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'false',
+      'false',
+      'true',
+    ]);
+    expect(h.toolbar.hidden).toBe(true);
+  });
+
+  it('integrates config source titles across sidebar, scope heading, unified tabs, and release routes', () => {
+    const cfg = parseConfig(
+      JSON.stringify({
+        sources: [
+          { id: 'gh', title: 'GitHub', kind: 'github' },
+          { id: 'tea', kind: 'gitea', baseUrl: 'https://gitea.example' },
+        ],
+        views: [
+          { id: 'v-gh', source: 'gh', repos: ['acme/web'] },
+          { id: 'v-tea', title: 'PugLab (Gitea)', source: 'tea', repos: ['acme/api'] },
+        ],
+      }),
+      {},
+    );
+    const scope: RouteScope = { kind: 'project', source: 'tea', owner: 'acme', repo: 'api' };
+    const h = headerWith({ route: { ...DEFAULT_ROUTE, scope } });
+    const sidebar = createProjectSidebar({
+      selectScope: vi.fn(),
+      openViews: vi.fn(),
+      toggleFavorite: vi.fn(),
+    });
+    const heading = createScopeHeading({ toggleFavorite: vi.fn() });
+    const prefs = {
+      ...initialPreferenceState(),
+      view: {
+        status: 'available' as const,
+        preferences: {
+          available: true as const,
+          revision: 1,
+          favorites: [{ source: 'tea', repo: 'acme/api', inCatalog: true }],
+          rememberedProject: null,
+        },
+      },
+    };
+
+    sidebar.update(h.store.get(), prefs, cfg.catalog);
+    heading.update(h.store.get(), prefs, null, cfg.catalog);
+
+    const sidebarEl = sidebar.el as unknown as FakeElement;
+    const headingEl = heading.el as unknown as FakeElement;
+    expect(descendants(sidebarEl, (e) => e.classList.contains('brand-name'))[0]?.textContent).toBe(
+      'Forge Desk',
+    );
+    expect(descendants(sidebarEl, (e) => e.tagName === 'h2').map((e) => e.textContent)).toEqual([
+      'Favorites',
+      'GitHub',
+      'PugLab (Gitea)',
+    ]);
+    const scopeSource = descendants(headingEl, (e) => e.classList.contains('scope-source'))[0];
+    expect(scopeSource?.textContent).toBe('Source: PugLab (Gitea)');
+    expect(headingEl.hidden).toBe(false);
+
+    const releaseRoute = parseReleaseHash('#/releases/repo-1?plan=plan-1');
+    expect(releaseRoute).toEqual({ repositoryId: 'repo-1', jobId: null, planId: 'plan-1' });
+    h.header.setReleasesActive(releaseRoute !== null);
+    headingEl.hidden = releaseRoute !== null;
+    expect(sidebarEl.hidden).toBe(false);
+    expect(headingEl.hidden).toBe(true);
+    expect(h.toolbar.hidden).toBe(true);
+    expect(h.tabs()[3]!.getAttribute('aria-selected')).toBe('true');
   });
 });

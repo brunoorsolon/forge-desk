@@ -205,6 +205,22 @@ describe('scope heading identity and controls', () => {
     expect(toggleFavorite).not.toHaveBeenCalled();
   });
 
+  it('displays the friendly source title from the catalog when available', () => {
+    const { view, root } = heading();
+    view.update(state(), preferences(), null, {
+      sources: [
+        {
+          id: 'gh',
+          title: 'GitHub',
+          kind: 'github',
+          projects: [{ source: 'gh', repo: 'o/r' }],
+          policy: { status: 'usable' },
+        },
+      ],
+    });
+    expect(cls(root, 'scope-source')[0]!.textContent).toBe('Source: GitHub');
+  });
+
   it.each(['not-loaded', 'unavailable', 'unverified', 'reread'] as const)(
     'keeps %s favorites read-only with an explanation',
     (mode) => {

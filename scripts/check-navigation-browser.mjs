@@ -355,9 +355,9 @@ try {
   await until(
     () =>
       evaluate(
-        `document.querySelector('.planning-shell')?.hidden === true && document.querySelector('.releases')?.hidden === false`,
+        `document.querySelector('.planning-shell')?.hidden === false && document.querySelector('.project-sidebar')?.hidden === false && document.querySelector('.releases')?.hidden === false && document.querySelector('.main')?.hidden === true && document.querySelector('#tab-releases')?.getAttribute('aria-selected') === 'true'`,
       ),
-    'release area mounted and planning hidden',
+    'release tab mounted with sidebar visible and planning panes hidden',
   );
   await expect(`location.hash === '#/releases'`, 'Release deep link preserved');
   const conflict = await navigationFixture({ conflicts: ['alpha'] });

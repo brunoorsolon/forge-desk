@@ -121,7 +121,11 @@ function facetGroups(snapshot: Snapshot, multiRepo: boolean): [string, Facet[]][
   return groups.filter(([, facets]) => facets.length > 0);
 }
 
-export function createHeader(ctx: ViewCtx): View {
+export interface HeaderView extends View {
+  setReleasesActive(active: boolean): void;
+}
+
+export function createHeader(ctx: ViewCtx): HeaderView {
   // ------------------------------------------------------------- top bar
   const select = h('select', {
     id: 'view-select',
@@ -243,18 +247,10 @@ export function createHeader(ctx: ViewCtx): View {
     ],
   );
 
-  const crumbSep = h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/');
   const viewSwitch = h('div', { class: 'view-switch' }, select, icon('chevron', 13), repos);
   const topbar = h(
     'div',
     { class: 'topbar' },
-    h(
-      'div',
-      { class: 'brand' },
-      h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('graph', 15)),
-      h('span', { class: 'brand-name' }, 'Forge Desk'),
-    ),
-    crumbSep,
     viewSwitch,
     h('div', { class: 'spacer' }),
     freshness,
@@ -265,6 +261,7 @@ export function createHeader(ctx: ViewCtx): View {
   );
 
   // -------------------------------------------------------------- tab bar
+  let releasesActive = false;
   const tabButtons = new Map<Tab, HTMLButtonElement>();
   const problemsBadge = h('span', { class: 'count', hidden: true });
   const tabs = h('div', { class: 'tabs', role: 'tablist' });
@@ -289,6 +286,23 @@ export function createHeader(ctx: ViewCtx): View {
     tabButtons.set(tab, btn);
     tabs.append(btn);
   }
+  const releasesTab = h(
+    'button',
+    {
+      class: 'tab',
+      type: 'button',
+      role: 'tab',
+      id: 'tab-releases',
+      'aria-selected': 'false',
+      onclick: () => {
+        if (ctx.actions.openReleases) ctx.actions.openReleases();
+        else location.hash = '#/releases';
+      },
+    },
+    icon('tag', 14),
+    'Releases',
+  );
+  tabs.append(releasesTab);
 
   const sortBtn = h(
     'button',
@@ -451,17 +465,26 @@ export function createHeader(ctx: ViewCtx): View {
     h('span', { class: 'kbd', 'aria-hidden': 'true' }, '/'),
   );
 
-  const tabbar = h(
-    'nav',
-    { class: 'tabbar', 'aria-label': 'Sections' },
-    tabs,
+  const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Sections' }, tabs);
+  const toolbar = h(
+    'div',
+    { class: 'toolbar', 'aria-label': 'Sort and filter' },
     h('div', { class: 'spacer' }),
     sortMenu.wrap,
     facetMenu.wrap,
     filter,
   );
 
-  const el = h('header', { class: 'app-header' }, topbar, tabbar);
+  const el = h('header', { class: 'app-header' }, topbar, tabbar, toolbar);
+
+  function syncTabsAndToolbar(tab: Tab): void {
+    for (const [t, btn] of tabButtons) {
+      const active = !releasesActive && tab === t;
+      btn.setAttribute('aria-selected', String(active));
+    }
+    releasesTab.setAttribute('aria-selected', String(releasesActive));
+    toolbar.hidden = releasesActive || tab === 'problems';
+  }
 
   // ------------------------------------------------------------- update
   let fetchedIso: string | null = null;
@@ -473,12 +496,16 @@ export function createHeader(ctx: ViewCtx): View {
 
   return {
     el,
+    setReleasesActive(active: boolean) {
+      if (releasesActive === active) return;
+      releasesActive = active;
+      syncTabsAndToolbar(ctx.store.get().route.tab);
+    },
     update(state: AppState, prev: AppState) {
       const viewId = effectiveViewId(state);
       const scoped = state.route.scope !== undefined;
-      viewSwitch.hidden = scoped;
-      crumbSep.hidden = scoped;
-      refreshBtn.hidden = scoped;
+      viewSwitch.hidden = releasesActive || scoped;
+      refreshBtn.hidden = releasesActive || scoped;
       const views = state.views ?? [];
       if (lastViews !== state.views) {
         lastViews = state.views;
@@ -491,10 +518,7 @@ export function createHeader(ctx: ViewCtx): View {
       repos.textContent = view ? view.repos.join(' · ') : '';
       repos.title = view ? `${view.kind}: ${view.repos.join(', ')}` : '';
 
-      for (const [tab, btn] of tabButtons) {
-        const active = state.route.tab === tab;
-        btn.setAttribute('aria-selected', String(active));
-      }
+      syncTabsAndToolbar(state.route.tab);
 
       const snap = state.snapshot;
       if (snap !== prev.snapshot || fetchedIso === null) {
@@ -512,10 +536,10 @@ export function createHeader(ctx: ViewCtx): View {
           problemsBadge.hidden = true;
         }
       }
-      freshness.hidden = snap === null;
+      freshness.hidden = releasesActive || snap === null;
 
       refreshBtn.disabled = state.refreshing || viewId === null;
-      exportBtn.disabled = !scoped && viewId === null;
+      exportBtn.disabled = releasesActive || (!scoped && viewId === null);
       if (state.route.scope !== prev.route.scope || viewId !== effectiveViewId(prev)) {
         exportMenu.refresh();
       }

@@ -12,6 +12,7 @@ export type { KeywordConfig };
 
 export interface ResolvedSource {
   id: string;
+  title?: string;
   kind: ProviderKind;
   baseUrl: string;
   webUrl: string;
@@ -306,6 +307,7 @@ const planningSchema = z
 const sourceSchema = z
   .object({
     id: idSchema,
+    title: z.string().min(1).optional(),
     kind: z.enum(['github', 'gitea', 'fixture']),
     baseUrl: urlSchema.optional(),
     webUrl: urlSchema.optional(),

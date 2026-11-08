@@ -64,7 +64,7 @@ for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
       summary.el.hidden = false;
       const main = h('main', { class: 'main' }, 'Plan');
       const planning = h('div', { class: 'planning' }, header.el, heading.el, summary.el, main);
-      app.append(h('nav', { class: 'area-nav' }, h('a', { class: 'tab' }, 'Planning')), planning);
+      app.append(planning);
       const headingRect = heading.el.getBoundingClientRect();
       const mainRect = main.getBoundingClientRect();
       const rows = heading.el.querySelectorAll('.scope-repository');
