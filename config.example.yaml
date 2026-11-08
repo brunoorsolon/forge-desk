@@ -94,13 +94,26 @@ sources:
   #   kind: github
   #   baseUrl: https://ghe.example.com/api/v3 # webUrl becomes https://ghe.example.com
   #   tokenEnv: GHES_TOKEN
-
   # Gitea / Forgejo (live compatibility checks run in CI)
   - id: gt
     kind: gitea
     baseUrl: https://gitea.example.com # required. Instance root; the API is at <baseUrl>/api/v1
     # webUrl: https://gitea.example.com # optional; defaults to baseUrl
     tokenEnv: GITEA_TOKEN
+    # Optional shared release defaults, used only when top-level releases.enabled is true.
+    # Repository values override these fields; id/source/repo/origin stay explicit below.
+    # A repository apiTokenEnv replaces the source apiTokenFile (and vice versa), no fallback.
+    # releases:
+    #   apiTokenFile: /run/secrets/forge_desk_release_token
+    #   expectedApiUser: release-bot
+    #   ci:
+    #     workflowPath: .gitea/workflows/validate.yaml
+    #   ssh:
+    #     privateKeyFile: /run/secrets/forge_desk_release_key
+    #     knownHostsFile: /run/secrets/forge_desk_known_hosts
+    #   tagger:
+    #     name: Forge Desk Release Bot
+    #     email: releases@example.com
 
   # Fixture: reads issues from a local JSON file (demos and tests)
   - id: demo
@@ -148,7 +161,8 @@ views:
 # Release publication is opt-in and off by default. It needs the application login above, the
 # image's git/ssh/flock runtime, a private state volume and dedicated credentials; see
 # docs/RELEASES.md and docs/CONFIGURATION.md#releases before enabling it. Each release repository
-# must reference a gitea source and an explicit owner/repo.
+# must reference a gitea source and an explicit owner/repo. Settings below may instead be
+# inherited from that source's releases defaults; per-repository values take precedence.
 # releases:
 #   enabled: true
 #   publicOrigin: https://forge-desk.example.com

@@ -3,6 +3,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -238,7 +239,7 @@ describe('release runtime prerequisites', () => {
 });
 
 describe('release runtime startup', () => {
-  function writeConfig(f: Files): string {
+  function writeConfig(f: Files, inherited = false): string {
     const config = {
       server: { host: '127.0.0.1', basicAuth: { username: 'admin', password: 'pw' } },
       sources: [{ id: 'gt', kind: 'gitea', baseUrl: 'https://gitea.example.com' }],
@@ -263,9 +264,45 @@ describe('release runtime startup', () => {
       },
     };
     const path = join(f.root, 'config.json');
-    writeFileSync(path, JSON.stringify(config));
+    const { id, source, repo, origin, ...defaults } = config.releases.repositories[0]!;
+    const input = inherited
+      ? {
+          ...config,
+          sources: config.sources.map((s) => ({ ...s, releases: defaults })),
+          releases: { ...config.releases, repositories: [{ id, source, repo, origin }] },
+        }
+      : config;
+    writeFileSync(path, JSON.stringify(input));
     return path;
   }
+
+  it('loads inherited credentials through the same runtime checks without token fallback', () => {
+    const f = files();
+    const input = JSON.parse(readFileSync(writeConfig(f, true), 'utf8'));
+    const source = input.sources[0];
+    source.token = 'planning-token';
+    let config = parseConfig(JSON.stringify(input), {});
+    expect(loadReleaseRuntime(config.releases, config.sources, {})!.repositories[0]!.token).toBe(
+      'release-token',
+    );
+    input.releases.repositories[0].apiTokenEnv = 'MISSING_OVERRIDE';
+    config = parseConfig(JSON.stringify(input), {});
+    expect(
+      errorOf(() => loadReleaseRuntime(config.releases, config.sources, {})).message,
+    ).toContain('MISSING_OVERRIDE');
+    expect(
+      errorOf(() =>
+        loadReleaseRuntime(config.releases, config.sources, {
+          MISSING_OVERRIDE: 'planning-token',
+        }),
+      ).message,
+    ).toContain('dedicated');
+    expect(
+      loadReleaseRuntime(config.releases, config.sources, {
+        MISSING_OVERRIDE: 'override-token',
+      })!.repositories[0]!.token,
+    ).toBe('override-token');
+  });
 
   function freePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -279,26 +316,32 @@ describe('release runtime startup', () => {
     });
   }
 
-  it('fails closed on unsafe local prerequisites before listening', async () => {
-    const f = files();
-    chmodSync(f.stateDir, 0o755);
-    await expect(startServer({ configPath: writeConfig(f), env: {} })).rejects.toThrow(
-      /releases\.stateDir/,
-    );
-  });
+  it.each([false, true])(
+    'fails closed on unsafe local prerequisites (inherited=%s)',
+    async (inherited) => {
+      const f = files();
+      chmodSync(f.stateDir, 0o755);
+      await expect(startServer({ configPath: writeConfig(f, inherited), env: {} })).rejects.toThrow(
+        /releases\.stateDir/,
+      );
+    },
+  );
 
-  it('starts Planning with valid release configuration without contacting a forge', async () => {
-    const f = files();
-    const port = await freePort();
-    const app = await startServer({
-      configPath: writeConfig(f),
-      env: { FD_PORT: String(port) },
-    });
-    cleanups.push(() => app.close());
-    const response = await fetch(`http://127.0.0.1:${port}/healthz`);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'ok' });
-  });
+  it.each([false, true])(
+    'starts Planning without contacting a forge (inherited=%s)',
+    async (inherited) => {
+      const f = files();
+      const port = await freePort();
+      const app = await startServer({
+        configPath: writeConfig(f, inherited),
+        env: { FD_PORT: String(port) },
+      });
+      cleanups.push(() => app.close());
+      const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: 'ok' });
+    },
+  );
 
   /** A release repository whose forge is unreachable, plus a Planning view on a local fixture. */
   function writeOutageConfig(f: Files): string {
