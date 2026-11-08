@@ -59,7 +59,9 @@ function cdp(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+let clockControlled = false;
 async function advanceBrowserClock(budget) {
+  clockControlled = true;
   const expired = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.removeEventListener('message', receive);
@@ -93,6 +95,8 @@ let visitNumber = 0;
 async function visit(fixture, hash = '') {
   const search = '?browser-case=' + ++visitNumber;
   await cdp('Page.navigate', { url: fixture.origin + '/' + search + hash });
+  // A spent virtual-time budget pauses navigation tasks too, not only app timers.
+  if (clockControlled) await advanceBrowserClock(1000);
   await until(
     () =>
       evaluate(
@@ -295,18 +299,15 @@ try {
     'active job freshness',
   );
   await shot('job-updating');
+  await cdp('Emulation.setVirtualTimePolicy', { policy: 'pause' });
   const pollStart = snapshotRequests(fixture).length;
-  await until(
-    () => snapshotRequests(fixture).length >= pollStart + 2,
-    'two job follow-up requests',
-    6000,
-  );
-  const polls = snapshotRequests(fixture).slice(-2);
-  assert.ok(
-    polls[1].at - polls[0].at >= 1800 && polls[1].at - polls[0].at < 3000,
-    'Job requests must be spaced about 2 seconds',
-  );
-  checks.push('Active job follows up every two seconds');
+  await advanceBrowserClock(59_000);
+  assert.equal(snapshotRequests(fixture).length, pollStart, 'No job follow-up before a minute');
+  await advanceBrowserClock(2_000);
+  await until(() => snapshotRequests(fixture).length === pollStart + 1, 'first minute follow-up');
+  await advanceBrowserClock(60_000);
+  await until(() => snapshotRequests(fixture).length === pollStart + 2, 'second minute follow-up');
+  checks.push('Active job follows up every 60 seconds (Chromium virtual time)');
   // Activate another real tab, rather than overriding document.visibilityState.
   const background = await cdp('Target.createTarget', { url: 'about:blank' });
   await cdp('Target.activateTarget', { targetId: background.targetId });
@@ -314,7 +315,7 @@ try {
   checks.push('Another real tab makes the application hidden');
   await sleep(200);
   const hiddenCount = snapshotRequests(fixture).length;
-  await sleep(2400);
+  await advanceBrowserClock(120_000);
   assert.equal(snapshotRequests(fixture).length, hiddenCount, 'Hidden tab must not poll');
   release();
   await cdp('Target.activateTarget', { targetId: pageTarget.id });
@@ -322,7 +323,7 @@ try {
   await until(() => snapshotRequests(fixture).length > hiddenCount, 'return freshness request');
   await ready();
   await cdp('Target.closeTarget', { targetId: background.targetId });
-  await sleep(2200);
+  await advanceBrowserClock(120_000);
   assert.equal(
     snapshotRequests(fixture).length,
     hiddenCount + 1,
@@ -419,6 +420,7 @@ try {
   fixtures.push(stale);
   stale.fail({ source: 'alpha', repo: 'demo/one' });
   await visit(stale, '#/project/alpha/demo/one/order');
+  await advanceBrowserClock(60_000);
   await until(
     () =>
       evaluate(

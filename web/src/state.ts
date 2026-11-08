@@ -17,6 +17,7 @@ import type { ViewSummary } from './api.js';
 import { compileFilter, type FilterTarget } from './filter.js';
 import { buildAdjacency, criticalPathEdges, edgeId, type Adjacency } from './graph-model.js';
 import { priorityName } from './priority.js';
+import { ACTIVE_POLL_MS } from './polling.js';
 import { DEFAULT_ROUTE, type Route, type Tab } from './route.js';
 
 // ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ export function nextScopeRequestAt(input: {
   )
     return input.visibleSince;
   return isActiveScopeJob(input.job) && input.respondedAt !== null
-    ? input.respondedAt + 2000
+    ? input.respondedAt + ACTIVE_POLL_MS
     : null;
 }
 
