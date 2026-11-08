@@ -3,6 +3,7 @@ import type { ResolvedSource } from '../config/schema.js';
 import { parseKey } from '../core/keys.js';
 import type {
   CatalogSource,
+  OutsideIssueObservation,
   RefreshTrigger,
   Scope,
   ScopeRefreshJobStatus,
@@ -11,7 +12,7 @@ import type {
 import type { Issue, IssueKey, IssueProvider, RelationCoverage } from '../core/types.js';
 import { createLimiter, HttpError } from '../providers/http.js';
 import { AdmissionQueue, type AdmissionPriority } from './admissionQueue.js';
-import { ObservationStore } from './observationStore.js';
+import { ObservationStore, type StoredObservation } from './observationStore.js';
 import { LOOKUP_CONCURRENCY } from './resolve.js';
 import {
   MAX_EXTERNAL_FETCHES,
@@ -76,6 +77,27 @@ const isPartial = (coverage: RelationCoverage | undefined): boolean =>
   coverage !== undefined &&
   Object.values(coverage).some((v) => v === 'failed' || v === 'unsupported');
 
+/** A closed result can be trusted without submitting a new lookup unit. */
+export function reusableClosedIssue(
+  record: StoredObservation<OutsideIssueObservation> | undefined,
+  ttlSeconds: number,
+  now: number,
+): OutsideIssueLookup | undefined {
+  if (!record) return undefined;
+  const { observation } = record;
+  if (
+    observation.result?.status === 'found' &&
+    observation.result.issue.state === 'closed' &&
+    !record.invalidated &&
+    observation.lastAttempt?.outcome !== 'failed' &&
+    (ttlSeconds === 0 ||
+      (observation.lastCheckedAt !== null &&
+        now - Date.parse(observation.lastCheckedAt) <= ttlSeconds * 1000))
+  )
+    return observation.result;
+  return undefined;
+}
+
 /**
  * Runs source-local refresh work only. Serving cached plans, sweeps and HTTP lifetimes
  * belong to callers. Queues/providers are shared with the server, never recreated here.
@@ -90,6 +112,7 @@ export class ScopeRefreshJobs {
     private readonly options: {
       sources: ScopeRefreshSource[];
       store: ObservationStore;
+      cache: { ttlSeconds: number };
       now?: () => Date;
     },
   ) {
@@ -222,7 +245,22 @@ export class ScopeRefreshJobs {
     let fetches = 0;
     let capped = false;
     while (true) {
-      const pending = pendingOutsideIssueKeys([...nodes.values()], lookups, settings);
+      // Recheck newly discovered references against the shared store each level:
+      // another job may have verified a closed prerequisite during the last batch.
+      const pending = pendingOutsideIssueKeys([...nodes.values()], lookups, settings).filter(
+        (key) => {
+          const reused = reusableClosedIssue(
+            this.options.store.readOutsideIssue({ source: scope.source, key }),
+            this.options.cache.ttlSeconds,
+            this.now().getTime(),
+          );
+          if (reused) {
+            lookups.set(key, reused);
+            return false;
+          }
+          return true;
+        },
+      );
       if (pending.length === 0) break;
       const keys = pending.slice(0, MAX_EXTERNAL_FETCHES - fetches);
       capped ||= keys.length < pending.length;
