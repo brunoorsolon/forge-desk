@@ -238,31 +238,48 @@ try {
   );
   await shot('source-controls');
 
-  // Hold actual upstream work. Scope refresh waits its real 15-second response bound.
-  const releaseProject = fixture.hold({ source: 'alpha', repo: 'demo/one' });
+  // Manual refresh does not invalidate the fresh cache. A project read must
+  // follow the covering source job, rather than launching its own project job.
+  await visit(fixture, '#/project/alpha/demo/one/graph');
+  await ready();
+  const beforeSlowTimes = await times();
+  const beforeSlowReads = snapshotRequests(fixture).length;
+  const releaseProject = fixture.hold({ source: 'alpha', repo: 'demo/one' }, { invalidate: false });
   await click('Refresh this source');
   await until(
     () => fixture.responses.some((r) => r.method === 'POST' && r.body.job?.state === 'running'),
     'active source job response',
     20000,
   );
-  const beforeFollow = snapshotRequests(fixture).length;
   await until(
-    () => snapshotRequests(fixture).length > beforeFollow,
-    'two-second scope job follow-up',
+    () => snapshotRequests(fixture).length >= beforeSlowReads + 2,
+    'project re-read and two-second source job follow-up',
     5000,
   );
+  assert.ok(
+    snapshotRequests(fixture)
+      .slice(beforeSlowReads)
+      .every((request) => request.url === '/api/projects/alpha/demo/one/snapshot'),
+  );
   checks.push(
-    'A bounded source refresh response with an active job follows the normal scope-read lane',
+    'A source refresh exceeding the POST wait keeps polling the open project with periodic checks disabled',
   );
   releaseProject();
   await until(
-    () =>
-      evaluate(
+    async () =>
+      (await evaluate(
         `Array.from(document.querySelectorAll('.scope-freshness .scope-repository')).every(r => r.dataset.state === 'fresh')`,
-      ),
-    'source job completed',
+      )) && JSON.stringify(await times()) !== JSON.stringify(beforeSlowTimes),
+    'source job completed and refreshed observations displayed in the project',
   );
+  await expect(
+    `location.hash === '#/project/alpha/demo/one/graph'`,
+    'A slow source refresh keeps the project route through completion',
+  );
+  const settledProjectReads = snapshotRequests(fixture).length;
+  await sleep(2200);
+  assert.equal(snapshotRequests(fixture).length, settledProjectReads);
+  checks.push('Project progress polling stops after the covering source job finishes');
 
   const releaseSweep = fixture.hold({ source: 'beta', repo: 'demo/three' });
   await click('Refresh all sources');

@@ -140,13 +140,13 @@ export async function navigationFixture({
       runtime.sources.find((source) => source.source.id === project.source).queue.cooldownChanged();
       runtime.store.invalidateRepository(project);
     },
-    hold(project) {
+    hold(project, { invalidate = true } = {}) {
       let resolve;
       const promise = new Promise((done) => {
         resolve = done;
       });
       gates.set(`${project.source}/${project.repo}`, { promise, resolve });
-      runtime.store.invalidateRepository(project);
+      if (invalidate) runtime.store.invalidateRepository(project);
       return () => {
         resolve();
         gates.delete(`${project.source}/${project.repo}`);
