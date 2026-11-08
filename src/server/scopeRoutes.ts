@@ -5,9 +5,11 @@ import type { Scope, ScopeResponse } from '../core/scope.js';
 import type { PlanWarning, Snapshot } from '../core/types.js';
 import { exporters, type ExportFormat } from '../export/index.js';
 import { AdmissionShutdownError } from '../service/admissionQueue.js';
+import type { ObservationStore } from '../service/observationStore.js';
 import { ScopeCooldownError } from '../service/scopeReadService.js';
 import { ScopeRefreshError } from '../service/scopeRefreshJobs.js';
 import type { ScopeRuntime } from '../service/scopeRuntime.js';
+import { hasStaleProblem } from '../service/staleProblem.js';
 
 const formats: Record<string, ExportFormat> = {
   json: 'json',
@@ -21,13 +23,25 @@ const scopeOf = (params: Params): Scope =>
     ? { kind: 'source', source: params.source }
     : { kind: 'project', source: params.source, repo: `${params.owner}/${params.repo}` };
 
-function exportSnapshot(response: ScopeResponse): Snapshot {
+function exportSnapshot(
+  response: ScopeResponse,
+  ttlSeconds: number,
+  store: ObservationStore,
+): Snapshot {
   const snapshot = response.snapshot!;
   const warnings: PlanWarning[] = [...snapshot.plan.warnings];
+  // Use the same observation metadata and computation time as plan derivation.
+  // Live states can mask a prior failure (updating/delayed) or mean no check was
+  // attempted (unavailable); neither is itself evidence of a failed refresh.
+  const now = new Date(response.freshness.computedAt!);
   for (const repo of response.freshness.repositories) {
-    if (repo.state !== 'fresh' || repo.partial)
+    const stale = hasStaleProblem(store.readRepository(repo.project)?.observation, ttlSeconds, now);
+    const codes: PlanWarning['code'][] = [];
+    if (stale) codes.push('stale-data');
+    if (repo.partial) codes.push('dependency-provisional');
+    for (const code of codes)
       warnings.push({
-        code: repo.partial ? 'dependency-provisional' : 'stale-data',
+        code,
         issues: [],
         message: `${repo.project.source}/${repo.project.repo}: ${repo.state}${repo.partial ? ', partial relation coverage' : ''}; last checked ${repo.lastCheckedAt ?? 'never'}${repo.delayedUntil ? `; delayed until ${repo.delayedUntil}` : ''}${repo.error ? `; ${repo.error}` : ''}`,
       });
@@ -96,7 +110,7 @@ export function registerScopeRoutes(
               error: 'No scope snapshot is available',
               ...response,
             });
-          const snapshot = exportSnapshot(response);
+          const snapshot = exportSnapshot(response, config.cache.ttlSeconds, runtime.store);
           const format = formats[extension]!;
           const exporter = exporters[format];
           let body = exporter.render(snapshot);
