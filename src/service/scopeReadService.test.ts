@@ -99,6 +99,34 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it('does not mark verified outside data provisional when a webhook invalidates it', async () => {
+    const f = fixture();
+    const roots = [issue('o/a#1', 'Blocked by external/repo#2')];
+    f.seed('o/a', roots);
+    f.store.writeOutsideIssue(
+      f.store.beginOutsideIssueRead({ source: 'gh', key: 'external/repo#2' }),
+      { result: { status: 'found', issue: issue('external/repo#2') } },
+    );
+    const before = await f.service.get(project());
+    expect(before.freshness.outsideIssues.provisionalCount).toBe(0);
+    const listingGate = gate();
+    f.list.mockImplementation(async () => {
+      await listingGate.promise;
+      return listing(roots);
+    });
+    f.lookup.mockResolvedValue(issue('external/repo#2'));
+    // This is the same invalidation entry point used by the webhook route.
+    f.store.invalidateRepository({ source: 'gh', repo: 'external/repo' });
+    const invalidated = await f.service.get(project());
+    expect(invalidated.snapshot!.contentHash).toBe(before.snapshot!.contentHash);
+    expect(invalidated.freshness.outsideIssues.provisionalCount).toBe(0);
+    expect(
+      invalidated.snapshot!.plan.warnings.filter((w) => w.code === 'dependency-provisional'),
+    ).toEqual([]);
+    listingGate.resolve();
+    await f.jobs.active(project())?.completion;
+  });
+
   it.each(['closed', 'failed'] as const)(
     'serves last-known dropped issue details while its lookup waits, then handles %s',
     async (outcome) => {

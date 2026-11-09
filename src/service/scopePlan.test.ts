@@ -134,6 +134,9 @@ describe('scope plan derivation', () => {
           relationCoverage: { native: 'complete', subIssues: 'complete' },
         });
       const refreshed = derive();
+      expect(
+        store.readOutsideIssue({ source: 's', key: 'a/r#2' })!.observation.retainedFromListing,
+      ).toBe(outcome === 'failed' || outcome === 'missing' ? true : undefined);
       const node = refreshed.snapshot!.plan.nodes.find((n) => n.key === 'a/r#2');
       expect(warnings(o, 'fetch-error')).toEqual([]);
       if (outcome === 'closed') {

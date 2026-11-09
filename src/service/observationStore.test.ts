@@ -414,6 +414,7 @@ describe('observation identities and lifecycle', () => {
       invalidated: true,
       observation: {
         result: { status: 'found', issue: original },
+        retainedFromListing: true,
         relationCoverage: complete,
         relationsCheckedAt: listing.observation.relationsCheckedAt,
         lastCheckedAt: t1,
@@ -452,7 +453,10 @@ describe('observation identities and lifecycle', () => {
       const targeted = store.readOutsideIssue(outside)!;
       clock(t2);
       store.writeRepository(store.beginRepositoryRead(project), { issues: [], warnings: [] });
-      expect(store.readOutsideIssue(outside)?.observation).toEqual(targeted.observation);
+      expect(store.readOutsideIssue(outside)?.observation).toEqual({
+        ...targeted.observation,
+        ...(state === 'open' ? { retainedFromListing: true } : {}),
+      });
       expect(store.readOutsideIssue(outside)?.invalidated).toBe(state === 'open');
     },
   );

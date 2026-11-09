@@ -221,6 +221,7 @@ export class ObservationStore {
     if (copy.result.status === 'found') {
       const [issue] = this.relations(entry, [copy.result.issue], coverage, checkedAt);
       entry.observation.result = { status: 'found', issue: issue! };
+      delete entry.observation.retainedFromListing;
     }
     this.succeeded(entry, request, coverage, checkedAt, copy);
     return true;
@@ -305,6 +306,7 @@ export class ObservationStore {
           entry.observation.result.issue.state === 'open' &&
           entry.lastSuccessfulRead < repository.lastAcceptedRead
         ) {
+          entry.observation.retainedFromListing = true;
           entry.invalidated = true;
           entry.version = ++this.nextVersion;
         }
@@ -315,6 +317,7 @@ export class ObservationStore {
         this.outsideIssues.set(id, entry);
       }
       entry.observation.result = { status: 'found', issue: structuredClone(issue) };
+      entry.observation.retainedFromListing = true;
       entry.observation.lastCheckedAt = repository.observation.lastCheckedAt;
       entry.observation.relationCoverage = structuredClone(repository.observation.relationCoverage);
       entry.observation.relationsCheckedAt = structuredClone(

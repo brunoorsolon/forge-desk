@@ -221,7 +221,10 @@ export function deriveScopePlan(options: ScopePlanInput): ScopePlanResult {
     if (!included.has(key) && !(result?.status === 'found' && result.issue.state === 'closed'))
       continue;
     inspect(record, result?.status === 'found' ? [{ ...result.issue, key }] : [], key);
-    if (record.invalidated || record.observation.lastAttempt?.outcome === 'failed')
+    if (
+      record.observation.retainedFromListing ||
+      record.observation.lastAttempt?.outcome === 'failed'
+    )
       provisional.add(key);
   }
   // A provisional prerequisite also makes its dependents provisional.
