@@ -23,6 +23,17 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run format:check
+
+  # Runs beside `ci`: the built app and browser checks do not depend on the unit tests.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - run: npm run build
       - name: Scope heading browser layout regression
         run: node scripts/check-scope-heading-layout.mjs

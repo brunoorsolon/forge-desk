@@ -316,7 +316,7 @@ npm run typecheck && npm test && npm run format:check
    - in GitHub: **Actions → Release → Run workflow** on `main`, with **version** `1.2.3`. The workflow creates the tag `v1.2.3` on that commit;
    - or push a tag: `git tag v1.2.3 && git push origin v1.2.3`.
 
-The [Release workflow](.github/workflows/release.yml) runs the checks and the Docker smoke test, verifies that the version matches `package.json`, publishes the multi-arch image to `ghcr.io/brunoorsolon/forge-desk` (`1.2.3`, `1.2`, `1` and `latest`; prereleases such as `1.3.0-rc.1` never move `latest`) and creates the GitHub Release. Publishing a release from the GitHub UI works too (the image is published; the release already exists). Run workflow with an empty version is a dry run that builds the image without pushing anything.
+The [Release workflow](.github/workflows/release.yml) runs the checks and the Docker smoke test, verifies that the version matches `package.json`, publishes the multi-arch image to `ghcr.io/brunoorsolon/forge-desk` (`1.2.3`, `1.2`, `1` and `latest`; prereleases such as `1.3.0-rc.1` never move `latest`) and creates the GitHub Release. Publishing a release from the GitHub UI works too: the tag it creates starts the workflow, which publishes the image and leaves the existing release alone. Run workflow with an empty version is a dry run that builds the image without pushing anything.
 
 ### The repository and image move
 

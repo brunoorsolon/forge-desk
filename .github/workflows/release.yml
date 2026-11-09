@@ -4,7 +4,8 @@
 # - push a tag: git tag vX.Y.Z && git push origin vX.Y.Z
 # - Actions → Release → Run workflow, with "version" set to X.Y.Z: the workflow
 #   creates the tag vX.Y.Z on the commit it ran on;
-# - publish a release in the GitHub UI (this creates the tag).
+# - publish a release in the GitHub UI: this creates the tag, and the tag push starts
+#   the workflow (no separate release trigger, which would run everything twice).
 # Each one verifies the code, publishes the image and makes sure the GitHub
 # Release exists (notes from .github/release-notes/vX.Y.Z.md if present, plus
 # GitHub's generated notes).
@@ -16,8 +17,6 @@ name: Release
 on:
   push:
     tags: ['v*.*.*']
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -53,12 +52,10 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           pkg="$(node -p "require('./package.json').version")"
           case "$EVENT" in
             push) tag="$GITHUB_REF_NAME" ;;
-            release) tag="$RELEASE_TAG" ;;
             workflow_dispatch) tag="${INPUT_VERSION:+v${INPUT_VERSION#v}}" ;;
           esac
           if [[ -z "$tag" ]]; then
@@ -133,8 +130,8 @@ jobs:
 
   github-release:
     needs: [verify, publish-image]
-    # A published release already exists; push and manual runs create it.
-    if: needs.verify.outputs.release == 'true' && github.event_name != 'release'
+    # A release published in the UI already exists; the step below then does nothing.
+    if: needs.verify.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
