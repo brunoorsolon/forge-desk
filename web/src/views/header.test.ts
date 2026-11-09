@@ -300,7 +300,13 @@ describe('header export destination and named-view controls', () => {
       'false',
       'false',
     ]);
+    // Sort and filter start closed; the tab-row toggle opens them.
+    const toggle = descendants(h.tabbar, (e) => e.classList.contains('toolbar-toggle'))[0]!;
+    expect(h.toolbar.hidden).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    toggle.click();
     expect(h.toolbar.hidden).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(descendants(h.tabbar, (e) => e.getAttribute('id') === 'sort-button')).toHaveLength(0);
     expect(descendants(h.toolbar, (e) => e.getAttribute('id') === 'sort-button')).toHaveLength(1);
     expect(descendants(h.toolbar, (e) => e.getAttribute('id') === 'filter-button')).toHaveLength(1);
@@ -311,6 +317,7 @@ describe('header export destination and named-view controls', () => {
 
     h.store.dispatch({ type: 'route', route: { ...DEFAULT_ROUTE, tab: 'problems' } });
     expect(h.toolbar.hidden).toBe(true);
+    expect(toggle.hidden).toBe(true);
 
     h.store.dispatch({ type: 'route', route: { ...DEFAULT_ROUTE, tab: 'graph' } });
     expect(h.toolbar.hidden).toBe(false);
@@ -325,6 +332,20 @@ describe('header export destination and named-view controls', () => {
       'true',
     ]);
     expect(h.toolbar.hidden).toBe(true);
+  });
+
+  it('opens a closed sort and filter row when a filter or sort arrives by route', () => {
+    for (const route of [
+      { ...DEFAULT_ROUTE, q: 'status:ready' },
+      { ...DEFAULT_ROUTE, sort: 'updated' as const },
+    ]) {
+      const h = headerWith();
+      const toggle = descendants(h.tabbar, (e) => e.classList.contains('toolbar-toggle'))[0]!;
+      expect(h.toolbar.hidden).toBe(true);
+      h.store.dispatch({ type: 'route', route });
+      expect(h.toolbar.hidden).toBe(false);
+      expect(toggle.classList.contains('active')).toBe(true);
+    }
   });
 
   it('integrates config source titles across sidebar, scope heading, unified tabs, and release routes', () => {
@@ -370,7 +391,10 @@ describe('header export destination and named-view controls', () => {
     expect(descendants(sidebarEl, (e) => e.classList.contains('brand-name'))[0]?.textContent).toBe(
       'Forge Desk',
     );
-    expect(descendants(sidebarEl, (e) => e.tagName === 'h2').map((e) => e.textContent)).toEqual([
+    const headingText = (e: FakeElement): string =>
+      (descendants(e, (c) => c.classList.contains('project-sidebar-group-title'))[0] ?? e)
+        .textContent;
+    expect(descendants(sidebarEl, (e) => e.tagName === 'h2').map(headingText)).toEqual([
       'Favorites',
       'GitHub',
       'PugLab (Gitea)',

@@ -590,34 +590,89 @@ a:hover {
   display: none;
 }
 .project-sidebar-nav {
-  padding: 16px 12px;
+  padding: 12px 8px 16px;
 }
-.project-sidebar-section + .project-sidebar-section {
-  margin-top: 24px;
-}
-.project-sidebar-section h2 {
-  margin: 0 8px 8px;
-  color: var(--fg-3);
-  font-size: 11px;
+.project-sidebar-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--fg);
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   overflow-wrap: anywhere;
+}
+.project-sidebar-heading > .icon {
+  flex: none;
+  color: var(--blocked);
+}
+.project-sidebar-sources-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0 2px;
+  padding: 12px 8px 2px;
+  border-top: 1px solid var(--line);
+  color: var(--fg-3);
+  font-size: 12px;
+  font-weight: 500;
+}
+.project-sidebar-expand-all {
+  font-size: 12px;
+}
+.project-sidebar-group {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 32px;
+  margin: -6px -8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.project-sidebar-group > .icon {
+  flex: none;
+  color: var(--fg-3);
+  transition: transform 0.15s var(--ease);
+}
+.project-sidebar-group[aria-expanded='false'] > .icon {
+  transform: rotate(-90deg);
+}
+.project-sidebar-group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-sidebar-count {
+  color: var(--fg-3);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 .project-sidebar-list {
   padding: 0;
-  margin: 0;
+  margin: 0 0 6px;
   list-style: none;
 }
 .project-sidebar-row {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
+  align-items: stretch;
+  gap: 2px;
+  margin-top: 1px;
 }
 .project-sidebar-entry,
 .project-sidebar-star {
-  min-height: 44px;
+  min-height: 30px;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   background: transparent;
@@ -625,7 +680,9 @@ a:hover {
 .project-sidebar-entry {
   flex: 1;
   min-width: 0;
-  padding: 7px 8px;
+  /* Indented past the 12px caret so rows read as options of their source. */
+  padding: 4px 8px 4px 28px;
+  color: var(--fg-2);
   text-align: left;
 }
 .project-sidebar-repo,
@@ -637,31 +694,39 @@ a:hover {
 }
 .project-sidebar-repo {
   font-size: 13px;
-  font-weight: 500;
 }
 .project-sidebar-source {
   color: var(--fg-3);
   font-size: 11.5px;
 }
 .project-sidebar-entry:hover:not([aria-disabled='true']),
-.project-sidebar-star:hover:not([aria-disabled='true']) {
+.project-sidebar-star:hover:not([aria-disabled='true']),
+.project-sidebar-group:hover {
   background: var(--surface-2);
+  color: var(--fg);
 }
 .project-sidebar-entry[aria-current='page'] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
+  /* Neutral fill plus a thin accent bar: marks the page without a blue box. */
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--fg);
+  font-weight: 500;
 }
 .project-sidebar-star {
+  display: grid;
   flex: 0 0 36px;
-  padding: 4px;
-  font-size: 23px;
-  line-height: 1;
+  place-items: center;
+  padding: 0;
   color: var(--fg-3);
+  opacity: 0.55;
+}
+.project-sidebar-row:hover .project-sidebar-star,
+.project-sidebar-star:focus-visible,
+.project-sidebar-star[aria-pressed='true'] {
+  opacity: 1;
 }
 .project-sidebar-star[aria-pressed='true'] {
   color: var(--blocked);
-  background: var(--blocked-soft);
 }
 .project-sidebar-entry[aria-disabled='true'],
 .project-sidebar-star[aria-disabled='true'] {
@@ -675,7 +740,7 @@ a:hover {
   color: var(--blocked);
 }
 .project-sidebar-note {
-  margin: 8px;
+  margin: 4px 8px 8px 28px;
   font-size: 12px;
   color: var(--fg-3);
   overflow-wrap: anywhere;
@@ -685,8 +750,18 @@ a:hover {
   align-items: center;
   gap: 8px;
   width: 100%;
-  margin-top: 24px;
+  min-height: 32px;
+  margin-top: 12px;
+  padding: 6px 8px;
   border-top-color: var(--line);
+}
+@media (pointer: coarse) {
+  .project-sidebar-entry,
+  .project-sidebar-star,
+  .project-sidebar-group,
+  .project-sidebar-views {
+    min-height: 44px;
+  }
 }
 @media (max-width: 640px) {
   .project-sidebar {
@@ -695,16 +770,25 @@ a:hover {
     overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+    /* Brand and the Projects disclosure share one row; the list opens below. */
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .project-sidebar-brand {
+    flex: 1;
+    border-bottom: 0;
   }
   .project-sidebar-toggle {
     display: inline-flex;
-    margin: 10px 12px;
+    margin: 0 12px;
   }
   .project-sidebar.is-open .project-sidebar-toggle .icon {
     transform: rotate(180deg);
   }
   .project-sidebar-nav {
     display: none;
+    flex-basis: 100%;
     max-height: 65dvh;
     overflow-y: auto;
     padding-top: 4px;
@@ -727,8 +811,7 @@ a:hover {
   overflow-wrap: anywhere;
 }
 .scope-heading-top,
-.scope-identity,
-.scope-refresh-controls {
+.scope-identity {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -758,6 +841,77 @@ a:hover {
 .scope-star[aria-disabled='true'] {
   opacity: 0.55;
   cursor: default;
+}
+.scope-heading:has(.scope-refresh-menu[open]) {
+  /* The heading scrolls for long repository lists; let the open menu escape it. */
+  overflow: visible;
+}
+/* One plain fresh repository only repeats the summary line above it. */
+.scope-repositories
+  > .scope-repository:only-child[data-state='fresh']:not(
+    :has(.scope-status ~ .scope-status, .scope-error)
+  ) {
+  display: none;
+}
+.scope-refresh-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.scope-refresh-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.scope-refresh-trigger.busy .icon:last-child {
+  animation: none;
+}
+.scope-refresh-controls {
+  display: flex;
+  flex-direction: column;
+}
+.scope-refresh-controls .menu-item {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.scope-refresh-controls .menu-item:disabled {
+  color: var(--fg-3);
+  cursor: default;
+}
+.scope-details {
+  margin-top: 6px;
+}
+.scope-freshness-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-3);
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+.scope-freshness-summary::-webkit-details-marker {
+  display: none;
+}
+.scope-freshness-summary:hover {
+  color: var(--fg-2);
+}
+.scope-freshness-summary > .icon {
+  margin-left: 2px;
+  transform: rotate(-90deg);
+  transition: transform 0.15s var(--ease);
+}
+.scope-details[open] > .scope-freshness-summary > .icon {
+  transform: none;
+}
+.scope-freshness-summary[data-state='fresh'] > .scope-status {
+  color: var(--ready);
+}
+.scope-freshness-summary[data-state='stale'] > .scope-status,
+.scope-freshness-summary[data-state='invalidated'] > .scope-status,
+.scope-freshness-summary[data-state='delayed'] > .scope-status {
+  color: var(--blocked);
+}
+.scope-freshness-summary[data-state='failed'] > .scope-status,
+.scope-freshness-summary[data-state='unavailable'] > .scope-status {
+  color: var(--cycle);
 }
 .scope-preference-notice,
 .scope-freshness {
@@ -941,6 +1095,17 @@ a:hover {
   min-width: 0;
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
+}
+.toolbar-toggle {
+  flex: none;
+  margin-left: auto;
+}
+.toolbar-toggle[aria-expanded='true'],
+.toolbar-toggle.active {
+  color: var(--fg);
+}
+.toolbar-toggle.active {
+  border-color: var(--fg);
 }
 .toolbar {
   display: flex;

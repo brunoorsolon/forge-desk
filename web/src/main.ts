@@ -485,7 +485,7 @@ document.addEventListener('keydown', (e) => {
     if (store.get().selected !== null) actions.select(null);
   } else if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
-    document.querySelector<HTMLInputElement>('.filter-input')?.focus();
+    header.focusFilter();
   } else if (
     (e.key === 'f' || e.key === 'F') &&
     !typing &&

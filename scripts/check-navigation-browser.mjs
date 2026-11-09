@@ -211,6 +211,14 @@ try {
     `location.hash.includes('q=Browser') && Boolean(document.querySelector('.panel.open')?.textContent.includes('demo/one#1'))`,
     'Current scope preserves filter and details',
   );
+  // Sources start collapsed; open beta's group before keyboard-selecting its project.
+  await evaluate(
+    `document.querySelector('[aria-label="Source beta"] .project-sidebar-group[aria-expanded="false"]')?.click()`,
+  );
+  await expect(
+    `document.querySelector('[aria-label="Open beta / demo/three"]').getClientRects().length > 0`,
+    'Collapsed source group expands on click',
+  );
   await evaluate(`document.querySelector('[aria-label="Open beta / demo/three"]').focus()`);
   await key('Enter', 'Enter', 13);
   await until(

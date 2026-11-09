@@ -4,7 +4,7 @@ import type {
   RepositoryFreshness,
   SweepStatus,
 } from '../../../src/core/scope.js';
-import { clear, h, icon, setText } from '../dom.js';
+import { append, clear, h, icon, setText } from '../dom.js';
 import { absoluteTime, plural, relativeTime } from '../format.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
 import { isActiveScopeJob, type AppState } from '../state.js';
@@ -47,15 +47,54 @@ function checkedAt(iso: string | null, now: number): HTMLElement {
   return h(
     'span',
     { class: 'scope-check-time' },
-    iso === null ? 'No successful check' : 'Last successful check: ',
+    iso === null ? 'No successful check' : 'checked ',
     iso === null ? null : time(iso, now),
   );
 }
 
+// Failed attempts must never relabel last-good data or its check time as fresh.
+function displayState(repository: RepositoryFreshness): RepositoryFreshness['state'] {
+  return repository.state === 'failed' && repository.lastCheckedAt !== null
+    ? 'stale'
+    : repository.state;
+}
+
+const SEVERITY: RepositoryFreshness['state'][] = [
+  'failed',
+  'unavailable',
+  'stale',
+  'invalidated',
+  'delayed',
+  'updating',
+  'fresh',
+];
+
+/** One line for the collapsed details: the scope's state counts, worst first. */
+function freshnessSummary(repositories: RepositoryFreshness[]): {
+  text: string;
+  state: RepositoryFreshness['state'];
+} {
+  const counts = new Map<RepositoryFreshness['state'], number>();
+  for (const repository of repositories) {
+    const state = displayState(repository);
+    counts.set(state, (counts.get(state) ?? 0) + 1);
+  }
+  const worst = SEVERITY.filter((state) => counts.has(state));
+  const parts = worst.map((state) => `${counts.get(state)} ${state}`);
+  return {
+    text:
+      repositories.length === 0
+        ? 'No repositories'
+        : repositories.length === 1
+          ? worst[0]![0]!.toUpperCase() + worst[0]!.slice(1)
+          : `${plural(repositories.length, 'repository', 'repositories')}: ${parts.join(', ')}`,
+    state: worst[0] ?? 'fresh',
+  };
+}
+
 function repositoryRow(repository: RepositoryFreshness, now: number): HTMLElement {
-  // Failed attempts must never relabel last-good data or its check time as fresh.
   const retainedFailure = repository.state === 'failed' && repository.lastCheckedAt !== null;
-  const state = retainedFailure ? 'stale' : repository.state;
+  const state = displayState(repository);
   return h(
     'li',
     { class: 'scope-repository', 'data-state': state },
@@ -150,10 +189,11 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
   const refreshProject = h(
     'button',
     {
-      class: 'btn',
+      class: 'menu-item',
       type: 'button',
       hidden: true,
       onclick: () => {
+        refreshMenu.open = false;
         if (project !== null && !refreshProject.disabled)
           callbacks.refreshProject?.({ ...project });
       },
@@ -164,10 +204,11 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
   const refreshSource = h(
     'button',
     {
-      class: 'btn',
+      class: 'menu-item',
       type: 'button',
       hidden: true,
       onclick: () => {
+        refreshMenu.open = false;
         if (source !== null && !refreshSource.disabled) callbacks.refreshSource?.(source);
       },
     },
@@ -177,17 +218,46 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
   const refreshAll = h(
     'button',
     {
-      class: 'btn',
+      class: 'menu-item',
       type: 'button',
       hidden: true,
       onclick: () => {
+        refreshMenu.open = false;
         if (source !== null && !refreshAll.disabled) callbacks.refreshAllSources?.();
       },
     },
     icon('refresh'),
     allLabel,
   );
+  // Refresh is occasional, so its three scopes share one menu instead of three buttons.
+  const refreshMenuLabel = h('span', null, 'Refresh');
+  const refreshTrigger = h(
+    'summary',
+    { class: 'btn scope-refresh-trigger' },
+    icon('refresh'),
+    refreshMenuLabel,
+    icon('chevron', 12),
+  );
+  const refreshMenu = h(
+    'details',
+    { class: 'menu-wrap scope-refresh-menu' },
+    refreshTrigger,
+    h('div', { class: 'menu scope-refresh-controls' }, refreshProject, refreshSource, refreshAll),
+  );
+  refreshMenu.addEventListener('focusout', (event) => {
+    if (!refreshMenu.contains((event as FocusEvent).relatedTarget as Node | null))
+      refreshMenu.open = false;
+  });
+  refreshMenu.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key !== 'Escape' || !refreshMenu.open) return;
+    event.stopPropagation();
+    refreshMenu.open = false;
+    refreshTrigger.focus();
+  });
   const freshness = h('div', { class: 'scope-freshness' });
+  // Collapsed by default so the plan keeps the screen; errors stay in the banner above.
+  const summary = h('summary', { class: 'scope-freshness-summary' });
+  const details = h('details', { class: 'scope-details' }, summary, freshness);
   const errorMessage = h('p', { class: 'scope-refresh-error-message' });
   const errorBanner = h(
     'div',
@@ -214,11 +284,11 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       'div',
       { class: 'scope-heading-top' },
       h('div', { class: 'scope-identity' }, sourceName, title, star),
-      h('div', { class: 'scope-refresh-controls' }, refreshProject, refreshSource, refreshAll),
+      refreshMenu,
     ),
     preferenceNotice,
     errorBanner,
-    freshness,
+    details,
   );
 
   return {
@@ -311,13 +381,37 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       allLabel.textContent = refreshAll.disabled
         ? 'Refreshing all sources…'
         : 'Refresh all sources';
+      const busy = [refreshProject, refreshSource, refreshAll].some(
+        (button) => !button.hidden && button.disabled,
+      );
+      refreshMenu.hidden = [refreshProject, refreshSource, refreshAll].every(
+        (button) => button.hidden,
+      );
+      refreshTrigger.classList.toggle('busy', busy);
+      refreshMenuLabel.textContent = busy ? 'Refreshing…' : 'Refresh';
 
       const now = Date.now();
       clear(freshness);
       const info = state.freshness;
+      clear(summary);
       if (info === null) {
-        freshness.append(h('p', { class: 'muted' }, 'Freshness is not available yet.'));
+        summary.setAttribute('data-state', 'unavailable');
+        append(summary, ['Freshness is not available yet.']);
       } else {
+        const overview = freshnessSummary(info.repositories);
+        summary.setAttribute('data-state', overview.state);
+        // The snapshot's fetch time is its oldest contributing repository check.
+        append(summary, [
+          h('span', { class: 'scope-status' }, overview.text),
+          ' · ',
+          h(
+            'span',
+            { class: 'scope-fetch-time' },
+            state.snapshot === null ? 'no data fetched' : 'checked ',
+            state.snapshot === null ? null : time(state.snapshot.fetchedAt, now),
+          ),
+          icon('chevron', 12),
+        ]);
         freshness.append(
           h(
             'ul',
@@ -330,24 +424,17 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
             h(
               'p',
               { class: 'scope-outside-issues' },
-              `${plural(info.outsideIssues.count, 'outside issue')} · Oldest observation: `,
+              `${plural(info.outsideIssues.count, 'outside issue')}, ${info.outsideIssues.provisionalCount} provisional`,
+              info.outsideIssues.oldestObservedAt === null ? null : ', oldest observed ',
               info.outsideIssues.oldestObservedAt === null
-                ? 'none'
+                ? null
                 : time(info.outsideIssues.oldestObservedAt, now),
-              ` · ${info.outsideIssues.provisionalCount} provisional`,
-            ),
-            h(
-              'p',
-              { class: 'scope-fetch-time' },
-              'Data fetched: ',
-              state.snapshot === null ? 'unavailable' : time(state.snapshot.fetchedAt, now),
-              ' (oldest contributing repository check)',
             ),
             h(
               'p',
               { class: 'scope-computed-time' },
-              'Plan computed: ',
-              info.computedAt === null ? 'not computed' : time(info.computedAt, now),
+              info.computedAt === null ? 'Plan not computed' : 'Plan computed ',
+              info.computedAt === null ? null : time(info.computedAt, now),
             ),
           ),
         );

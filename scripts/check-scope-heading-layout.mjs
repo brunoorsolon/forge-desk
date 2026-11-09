@@ -65,6 +65,8 @@ for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
       const main = h('main', { class: 'main' }, 'Plan');
       const planning = h('div', { class: 'planning' }, header.el, heading.el, summary.el, main);
       app.append(planning);
+      // Repository rows sit behind the freshness details; measure them opened.
+      heading.el.querySelector('.scope-details').open = true;
       const headingRect = heading.el.getBoundingClientRect();
       const mainRect = main.getBoundingClientRect();
       const rows = heading.el.querySelectorAll('.scope-repository');

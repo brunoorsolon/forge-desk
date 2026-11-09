@@ -22,6 +22,8 @@ import minus from '@phosphor-icons/core/assets/regular/minus.svg?raw';
 import path from '@phosphor-icons/core/assets/regular/path.svg?raw';
 import plus from '@phosphor-icons/core/assets/regular/plus.svg?raw';
 import sortAscending from '@phosphor-icons/core/assets/regular/sort-ascending.svg?raw';
+import star from '@phosphor-icons/core/assets/regular/star.svg?raw';
+import starFill from '@phosphor-icons/core/assets/fill/star-fill.svg?raw';
 import tag from '@phosphor-icons/core/assets/regular/tag.svg?raw';
 import warning from '@phosphor-icons/core/assets/regular/warning.svg?raw';
 import warningCircle from '@phosphor-icons/core/assets/regular/warning-circle.svg?raw';
@@ -54,6 +56,8 @@ const SOURCES = {
   refresh: arrowsClockwise,
   search: magnifyingGlass,
   sort: sortAscending,
+  star,
+  starFill,
   tag,
   theme: circleHalf,
   warning,
