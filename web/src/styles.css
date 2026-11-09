@@ -760,8 +760,7 @@ a:hover {
   cursor: default;
 }
 .scope-preference-notice,
-.scope-freshness,
-.scope-sweep {
+.scope-freshness {
   color: var(--fg-2);
   font-size: 12.5px;
 }
@@ -810,23 +809,28 @@ a:hover {
 .scope-heading p {
   margin: 4px 0;
 }
-.scope-sweep {
-  border-top: 1px solid var(--line);
-  margin-top: 12px;
-  padding-top: 10px;
-}
-.scope-sweep h3,
-.scope-sweep h4 {
-  margin: 0;
-  font-size: 13px;
-  color: var(--fg);
-}
-.scope-sweep-source {
+.scope-refresh-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--cycle);
+  border-radius: var(--r-sm);
+  color: var(--cycle);
+  font-size: 12.5px;
 }
-.scope-sweep-source h4 .scope-status {
-  margin-left: 10px;
-  color: var(--fg-3);
+.scope-refresh-error-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.scope-refresh-error-close {
+  flex: none;
+  padding: 2px 6px;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
 }
 
 /* ------------------------------------------------------------------ header */

@@ -352,9 +352,9 @@ try {
     'first source checked',
   );
   const original = fixture.sweep();
-  await until(
-    () => evaluate(`Boolean(document.querySelector('.scope-sweep [data-state="checked"]'))`),
-    'sweep progress rendered',
+  await expect(
+    `document.querySelector('.scope-sweep') === null && document.querySelector('.scope-refresh-error').hidden`,
+    'A healthy running sweep has no permanent report or error banner',
   );
   const beforeRepeat = launches(fixture).length;
   await expect(
@@ -368,16 +368,10 @@ try {
   assert.equal(currentSweep.id, original.id);
   assert.equal(currentSweep.startedAt, original.startedAt);
   assert.deepEqual(currentSweep.sources[0].projects, original.sources[0].projects);
-  await expect(
-    `document.querySelector('.scope-sweep-summary time').dateTime === ${JSON.stringify(original.startedAt)}`,
-    'Running sweep retains the original start time',
+  assert.ok(currentSweep.sources[0].projects.every((project) => project.lastCheckedAt !== null));
+  checks.push(
+    'The API still retains sweep start and per-project check times without an in-page report',
   );
-  for (const project of currentSweep.sources[0].projects) {
-    await expect(
-      `Array.from(document.querySelectorAll('.scope-sweep time')).some(t => t.dateTime === ${JSON.stringify(project.lastCheckedAt)})`,
-      'Running sweep preserves a project successful check time',
-    );
-  }
   await shot('sweep-running-disabled');
   const activeReads = sweepReads(fixture).length;
   await advanceBrowserClock(59_999);
@@ -393,25 +387,42 @@ try {
   const hiddenReads = sweepReads(fixture).length;
   await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, hiddenReads);
+  const beforeSweepCompletion = snapshotRequests(fixture).length;
+  const beforeSweepTimes = await times();
   releaseSweep();
   await until(() => fixture.sweep().state === 'completed', 'sweep completes while tab hidden');
   await cdp('Target.activateTarget', { targetId: pageTarget.id });
   await cdp('Page.bringToFront');
   await until(
-    () =>
-      evaluate(
-        `document.querySelector('.scope-sweep-summary').textContent.startsWith('Completed')`,
-      ),
-    'completion shown on tab return',
+    async () =>
+      (await evaluate(idleButton(2, 'Refresh all sources'))) &&
+      snapshotRequests(fixture).length > beforeSweepCompletion &&
+      JSON.stringify(await times()) !== JSON.stringify(beforeSweepTimes),
+    'completed sweep returns to idle and rechecks the open scope on tab return',
+  );
+  await expect(
+    `location.hash === '#/project/alpha/demo/one/graph' && document.querySelector('.scope-refresh-error').hidden && !document.querySelector('.scope-sweep')`,
+    'Successful sweep completion keeps the open project in place without a report or error banner',
   );
   await cdp('Target.closeTarget', { targetId: other.targetId });
   const completedReads = sweepReads(fixture).length;
   await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, completedReads);
   await expect(idleButton(2, 'Refresh all sources'), 'Completed sweep releases the button');
-  checks.push('Real hidden tab stops sweep polling; return shows completion, then polling stops');
+  checks.push(
+    'Real hidden tab stops sweep polling; return rechecks the scope in place, then polling stops',
+  );
   await shot('sweep-completed');
 
+  const banner = `document.querySelector('.scope-refresh-error')`;
+  const dismiss = async () => {
+    await evaluate(`document.querySelector('.scope-refresh-error-close').focus()`);
+    await key('Enter', 'Enter', 13);
+    await expect(
+      `${banner}.hidden`,
+      'The keyboard-accessible close button dismisses the error banner',
+    );
+  };
   const retainedTimes = await times();
   const retainedPlan = await evaluate(`document.querySelector('.summary').textContent`);
   fixture.rejectRefresh();
@@ -419,35 +430,50 @@ try {
   await until(
     () =>
       evaluate(
-        `document.querySelector('.scope-heading').textContent.includes('Fixture refresh rejected')`,
+        `!${banner}.hidden && ${banner}.textContent.includes('Refresh error: Fixture refresh rejected')`,
       ),
-    'scope rejection shown',
+    'scope rejection shown in the compact banner',
   );
   assert.deepEqual(await times(), retainedTimes);
   assert.equal(await evaluate(`document.querySelector('.summary').textContent`), retainedPlan);
   await shot('scope-rejected');
+  await dismiss();
+  await evaluate(`document.querySelector('#tab-order').click()`);
+  await expect(`${banner}.hidden`, 'A tab rerender does not reopen a dismissed refresh error');
+  await click('Refresh this source');
+  await until(
+    () =>
+      evaluate(`!${banner}.hidden && ${banner}.textContent.includes('Fixture refresh rejected')`),
+    'an identical failure from a later refresh reopens the banner',
+  );
   await click('Refresh all sources');
   await until(
     () =>
       evaluate(
-        `document.querySelector('.scope-heading').textContent.includes('All sources refresh: Fixture refresh rejected')`,
+        `!${banner}.hidden && ${banner}.textContent.includes('All sources refresh: Fixture refresh rejected')`,
       ),
-    'sweep rejection shown',
+    'sweep rejection shown in the same banner',
   );
   await expect(
-    `document.querySelector('.scope-sweep-summary').textContent.startsWith('Completed')`,
-    'Rejected sweep retains the completed sweep data',
+    `document.querySelectorAll('.scope-heading [role="alert"]').length === 1 && !document.querySelector('.scope-sweep')`,
+    'Simultaneous scope and sweep errors share one alert without restoring the report',
+  );
+  assert.equal(
+    fixture.sweep().state,
+    'completed',
+    'Rejected launch retains completed API sweep data',
   );
   assert.deepEqual(await times(), retainedTimes);
   await expect(idleButton(1, 'Refresh this source'), 'Rejected source refresh releases the button');
   await expect(idleButton(2, 'Refresh all sources'), 'Rejected sweep launch releases the button');
-  checks.push('Rejected scope and sweep refreshes show errors and keep existing data');
+  checks.push('Rejected scope and sweep refreshes show dismissible errors and keep existing data');
   await shot('sweep-rejected');
+  await dismiss();
   assert.ok(launches(fixture).every((r) => r.launchHeader === '1' && !r.hasCsrf));
   checks.push('Anonymous refreshes carry the required request header, without a session token');
 
   // A policy-conflict panel does not hide the heading or all-source control.
-  // The healthy source must still refresh and its sweep progress must be followed.
+  // The healthy source must still refresh while the conflict banner stays dismissible.
   const conflicted = await navigationFixture({ sweeps: true, conflicts: ['alpha'] });
   fixtures.push(conflicted);
   const releaseHealthy = conflicted.hold({ source: 'beta', repo: 'demo/three' });
@@ -458,6 +484,16 @@ try {
   );
   await click('Refresh all sources');
   await until(() => sweepReads(conflicted).length > 0, 'conflicted-scope sweep read');
+  await until(
+    () => evaluate(`!${banner}.hidden && ${banner}.textContent.includes('Policy conflict:')`),
+    'policy conflict is summarized while the sweep is still running',
+  );
+  await expect(
+    `${banner}.textContent.includes('Differing settings: dependencies.native') && ${banner}.textContent.includes('Views: alpha-view, alpha-conflict') && !document.querySelector('.scope-sweep')`,
+    'Policy conflict details appear in the compact banner, never a per-repository report',
+  );
+  await shot('sweep-policy-conflict');
+  await dismiss();
   const conflictReads = sweepReads(conflicted).length;
   await advanceBrowserClock(61_000);
   await until(
@@ -468,21 +504,63 @@ try {
   await until(() => conflicted.sweep().state === 'partial', 'conflicted-scope upstream completes');
   await advanceBrowserClock(60_000);
   await until(
-    () =>
-      evaluate(`document.querySelector('.scope-sweep-summary')?.textContent.startsWith('Partial')`),
-    'conflicted-scope sweep completes',
+    () => evaluate(idleButton(2, 'Refresh all sources')),
+    'conflicted-scope sweep completes and releases the button',
   );
   await expect(
-    `document.querySelector('.scope-sweep').textContent.includes('Policy conflict:') &&
-      document.querySelector('.scope-sweep [aria-label="Source beta"] [data-state="checked"]') !== null`,
-    'A visible policy-conflict scope still follows the sweep and shows the healthy source completing',
+    `${banner}.hidden && !document.querySelector('.scope-sweep')`,
+    'Dismissed conflict stays hidden through polling and healthy-source completion',
+  );
+  assert.ok(
+    conflicted
+      .sweep()
+      .sources.find((source) => source.source === 'beta')
+      .projects.every((project) => project.state === 'checked'),
+  );
+  await click('Refresh all sources');
+  await until(
+    () => evaluate(`!${banner}.hidden && ${banner}.textContent.includes('Policy conflict:')`),
+    'a new sweep with the same conflict produces a new dismissible error',
   );
   assert.equal(
     snapshotRequests(conflicted).length,
     0,
     'Blocked scopes must not start snapshot polling',
   );
-  await shot('sweep-policy-conflict');
+
+  // A failed source must be reported even when another source is still running.
+  const failed = await navigationFixture({ sweeps: true });
+  fixtures.push(failed);
+  failed.fail({ source: 'beta', repo: 'demo/three' });
+  const releaseOther = failed.hold({ source: 'alpha', repo: 'demo/two' });
+  await visit(failed, '#/project/alpha/demo/one/graph');
+  await ready();
+  await click('Refresh all sources');
+  await advanceBrowserClock(60_000);
+  await until(
+    () =>
+      evaluate(
+        `!${banner}.hidden && ${banner}.textContent.includes('demo/three: Fixture upstream unavailable')`,
+      ),
+    'failed source is reported while another source is still running',
+  );
+  await expect(
+    `${refreshButton(2)}.disabled`,
+    'A source failure does not end the sweep busy state early',
+  );
+  await shot('sweep-source-failed');
+  await dismiss();
+  releaseOther();
+  await until(() => failed.sweep().state === 'partial', 'partial sweep finished');
+  await advanceBrowserClock(60_000);
+  await until(
+    () => evaluate(idleButton(2, 'Refresh all sources')),
+    'partial sweep returns to idle',
+  );
+  await expect(
+    `${banner}.hidden`,
+    'The same source failure stays dismissed when the sweep finishes',
+  );
 
   const authenticated = await navigationFixture({ sweeps: true, login: true });
   fixtures.push(authenticated);
@@ -526,11 +604,14 @@ try {
   );
   await click('Refresh all sources');
   await until(
-    () =>
-      evaluate(
-        `document.querySelector('.scope-sweep-summary')?.textContent.startsWith('Completed')`,
-      ),
+    async () =>
+      authenticated.sweep()?.state === 'completed' &&
+      (await evaluate(idleButton(2, 'Refresh all sources'))),
     'authenticated sweep success',
+  );
+  await expect(
+    `${banner}.hidden && !document.querySelector('.scope-sweep')`,
+    'An authenticated successful sweep needs no report or error banner',
   );
   assert.equal(launches(authenticated).length, 3);
   assert.ok(launches(authenticated).every((r) => r.launchHeader === '1' && r.hasCsrf));

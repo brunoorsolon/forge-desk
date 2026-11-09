@@ -504,6 +504,40 @@ describe('project/source scope state', () => {
     },
   );
 
+  it('clears a previous refresh error only when another explicit refresh starts', () => {
+    const failed = reducer(reducer(scoped(), { type: 'scope-response', response: response() }), {
+      type: 'scope-failed',
+      scope: project,
+      status: 0,
+      error: 'Offline',
+    });
+    expect(reducer(failed, { type: 'scope-load-start', scope: project }).refreshError).toBe(
+      'Offline',
+    );
+    expect(
+      reducer(failed, { type: 'scope-load-start', scope: project, refreshingScope: 'project' })
+        .refreshError,
+    ).toBeNull();
+  });
+
+  it('retains an explicit refresh failure for the banner when no snapshot is available', () => {
+    const pending = reducer(scoped(), {
+      type: 'scope-load-start',
+      scope: project,
+      refreshingScope: 'source',
+    });
+    const failed = reducer(pending, {
+      type: 'scope-failed',
+      scope: project,
+      status: 0,
+      error: 'Refresh rejected',
+    });
+    expect(failed.refreshError).toBe('Refresh rejected');
+    expect(failed.error).toBe('Refresh rejected');
+    expect(failed.refreshingScope).toBeNull();
+    expect(failed.snapshot).toBeNull();
+  });
+
   it.each([404, 409])('authoritative %i replaces last-good data', (status) => {
     const loaded = reducer(scoped(), { type: 'scope-response', response: response({ job }) });
     const failed = reducer(loaded, {

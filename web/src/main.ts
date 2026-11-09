@@ -421,14 +421,7 @@ function updateNavigation(state: ReturnType<Store['get']>): void {
     return;
   }
   releases.el.hidden = true;
-  heading.update(
-    sweepState.error === null
-      ? state
-      : { ...state, refreshError: `All sources refresh: ${sweepState.error}` },
-    preferenceState,
-    sweepState,
-    catalog,
-  );
+  heading.update(state, preferenceState, sweepState, catalog);
   preferenceError.textContent = preferenceState.error ?? '';
   preferenceError.hidden = preferenceState.error === null;
   preferenceNotice.textContent = preferenceState.notice ?? '';

@@ -262,6 +262,7 @@ export function reducer(state: AppState, action: Action): AppState {
         loadedViewId: null,
         status: state.snapshot === null ? 'loading' : 'ready',
         refreshingScope: action.refreshingScope ?? null,
+        refreshError: action.refreshingScope ? null : state.refreshError,
         error: null,
       };
     case 'scope-response': {
@@ -329,7 +330,7 @@ export function reducer(state: AppState, action: Action): AppState {
               ? 'conflict'
               : 'unavailable',
         error: action.error,
-        refreshError: null,
+        refreshError: state.refreshingScope === null ? null : action.error,
         refreshing: false,
         refreshingScope: null,
       };
