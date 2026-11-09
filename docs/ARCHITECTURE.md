@@ -1410,7 +1410,9 @@ not register HTTP routes or change named-view caching.
   newer invalidation of an attempted unit retries immediately. Unrelated repository
   webhooks do not bypass this scope's guard. Explicit refresh and zero TTL always
   bypass it.
-- First-load and explicit refresh reads wait at most 15 seconds. Missing data
+- First-load reads wait at most 15 seconds. An explicit refresh of a scope with
+  data answers once its repository listing settles, also at most 15 seconds; the
+  client polls the outside-issue lookups in as they land. Missing data
   remains a null snapshot; a successful empty listing is a real empty plan.
 - Zero TTL always waits for revalidation and derives only from that job's successful units,
   excluding unrelated cached listings. An unfinished revalidation
@@ -1476,7 +1478,8 @@ opening a named view.
 
 Scope requests use the project/source snapshot endpoints. `scope-navigation.ts` owns one lane
 for the open scope, coalesces pending reads and rejects late responses after navigation, including
-a return to the same scope. Active jobs repeat a read 60 seconds after each response. The
+a return to the same scope. Active jobs repeat a read 2 seconds after each response when a
+person started them (`trigger: interactive`), and 60 seconds after it for scheduled work. The
 configured `ui.refreshMinutes` schedules freshness reads for the open scope, with zero disabling
 that periodic timer. Hidden tabs and the Releases area suspend scope checks; returning checks
 once and resumes the active-job/periodic schedule. No unopened project is polled.

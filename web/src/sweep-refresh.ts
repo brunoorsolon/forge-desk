@@ -1,6 +1,6 @@
 import type { SweepStatus } from '../../src/core/scope.js';
 import { errorMessage, fetchSweep, refreshAllSources } from './api.js';
-import { ACTIVE_POLL_MS } from './polling.js';
+import { activePollMs } from './polling.js';
 
 export interface SweepRefreshState {
   sweep: SweepStatus | null;
@@ -32,7 +32,8 @@ export function createSweepRefresh(
   }
   function schedule(): void {
     cancelTimer();
-    if (visible && running() && !pending) timer = setTimeout(() => void check(), ACTIVE_POLL_MS);
+    if (visible && running() && !pending)
+      timer = setTimeout(() => void check(), activePollMs(sweep!.trigger));
   }
   async function check(): Promise<void> {
     if (!visible || !observed || pending) return;
@@ -46,7 +47,8 @@ export function createSweepRefresh(
       sweep = result;
       readError = null;
       publish();
-      if (wasRunning && !running()) settled();
+      // A person-started sweep re-reads the open scope each poll, showing projects as they land.
+      if (wasRunning && (!running() || sweep?.trigger === 'interactive')) settled();
     } catch (error) {
       if (token === generation) {
         readError = errorMessage(error);

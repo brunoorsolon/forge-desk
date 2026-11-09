@@ -33,6 +33,9 @@ class FakeElement {
   getAttribute(name: string): string | null {
     return this.attributes.get(name) ?? null;
   }
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
   addEventListener(name: string, fn: (event: unknown) => void): void {
     const listeners = this.listeners.get(name) ?? [];
     listeners.push(fn);
@@ -200,11 +203,67 @@ describe('project sidebar', () => {
       'Favorites',
       'Source PugLab (Gitea)',
     ]);
-    expect(descendants(sections[1]!, (el) => el.tagName === 'h2')[0]?.textContent).toBe(
+    expect(byClass(sections[1]!, 'project-sidebar-group-title')[0]?.textContent).toBe(
       'PugLab (Gitea)',
     );
     expect(byClass(sections[0]!, 'project-sidebar-source')[0]?.textContent).toBe('PugLab (Gitea)');
     expect(byClass(sections[1]!, 'project-sidebar-source')).toHaveLength(0);
+  });
+
+  it('collapses sources except the current one, toggles each or all, and reveals an unstarred row', () => {
+    const expandedSources = (root: FakeElement): string[] =>
+      byClass(root, 'project-sidebar-section')
+        .filter((section) => section.getAttribute('aria-label') !== 'Favorites')
+        .filter(
+          (section) => byClass(section, 'project-sidebar-list')[0]!.getAttribute('hidden') === null,
+        )
+        .map((section) => section.getAttribute('aria-label')!);
+    const group = (root: FakeElement, label: string): FakeElement =>
+      byClass(named(root, label)[0]!, 'project-sidebar-group')[0]!;
+    const expandAll = (root: FakeElement): FakeElement =>
+      byClass(root, 'project-sidebar-expand-all')[0]!;
+
+    // A favorite route is already visible in Favorites, so every source stays collapsed.
+    const favoriteRoute: Route = {
+      ...DEFAULT_ROUTE,
+      scope: { kind: 'project', source: 'github', owner: 'acme', repo: 'api' },
+    };
+    const { root, view } = setup(favoriteRoute);
+    expect(expandedSources(root)).toEqual([]);
+    expect(
+      byClass(
+        byClass(root, 'project-sidebar-section')[0]!,
+        'project-sidebar-list',
+      )[0]!.getAttribute('hidden'),
+    ).toBeNull();
+
+    group(root, 'Source gitea').click();
+    expect(expandedSources(root)).toEqual(['Source gitea']);
+    expect(group(root, 'Source gitea').getAttribute('aria-expanded')).toBe('true');
+    expect(expandAll(root).textContent).toBe('Expand all');
+    expandAll(root).click();
+    expect(expandedSources(root)).toEqual(['Source github', 'Source gitea']);
+    expect(expandAll(root).textContent).toBe('Collapse all');
+    expandAll(root).click();
+    expect(expandedSources(root)).toEqual([]);
+
+    // Expansion survives re-renders; a non-favorite route reveals its source.
+    group(root, 'Source gitea').click();
+    view.update(
+      { route: { ...DEFAULT_ROUTE, scope: { kind: 'source', source: 'github' } } },
+      preferences(),
+      catalog,
+    );
+    expect(expandedSources(root)).toEqual(['Source github', 'Source gitea']);
+
+    const fresh = setup(favoriteRoute);
+    named(fresh.root, 'Remove gitea / acme/api from favorites')[0]!.click();
+    fresh.view.update(
+      fresh.state,
+      preferences([{ source: 'github', repo: 'acme/api', inCatalog: true }]),
+      catalog,
+    );
+    expect(expandedSources(fresh.root)).toEqual(['Source gitea']);
   });
 
   it('reports project, source and named-view choices through separate callbacks', () => {
@@ -301,16 +360,26 @@ describe('project sidebar', () => {
       { ...DEFAULT_ROUTE, scope: { kind: 'project', source: 'gitea', owner: 'acme', repo: 'api' } },
       prefs,
     );
-    expect(
-      named(root, 'Open gitea / acme/api').every(
-        (entry) => entry.getAttribute('aria-current') === 'page',
-      ),
-    ).toBe(true);
+    const currentRows = (): (string | null)[] =>
+      descendants(root, (el) => el.getAttribute('aria-current') === 'page').map(
+        (entry) => byClass(entry, 'project-sidebar-source')[0]?.textContent ?? 'catalog',
+      );
+    // Starred: only the Favorites row is current, not its catalog duplicate.
+    expect(named(root, 'Open gitea / acme/api')).toHaveLength(2);
+    expect(currentRows()).toEqual(['gitea']);
     expect(
       named(root, 'Open github / acme/api').every(
         (entry) => entry.getAttribute('aria-current') === null,
       ),
     ).toBe(true);
+    // Unstarred: the catalog row is current.
+    view.update(
+      state,
+      preferences([{ source: 'github', repo: 'acme/api', inCatalog: true }]),
+      catalog,
+    );
+    expect(currentRows()).toEqual(['catalog']);
+    view.update(state, prefs, catalog);
     named(root, 'Open gitea / acme/api')[0]!.click();
     expect(actions.selectScope).not.toHaveBeenCalled();
     view.update(

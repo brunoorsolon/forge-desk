@@ -301,10 +301,8 @@ describe('scope freshness', () => {
       }),
       preferences(),
     );
-    expect(cls(root, 'scope-check-time')[0]!.textContent).toBe('Last successful check: just now');
-    expect(cls(root, 'scope-fetch-time')[0]!.textContent).toBe(
-      'Data fetched: just now (oldest contributing repository check)',
-    );
+    expect(cls(root, 'scope-check-time')[0]!.textContent).toBe('checked just now');
+    expect(cls(root, 'scope-fetch-time')[0]!.textContent).toBe('checked just now');
     for (const label of ['scope-check-time', 'scope-fetch-time']) {
       const timestamp = all(cls(root, label)[0]!, (el) => el.tagName === 'time')[0]!;
       expect(timestamp.getAttribute('datetime')).toBe(justChecked);
@@ -336,8 +334,8 @@ describe('scope freshness', () => {
     view.update(state({ freshness: freshness(repositories) }), preferences());
     const rows = cls(root, 'scope-repository');
     expect(rows.map((row) => row.getAttribute('data-state'))).toEqual(states);
-    expect(rows[0]!.textContent).toContain('Last successful check: 1 min ago');
-    expect(rows[1]!.textContent).toContain('Last successful check: 2 h ago');
+    expect(rows[0]!.textContent).toContain('checked 1 min ago');
+    expect(rows[1]!.textContent).toContain('checked 2 h ago');
     expect(rows[1]!.textContent).toContain('Partial coverage');
     expect(rows[4]!.textContent).toContain(`Expected to resume: ${absoluteTime(delayed)}`);
     expect(dates(rows[4]!)).toEqual([checked, delayed]);
@@ -346,11 +344,15 @@ describe('scope freshness', () => {
     expect(rows[6]!.textContent).toContain('Unavailable');
     expect(dates(rows[6]!)).toEqual([]);
     expect(cls(root, 'scope-outside-issues')[0]!.textContent).toBe(
-      '3 outside issues · Oldest observation: 2 h ago · 2 provisional',
+      '3 outside issues, 2 provisional, oldest observed 2 h ago',
     );
     expect(dates(cls(root, 'scope-outside-issues')[0]!)).toEqual([checked]);
     expect(dates(cls(root, 'scope-fetch-time')[0]!)).toEqual([checked]);
     expect(dates(cls(root, 'scope-computed-time')[0]!)).toEqual([computed]);
+    // The collapsed summary counts display states, worst first; failed-with-data counts as stale.
+    expect(cls(root, 'scope-freshness-summary')[0]!.textContent).toBe(
+      `7 repositories: 1 failed, 1 unavailable, 1 stale, 1 invalidated, 1 delayed, 1 updating, 1 fresh · checked 2 h ago`,
+    );
   });
 
   it.each(['failed', 'stale'] as const)(
@@ -400,11 +402,9 @@ describe('scope freshness', () => {
     );
     expect(dates(root)).toEqual([]);
     expect(root.textContent).toContain('No successful check');
-    expect(root.textContent).toContain(
-      '0 outside issues · Oldest observation: none · 0 provisional',
-    );
-    expect(root.textContent).toContain('Plan computed: not computed');
-    expect(root.textContent).toContain('Data fetched: unavailable');
+    expect(root.textContent).toContain('0 outside issues, 0 provisional');
+    expect(root.textContent).toContain('Plan not computed');
+    expect(root.textContent).toContain('no data fetched');
     view.update(state({ snapshot: null, freshness: null }), preferences());
     expect(root.textContent).toContain('Freshness is not available yet.');
     expect(cls(root, 'scope-repository')).toEqual([]);

@@ -123,6 +123,8 @@ function facetGroups(snapshot: Snapshot, multiRepo: boolean): [string, Facet[]][
 
 export interface HeaderView extends View {
   setReleasesActive(active: boolean): void;
+  /** Opens the sort and filter row and focuses the filter input (the `/` shortcut). */
+  focusFilter(): void;
 }
 
 export function createHeader(ctx: ViewCtx): HeaderView {
@@ -462,10 +464,28 @@ export function createHeader(ctx: ViewCtx): HeaderView {
     h('span', { class: 'kbd', 'aria-hidden': 'true' }, '/'),
   );
 
-  const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Sections' }, tabs);
+  // The sort and filter row stays closed until asked for, so the plan keeps the screen.
+  let toolbarOpen = false;
+  const toolbarToggle = h(
+    'button',
+    {
+      class: 'btn btn-ghost toolbar-toggle',
+      type: 'button',
+      'aria-controls': 'sort-filter',
+      'aria-expanded': 'false',
+      title: 'Sort and filter',
+      onclick: () => {
+        toolbarOpen = !toolbarOpen;
+        syncTabsAndToolbar(ctx.store.get().route.tab);
+      },
+    },
+    icon('filter', 14),
+    h('span', { class: 'btn-label' }, 'Sort & filter'),
+  );
+  const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Sections' }, tabs, toolbarToggle);
   const toolbar = h(
     'div',
-    { class: 'toolbar', 'aria-label': 'Sort and filter' },
+    { id: 'sort-filter', class: 'toolbar', 'aria-label': 'Sort and filter' },
     h('div', { class: 'spacer' }),
     sortMenu.wrap,
     facetMenu.wrap,
@@ -480,7 +500,10 @@ export function createHeader(ctx: ViewCtx): HeaderView {
       btn.setAttribute('aria-selected', String(active));
     }
     releasesTab.setAttribute('aria-selected', String(releasesActive));
-    toolbar.hidden = releasesActive || tab === 'problems';
+    const available = !releasesActive && tab !== 'problems';
+    toolbarToggle.hidden = !available;
+    toolbarToggle.setAttribute('aria-expanded', String(toolbarOpen));
+    toolbar.hidden = !available || !toolbarOpen;
   }
 
   // ------------------------------------------------------------- update
@@ -497,6 +520,11 @@ export function createHeader(ctx: ViewCtx): HeaderView {
       if (releasesActive === active) return;
       releasesActive = active;
       syncTabsAndToolbar(ctx.store.get().route.tab);
+    },
+    focusFilter() {
+      toolbarOpen = true;
+      syncTabsAndToolbar(ctx.store.get().route.tab);
+      filterInput.focus();
     },
     update(state: AppState, prev: AppState) {
       const viewId = effectiveViewId(state);
@@ -561,6 +589,12 @@ export function createHeader(ctx: ViewCtx): HeaderView {
       sortBtn.title =
         sortLabel === '' ? 'Order the issues inside each wave' : `Ordered by ${sortLabel}`;
 
+      // A filter or sort arriving by URL or "show in graph" must be visible, not hidden state.
+      if ((q !== prev.route.q && q !== '') || (sort !== prev.route.sort && sort !== DEFAULT_SORT)) {
+        toolbarOpen = true;
+        syncTabsAndToolbar(state.route.tab);
+      }
+      toolbarToggle.classList.toggle('active', q.trim() !== '' || sort !== DEFAULT_SORT);
       const qc = qualifierCount(q);
       filterCount.textContent = qc > 0 ? String(qc) : '';
       facetMenu.wrap.firstElementChild?.classList.toggle('active', qc > 0);
