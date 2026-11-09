@@ -65,6 +65,28 @@ describe('all-source refresh follow-up', () => {
       expect(read).toHaveBeenCalledTimes(2);
     },
   );
+  it('follows an interactive sweep every 2 seconds and re-reads the open scope on each poll', async () => {
+    const interactive: SweepStatus = { ...running, trigger: 'interactive' };
+    const { controller, read, settled } = setup(vi.fn(async () => interactive));
+    read
+      .mockResolvedValueOnce(interactive)
+      .mockResolvedValueOnce(interactive)
+      .mockResolvedValueOnce({ ...complete, trigger: 'interactive' });
+    await controller.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(settled).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(settled).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(3);
+  });
   it('publishes a manual launch response immediately, before any polling timer advances', async () => {
     let finish!: (result: SweepStatus) => void;
     const { controller, changed, settled, read } = setup(

@@ -372,6 +372,7 @@ describe('cache-first scope reads', () => {
     expect(f.lookup).toHaveBeenCalledTimes(3);
     expect(f.store.readOutsideIssue({ source: 'gh', key: 'ext/r#2' })?.invalidated).toBe(true);
     await f.service.refresh(project());
+    await f.jobs.active(project())?.completion;
     expect(f.list).toHaveBeenCalledTimes(4);
     expect(f.lookup).toHaveBeenCalledTimes(4);
     expect((await f.service.get(project())).job).toBeNull();
@@ -567,6 +568,27 @@ describe('cache-first scope reads', () => {
     expect(refreshed.freshness.outsideIssues).toMatchObject({ count: 201, provisionalCount: 0 });
   });
 
+  it('answers an explicit refresh over shown data after the listing, before outside lookups', async () => {
+    const f = fixture();
+    const blocked = gate();
+    f.seed('o/a', [issue('o/a#1', 'Depends on ext/r#2')]);
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on ext/r#2'), issue('o/a#3')]));
+    f.lookup.mockImplementation(async (_repo, number) => {
+      await blocked.promise;
+      return issue(`ext/r#${number}`, '', 'closed');
+    });
+    const read = await f.service.refresh(project());
+    // The new listing is on screen while the closed prerequisite is still being looked up.
+    expect(read.job?.state).toBe('running');
+    expect(read.snapshot?.plan.nodes.map((node) => node.key)).toContain('o/a#3');
+    expect(f.lookup).toHaveBeenCalledTimes(1);
+    blocked.resolve();
+    await f.jobs.active(project())?.completion;
+    const settled = await f.service.get(project());
+    expect(settled.job).toBeNull();
+    expect(settled.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe('ready');
+  });
+
   it('settles unvisited transitive dependencies behind a failed sibling lookup', async () => {
     const f = fixture();
     f.seed('o/b', [issue('o/b#1', 'Depends on ext/r#2')]);
@@ -575,6 +597,7 @@ describe('cache-first scope reads', () => {
     f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on o/b#1')]));
     f.lookup.mockResolvedValue(null);
     await f.service.refresh(project());
+    await f.jobs.active(project())?.completion;
     for (let n = 0; n < 5; n++) {
       vi.advanceTimersByTime(2000);
       const read = await f.service.get(project());

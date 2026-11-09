@@ -309,13 +309,18 @@ try {
   await shot('job-updating');
   await cdp('Emulation.setVirtualTimePolicy', { policy: 'pause' });
   const pollStart = snapshotRequests(fixture).length;
-  await advanceBrowserClock(59_000);
-  assert.equal(snapshotRequests(fixture).length, pollStart, 'No job follow-up before a minute');
+  // The pause lands anywhere inside a 2-second gap, so bound the count from both sides.
   await advanceBrowserClock(2_000);
-  await until(() => snapshotRequests(fixture).length === pollStart + 1, 'first minute follow-up');
-  await advanceBrowserClock(60_000);
-  await until(() => snapshotRequests(fixture).length === pollStart + 2, 'second minute follow-up');
-  checks.push('Active job follows up every 60 seconds (Chromium virtual time)');
+  await until(() => snapshotRequests(fixture).length >= pollStart + 1, 'first 2-second follow-up');
+  await advanceBrowserClock(2_000);
+  await until(() => snapshotRequests(fixture).length >= pollStart + 2, 'second 2-second follow-up');
+  await advanceBrowserClock(2_000);
+  await sleep(200);
+  assert.ok(
+    snapshotRequests(fixture).length <= pollStart + 3,
+    'Interactive job polls no faster than every 2 seconds',
+  );
+  checks.push('Active interactive job follows up every 2 seconds (Chromium virtual time)');
   // Activate another real tab, rather than overriding document.visibilityState.
   const background = await cdp('Target.createTarget', { url: 'about:blank' });
   await cdp('Target.activateTarget', { targetId: background.targetId });

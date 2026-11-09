@@ -69,14 +69,14 @@ describe('scope refresh wiring', () => {
     await vi.advanceTimersByTimeAsync(120_000);
     expect(read).toHaveBeenCalledTimes(1);
   });
-  it('shows the refresh result and follows its active job every 60 seconds', async () => {
+  it('shows the refresh result and follows its interactive job every 2 seconds', async () => {
     const refresh = vi.fn(async (scope: Scope) => response(scope, true));
     const { store, navigation, read } = setup(refresh);
     await vi.advanceTimersByTimeAsync(0);
     await navigation.refresh(project);
     expect(refresh).toHaveBeenCalledWith(project);
     expect(store.get().job?.id).toBe('joined');
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(1_999);
     expect(read).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(read).toHaveBeenCalledTimes(2);
@@ -103,12 +103,12 @@ describe('scope refresh wiring', () => {
     expect(scopeFromRoute(store.get().route)).toEqual(project);
     expect(store.get().job?.scope).toEqual(source);
     expect(read.mock.calls).toEqual([[project], [project]]);
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(1_999);
     expect(read).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(read).toHaveBeenCalledTimes(3);
     expect(store.get().job?.scope).toEqual(source);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(read).toHaveBeenCalledTimes(4);
     expect(store.get().job).toBeNull();
     expect(scopeFromRoute(store.get().route)).toEqual(project);

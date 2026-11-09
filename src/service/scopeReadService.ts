@@ -61,7 +61,10 @@ export class ScopeReadService {
       explicit: options.refresh,
     });
     if (uncached || options.refresh || response.snapshot === null) {
-      await this.wait(job);
+      // An explicit refresh over shown data answers after the repository listing;
+      // the client polls the remaining lookups in as they land.
+      const firstWave = options.refresh && !uncached && response.snapshot !== null;
+      await this.wait(job, firstWave ? job.repositories : undefined);
       if (uncached && source.queue.status.delayedUntil !== null) {
         throw new ScopeCooldownError(new Date(source.queue.status.delayedUntil!).toISOString());
       }
@@ -384,7 +387,7 @@ export class ScopeReadService {
     };
   }
 
-  private async wait(job: ScopeRefreshJob): Promise<void> {
+  private async wait(job: ScopeRefreshJob, until?: Promise<void>): Promise<void> {
     // A cooldown is visible immediately; no request waits for its whole duration.
     if (job.status.delayedUntil !== null) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -397,6 +400,8 @@ export class ScopeReadService {
     try {
       await Promise.race([
         job.completion,
+        // A failed listing is reported in the job status, like any unit failure.
+        ...(until ? [until.catch(() => undefined)] : []),
         stopped,
         new Promise<void>((resolve) => {
           timer = setTimeout(resolve, SCOPE_READ_WAIT_MS);

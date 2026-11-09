@@ -295,29 +295,29 @@ try {
     idleButton(0, 'Refresh this project'),
     'Source job does not relabel the project button',
   );
-  // Advance the browser's real timers virtually so the minute cadence does not
-  // add minutes to CI. Server-side upstream gates and request handling stay real.
+  // Advance the browser's real timers virtually so long cadences do not add
+  // minutes to CI. Server-side upstream gates and request handling stay real.
   await cdp('Emulation.setVirtualTimePolicy', { policy: 'pause' });
   const beforeFollow = snapshotRequests(fixture).length;
-  await advanceBrowserClock(59_000);
-  assert.equal(
-    snapshotRequests(fixture).length,
-    beforeFollow,
-    'No scope follow-up before a minute',
-  );
+  // The pause lands anywhere inside a 2-second gap, so bound the count from both sides.
   await advanceBrowserClock(2_000);
   await until(
     () => snapshotRequests(fixture).length > beforeFollow,
-    '60-second source job follow-up on the open project',
+    '2-second interactive source job follow-up on the open project',
   );
-  assert.equal(snapshotRequests(fixture).length, beforeFollow + 1);
+  await advanceBrowserClock(4_000);
+  await sleep(200);
+  assert.ok(
+    snapshotRequests(fixture).length <= beforeFollow + 3,
+    'Interactive job polls no faster than every 2 seconds',
+  );
   assert.ok(
     snapshotRequests(fixture)
       .slice(beforeSlowReads)
       .every((request) => request.url === '/api/projects/alpha/demo/one/snapshot'),
   );
   checks.push(
-    'A source refresh exceeding the POST wait keeps polling the open project every 60 seconds with periodic checks disabled',
+    'A source refresh exceeding the POST wait keeps polling the open project every 2 seconds with periodic checks disabled',
   );
   releaseProject();
   await advanceBrowserClock(60_000);
@@ -374,11 +374,19 @@ try {
   );
   await shot('sweep-running-disabled');
   const activeReads = sweepReads(fixture).length;
-  await advanceBrowserClock(59_999);
-  assert.equal(sweepReads(fixture).length, activeReads, 'No sweep follow-up before a minute');
-  await advanceBrowserClock(1);
-  await until(() => sweepReads(fixture).length === activeReads + 1, '60-second sweep follow-up');
-  checks.push('Running sweep is followed every 60 seconds through GET /api/refresh');
+  const activeScopeReads = snapshotRequests(fixture).length;
+  await advanceBrowserClock(2_000);
+  await until(() => sweepReads(fixture).length >= activeReads + 1, '2-second sweep follow-up');
+  await advanceBrowserClock(4_000);
+  await sleep(200);
+  assert.ok(sweepReads(fixture).length <= activeReads + 3, 'Sweep polls no faster than 2 seconds');
+  assert.ok(
+    snapshotRequests(fixture).length > activeScopeReads,
+    'An interactive sweep re-reads the open scope while it runs',
+  );
+  checks.push(
+    'A manually started sweep is followed every 2 seconds through GET /api/refresh and re-reads the open scope',
+  );
 
   const other = await cdp('Target.createTarget', { url: 'about:blank' });
   await cdp('Target.activateTarget', { targetId: other.targetId });
@@ -497,8 +505,8 @@ try {
   const conflictReads = sweepReads(conflicted).length;
   await advanceBrowserClock(61_000);
   await until(
-    () => sweepReads(conflicted).length === conflictReads + 1,
-    'conflicted-scope minute follow-up',
+    () => sweepReads(conflicted).length > conflictReads,
+    'conflicted-scope sweep follow-up',
   );
   releaseHealthy();
   await until(() => conflicted.sweep().state === 'partial', 'conflicted-scope upstream completes');

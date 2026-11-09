@@ -43,6 +43,11 @@ export interface ScopeRefreshJob {
   readonly status: ScopeRefreshJobStatus;
   /** Unit failures are reported in the status, not as a rejected completion. */
   readonly completion: Promise<ScopeRefreshJobStatus>;
+  /**
+   * Settles once the latest repository listing has, before outside-issue lookups:
+   * the first wave a person waiting on an explicit refresh can already see.
+   */
+  readonly repositories?: Promise<void>;
 }
 
 export interface CompletedScopeRefresh {
@@ -221,11 +226,22 @@ export class ScopeRefreshJobs {
       return this.snapshot(source, job);
     })();
     const snapshot = () => this.snapshot(source, job);
+    // An explicit recheck may replace the listing; settle on the one still current.
+    const listed = async (): Promise<void> => {
+      let repositories: Promise<void>;
+      do {
+        repositories = job.repositories;
+        await repositories;
+      } while (repositories !== job.repositories);
+    };
     job.handle = {
       get status() {
         return snapshot();
       },
       completion,
+      get repositories() {
+        return listed();
+      },
     };
     this.jobs.set(key, job);
     return job.handle;
