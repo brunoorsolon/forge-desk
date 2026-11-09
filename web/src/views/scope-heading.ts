@@ -4,7 +4,7 @@ import type {
   RepositoryFreshness,
   SweepStatus,
 } from '../../../src/core/scope.js';
-import { clear, h, icon } from '../dom.js';
+import { clear, h, icon, setText } from '../dom.js';
 import { absoluteTime, plural, relativeTime } from '../format.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
 import { isActiveScopeJob, type AppState } from '../state.js';
@@ -81,64 +81,38 @@ function repositoryRow(repository: RepositoryFreshness, now: number): HTMLElemen
   );
 }
 
-function sweepProgress(sweep: SweepStatus, now: number): HTMLElement {
-  const projects = sweep.sources.flatMap((source) => source.projects);
-  const counts = (['checked', 'checking', 'queued', 'failed'] as const)
-    .map((state) => `${projects.filter((project) => project.state === state).length} ${state}`)
-    .join(' · ');
-  return h(
-    'section',
-    { class: 'scope-sweep', 'aria-label': 'All sources refresh progress' },
-    h('h3', null, 'All sources refresh'),
-    h(
-      'p',
-      { class: 'scope-sweep-summary' },
-      `${sweep.state[0]!.toUpperCase()}${sweep.state.slice(1)} · Started: `,
-      time(sweep.startedAt, now),
-      sweep.finishedAt === null
-        ? null
-        : h('span', null, ' · Finished: ', time(sweep.finishedAt, now)),
-      ` · ${counts}`,
-    ),
-    ...sweep.sources.map((source) =>
-      h(
-        'section',
-        { class: 'scope-sweep-source', 'aria-label': `Source ${source.source}` },
-        h('h4', null, source.source, h('span', { class: 'scope-status' }, source.state)),
-        source.policyConflict === null
-          ? null
-          : h(
-              'div',
-              { class: 'scope-error' },
-              h('p', null, `Policy conflict: ${source.policyConflict.explanation}`),
-              h(
-                'p',
-                null,
-                `Differing settings: ${source.policyConflict.differingSettings.join(', ')}`,
-              ),
-              h('p', null, `Views: ${source.policyConflict.views.join(', ')}`),
-            ),
-        source.error === null ? null : h('p', { class: 'scope-error' }, source.error),
-        source.delayedUntil === null
-          ? null
-          : h('p', null, 'Expected to resume: ', time(source.delayedUntil, now, true)),
-        h(
-          'ul',
-          { class: 'scope-repositories' },
-          ...source.projects.map((project) =>
-            h(
-              'li',
-              { class: 'scope-repository', 'data-state': project.state },
-              h('strong', { class: 'scope-repository-name' }, project.project.repo),
-              h('span', { class: 'scope-status' }, project.state),
-              checkedAt(project.lastCheckedAt, now),
-              project.error === null ? null : h('span', { class: 'scope-error' }, project.error),
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
+interface RefreshError {
+  key: string;
+  message: string;
+}
+
+/** Only error identity matters: polling progress and completion do not reopen a banner. */
+function sweepErrors(sweep: SweepStatus | null): RefreshError[] {
+  if (sweep === null) return [];
+  return sweep.sources.flatMap((source) => {
+    const conflict = source.policyConflict;
+    const failed = source.projects.filter((project) => project.state === 'failed');
+    if (
+      conflict === null &&
+      source.error === null &&
+      failed.length === 0 &&
+      !['failed', 'partial', 'conflict'].includes(source.state)
+    )
+      return [];
+    const details = conflict
+      ? `Policy conflict: ${conflict.explanation} Differing settings: ${conflict.differingSettings.join(', ')}. Views: ${conflict.views.join(', ')}.`
+      : failed.length > 0
+        ? failed
+            .map((project) => `${project.project.repo}: ${project.error ?? 'Refresh failed'}`)
+            .join('; ')
+        : (source.error ?? 'Refresh failed');
+    return [
+      {
+        key: JSON.stringify(['sweep', sweep.id, source.source, details]),
+        message: `All sources refresh (${source.source}): ${details}`,
+      },
+    ];
+  });
 }
 
 /**
@@ -150,6 +124,8 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
   let source: string | null = null;
   let favorite = false;
   let canToggle = false;
+  let errors: RefreshError[] = [];
+  let dismissed = new Set<string>();
   const sourceName = h('span', { class: 'scope-source' });
   const title = h('h1', { class: 'scope-title' });
   const starGlyph = h('span', { 'aria-hidden': 'true' }, '☆');
@@ -212,7 +188,25 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
     allLabel,
   );
   const freshness = h('div', { class: 'scope-freshness' });
-  const progress = h('div', { class: 'scope-progress', hidden: true });
+  const errorMessage = h('p', { class: 'scope-refresh-error-message' });
+  const errorBanner = h(
+    'div',
+    { class: 'scope-refresh-error', role: 'alert', hidden: true },
+    errorMessage,
+    h(
+      'button',
+      {
+        class: 'btn btn-ghost scope-refresh-error-close',
+        type: 'button',
+        'aria-label': 'Dismiss refresh error',
+        onclick: () => {
+          dismissed = new Set(errors.map((error) => error.key));
+          errorBanner.hidden = true;
+        },
+      },
+      '×',
+    ),
+  );
   const el = h(
     'section',
     { class: 'scope-heading', 'aria-label': 'Scope heading', hidden: true },
@@ -223,8 +217,8 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       h('div', { class: 'scope-refresh-controls' }, refreshProject, refreshSource, refreshAll),
     ),
     preferenceNotice,
+    errorBanner,
     freshness,
-    progress,
   );
 
   return {
@@ -232,6 +226,29 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
     update(state, preferences, sweepState = null, catalog = null) {
       const sweep = sweepState?.sweep ?? null;
       const scope = state.route.scope;
+      errors = sweepErrors(sweep);
+      if (state.refreshError !== null)
+        errors.unshift({
+          key: JSON.stringify(['refresh', scope, state.refreshError]),
+          message: `Refresh error: ${state.refreshError}`,
+        });
+      if (state.job?.trigger === 'interactive' && state.job.error !== null)
+        errors.push({
+          key: JSON.stringify(['job', state.job.id, state.job.error]),
+          message: `Refresh error: ${state.job.error}`,
+        });
+      if (sweepState?.error != null)
+        errors.push({
+          key: JSON.stringify(['sweep-request', sweepState.error]),
+          message: `All sources refresh: ${sweepState.error}`,
+        });
+      // Retain only currently reported dismissals. Clearing an error for a new
+      // request lets a later failure reappear even when its wording is identical.
+      dismissed = new Set(
+        errors.filter((error) => dismissed.has(error.key)).map((error) => error.key),
+      );
+      errorBanner.hidden = errors.every((error) => dismissed.has(error.key));
+      setText(errorMessage, errors.map((error) => error.message).join(' · '));
       source = scope?.source ?? null;
       project =
         scope?.kind === 'project'
@@ -297,11 +314,6 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
 
       const now = Date.now();
       clear(freshness);
-      if (state.refreshError !== null) {
-        freshness.append(
-          h('p', { class: 'scope-error', role: 'alert' }, `Refresh error: ${state.refreshError}`),
-        );
-      }
       const info = state.freshness;
       if (info === null) {
         freshness.append(h('p', { class: 'muted' }, 'Freshness is not available yet.'));
@@ -340,9 +352,6 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
           ),
         );
       }
-      clear(progress);
-      progress.hidden = sweep === null;
-      if (sweep !== null) progress.append(sweepProgress(sweep, now));
     },
   };
 }

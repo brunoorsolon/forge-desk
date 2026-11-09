@@ -411,82 +411,217 @@ describe('scope freshness', () => {
   });
 });
 
-describe('scope sweep progress', () => {
-  it('shows start, per-project progress and check times, and conflicted or delayed sources', () => {
+describe('dismissible refresh errors', () => {
+  const sweep: SweepStatus = {
+    id: 'sweep-1',
+    trigger: 'interactive',
+    state: 'running',
+    startedAt: checked,
+    finishedAt: null,
+    sources: [
+      {
+        source: 'gh',
+        state: 'running',
+        delayedUntil: null,
+        error: null,
+        policyConflict: null,
+        projects: [
+          {
+            project: { source: 'gh', repo: 'o/r' },
+            state: 'checked',
+            lastCheckedAt: recent,
+            error: null,
+          },
+        ],
+      },
+    ],
+  };
+  const conflicted: SweepStatus = {
+    ...sweep,
+    sources: [
+      ...sweep.sources,
+      {
+        source: 'conflicted',
+        state: 'conflict',
+        delayedUntil: null,
+        error: 'Views disagree on planning policy.',
+        projects: [],
+        policyConflict: {
+          source: 'conflicted',
+          explanation: 'Views disagree on planning policy.',
+          differingSettings: ['dependencies.native'],
+          views: ['old', 'new'],
+        },
+      },
+    ],
+  };
+  const sweepState = (value = sweep) => ({ sweep: value, launching: false, error: null });
+  const banner = (root: Element) => cls(root, 'scope-refresh-error')[0]!;
+  const close = (root: Element) => cls(root, 'scope-refresh-error-close')[0]!;
+
+  it.each(['queued', 'running', 'completed', 'skipped'] as const)(
+    'never mounts a report or an error banner for a healthy %s sweep',
+    (status) => {
+      const { view, root } = heading();
+      view.update(state(), preferences(), sweepState({ ...sweep, state: status }));
+      expect(cls(root, 'scope-sweep')).toEqual([]);
+      expect(cls(root, 'scope-progress')).toEqual([]);
+      expect(banner(root).hidden).toBe(true);
+      expect(cls(root, 'scope-repository')).toHaveLength(1); // Only the open scope's freshness.
+      expect(dates(root)).not.toContain(recent); // No sweep project check times.
+    },
+  );
+
+  it('dismisses a manual error across rerenders and shows an identical later failure only after it occurs', () => {
     const { view, root } = heading();
-    const sweep: SweepStatus = {
-      id: 'sweep-1',
-      trigger: 'interactive',
-      state: 'running',
-      startedAt: checked,
-      finishedAt: null,
+    const scope = { kind: 'project' as const, source: 'gh', repo: 'o/r' };
+    const fail = { type: 'scope-failed' as const, scope, status: 503, error: 'Connection lost' };
+    const failed = reducer(state(), fail);
+    view.update(failed, preferences());
+    expect(banner(root).hidden).toBe(false);
+    expect(banner(root).getAttribute('role')).toBe('alert');
+    expect(banner(root).textContent).toContain('Refresh error: Connection lost');
+    expect(close(root).textContent).toBe('×');
+    expect(close(root).getAttribute('aria-label')).toBe('Dismiss refresh error');
+    expect(close(root).getAttribute('type')).toBe('button');
+    close(root).click();
+    view.update(structuredClone(failed), preferences(true));
+    expect(banner(root).hidden).toBe(true);
+    const pending = reducer(failed, {
+      type: 'scope-load-start',
+      scope,
+      refreshingScope: 'project',
+    });
+    view.update(pending, preferences());
+    expect(banner(root).hidden).toBe(true);
+    view.update(reducer(pending, fail), preferences());
+    expect(banner(root).hidden).toBe(false);
+    expect(dates(cls(root, 'scope-repository')[0]!)).toEqual([checked]);
+    view.update(state(), preferences());
+    expect(banner(root).hidden).toBe(true);
+  });
+
+  it('shows a rejected manual request even without a previously loaded snapshot', () => {
+    const { view, root } = heading();
+    const failed = reducer(state({ snapshot: null, refreshingScope: 'source' }), {
+      type: 'scope-failed',
+      scope: { kind: 'project', source: 'gh', repo: 'o/r' },
+      status: 0,
+      error: 'Access denied',
+    });
+    view.update(failed, preferences());
+    expect(banner(root).hidden).toBe(false);
+    expect(banner(root).textContent).toContain('Access denied');
+  });
+
+  it.each(['partial', 'failed'] as const)(
+    'shows a %s interactive job returned by a successful request',
+    (status) => {
+      const { view, root } = heading();
+      const job = {
+        id: 'job-1',
+        scope: { kind: 'source' as const, source: 'gh' },
+        trigger: 'interactive' as const,
+        state: status,
+        queuedAt: checked,
+        startedAt: checked,
+        finishedAt: computed,
+        delayedUntil: null,
+        error: 'Provider refused access',
+      };
+      view.update(state({ job }), preferences());
+      expect(banner(root).textContent).toContain(job.error);
+      expect(banner(root).hidden).toBe(false);
+      close(root).click();
+      view.update(state({ job: structuredClone(job) }), preferences());
+      expect(banner(root).hidden).toBe(true);
+      view.update(state({ job: { ...job, id: 'job-2' } }), preferences());
+      expect(banner(root).hidden).toBe(false);
+    },
+  );
+
+  it('keeps policy-conflict details compact and dismissed through polling, completion and navigation', () => {
+    const { view, root } = heading();
+    view.update(state(), preferences(), sweepState(conflicted));
+    expect(cls(root, 'scope-sweep')).toEqual([]);
+    expect(banner(root).hidden).toBe(false);
+    expect(banner(root).textContent).toContain('All sources refresh (conflicted)');
+    expect(banner(root).textContent).toContain(
+      'Policy conflict: Views disagree on planning policy.',
+    );
+    expect(banner(root).textContent).toContain('Differing settings: dependencies.native');
+    expect(banner(root).textContent).toContain('Views: old, new');
+    expect(all(banner(root), (el) => el.tagName === 'ul')).toEqual([]);
+    close(root).click();
+    view.update(state(), preferences(), sweepState(structuredClone(conflicted)));
+    expect(banner(root).hidden).toBe(true);
+    const completed = { ...conflicted, state: 'partial' as const, finishedAt: computed };
+    view.update(state(), preferences(), sweepState(completed));
+    expect(banner(root).hidden).toBe(true);
+    view.update(INITIAL_STATE, preferences(), sweepState(completed));
+    view.update(state(), preferences(), sweepState(completed));
+    expect(banner(root).hidden).toBe(true);
+    view.update(state(), preferences(), sweepState({ ...conflicted, id: 'sweep-2' }));
+    expect(banner(root).hidden).toBe(false);
+  });
+
+  it('shows failed projects while running and does not reopen for the same failure at completion', () => {
+    const { view, root } = heading();
+    const source = sweep.sources[0]!;
+    const failure: SweepStatus = {
+      ...sweep,
       sources: [
         {
-          source: 'gh',
-          state: 'running',
-          delayedUntil: null,
-          error: null,
-          policyConflict: null,
-          projects: (['checked', 'queued', 'checking', 'failed'] as const).map((status, i) => ({
-            project: { source: 'gh', repo: `o/${status}` },
-            state: status,
-            lastCheckedAt: i === 0 ? recent : i === 1 ? null : checked,
-            error: status === 'failed' ? 'Rate check failed' : null,
-          })),
-        },
-        {
-          source: 'conflicted',
-          state: 'conflict',
-          delayedUntil: null,
-          error: null,
-          projects: [],
-          policyConflict: {
-            source: 'conflicted',
-            explanation: 'Views disagree on planning policy.',
-            differingSettings: ['dependencies.native'],
-            views: ['old', 'new'],
-          },
-        },
-        {
-          source: 'later',
-          state: 'delayed',
-          delayedUntil: delayed,
-          error: null,
-          policyConflict: null,
-          projects: [],
+          ...source,
+          projects: [{ ...source.projects[0]!, state: 'failed', error: 'Upstream 503' }],
         },
       ],
     };
-    view.update(state(), preferences(), { sweep, launching: false, error: null });
-    const progress = cls(root, 'scope-progress')[0]!;
-    expect(progress.hidden).toBe(false);
-    expect(cls(progress, 'scope-sweep-summary')[0]!.textContent).toContain('Started: 2 h ago');
-    expect(cls(progress, 'scope-sweep-summary')[0]!.textContent).toContain(
-      '1 checked · 1 checking · 1 queued · 1 failed',
+    view.update(state(), preferences(), sweepState(failure));
+    expect(banner(root).hidden).toBe(false);
+    expect(banner(root).textContent).toContain('All sources refresh (gh): o/r: Upstream 503');
+    close(root).click();
+    view.update(
+      state(),
+      preferences(),
+      sweepState({
+        ...failure,
+        state: 'failed',
+        finishedAt: computed,
+        sources: [{ ...failure.sources[0]!, state: 'failed', error: 'Upstream 503' }],
+      }),
     );
-    const rows = cls(progress, 'scope-repository');
-    expect(rows.map((row) => row.getAttribute('data-state'))).toEqual([
-      'checked',
-      'queued',
-      'checking',
-      'failed',
-    ]);
-    expect(rows.map(dates)).toEqual([[recent], [], [checked], [checked]]);
-    expect(rows[3]!.textContent).toContain('Rate check failed');
-    expect(progress.textContent).toContain('conflicted');
-    expect(progress.textContent).toContain('Policy conflict: Views disagree on planning policy.');
-    expect(progress.textContent).toContain('Differing settings: dependencies.native');
-    expect(progress.textContent).toContain('Views: old, new');
-    expect(progress.textContent).toContain(`Expected to resume: ${absoluteTime(delayed)}`);
-    view.update(state(), preferences(), {
-      sweep: { ...sweep, state: 'partial', finishedAt: computed },
-      launching: false,
-      error: null,
-    });
-    expect(dates(cls(progress, 'scope-sweep-summary')[0]!)).toEqual([checked, computed]);
-    view.update(state(), preferences());
-    expect(progress.hidden).toBe(true);
-    expect(progress.textContent).toBe('');
+    expect(banner(root).hidden).toBe(true);
+    view.update(
+      state(),
+      preferences(),
+      sweepState({
+        ...failure,
+        sources: [
+          ...failure.sources,
+          { ...source, source: 'other', state: 'failed', projects: [], error: 'Offline' },
+        ],
+      }),
+    );
+    expect(banner(root).hidden).toBe(false);
+    expect(banner(root).textContent).toContain('All sources refresh (other): Offline');
+  });
+
+  it('merges simultaneous refresh, transport and source errors into one dismissible alert', () => {
+    const { view, root } = heading();
+    const errors = { ...sweepState(conflicted), error: 'Status unavailable' };
+    view.update(state({ refreshError: 'Refresh rejected' }), preferences(), errors);
+    expect(all(root, (el) => el.getAttribute('role') === 'alert')).toHaveLength(1);
+    expect(banner(root).textContent).toContain('Refresh error: Refresh rejected');
+    expect(banner(root).textContent).toContain('All sources refresh: Status unavailable');
+    expect(banner(root).textContent).toContain('Policy conflict:');
+    close(root).click();
+    view.update(state(), preferences(), errors); // Removing another error does not reopen the rest.
+    expect(banner(root).hidden).toBe(true);
+    view.update(state(), preferences(), sweepState(conflicted));
+    expect(banner(root).hidden).toBe(true);
+    view.update(state(), preferences(), errors); // A later transport failure is new.
+    expect(banner(root).hidden).toBe(false);
   });
 });
 
