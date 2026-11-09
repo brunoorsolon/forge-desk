@@ -7,7 +7,8 @@ import type {
 import { clear, h, icon } from '../dom.js';
 import { absoluteTime, plural, relativeTime } from '../format.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
-import type { AppState } from '../state.js';
+import { isActiveScopeJob, type AppState } from '../state.js';
+import type { SweepRefreshState } from '../sweep-refresh.js';
 
 export interface ScopeHeadingCallbacks {
   /** Rendering never changes preferences, the route, or the displayed issues. */
@@ -18,14 +19,17 @@ export interface ScopeHeadingCallbacks {
   refreshAllSources?(): void;
 }
 
-type HeadingState = Pick<AppState, 'route' | 'status' | 'snapshot' | 'freshness' | 'refreshError'>;
+type HeadingState = Pick<
+  AppState,
+  'route' | 'status' | 'snapshot' | 'freshness' | 'refreshError' | 'refreshingScope' | 'job'
+>;
 
 export interface ScopeHeading {
   el: HTMLElement;
   update(
     state: HeadingState,
     preferences: PreferenceState,
-    sweep?: SweepStatus | null,
+    sweepState?: SweepRefreshState | null,
     catalog?: CatalogResponse | null,
   ): void;
 }
@@ -164,6 +168,9 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
     starGlyph,
   );
   const preferenceNotice = h('span', { class: 'scope-preference-notice' });
+  const projectLabel = h('span', null, 'Refresh this project');
+  const sourceLabel = h('span', null, 'Refresh this source');
+  const allLabel = h('span', null, 'Refresh all sources');
   const refreshProject = h(
     'button',
     {
@@ -171,11 +178,12 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       type: 'button',
       hidden: true,
       onclick: () => {
-        if (project !== null) callbacks.refreshProject?.({ ...project });
+        if (project !== null && !refreshProject.disabled)
+          callbacks.refreshProject?.({ ...project });
       },
     },
     icon('refresh'),
-    'Refresh this project',
+    projectLabel,
   );
   const refreshSource = h(
     'button',
@@ -184,11 +192,11 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       type: 'button',
       hidden: true,
       onclick: () => {
-        if (source !== null) callbacks.refreshSource?.(source);
+        if (source !== null && !refreshSource.disabled) callbacks.refreshSource?.(source);
       },
     },
     icon('refresh'),
-    'Refresh this source',
+    sourceLabel,
   );
   const refreshAll = h(
     'button',
@@ -197,11 +205,11 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       type: 'button',
       hidden: true,
       onclick: () => {
-        if (source !== null) callbacks.refreshAllSources?.();
+        if (source !== null && !refreshAll.disabled) callbacks.refreshAllSources?.();
       },
     },
     icon('refresh'),
-    'Refresh all sources',
+    allLabel,
   );
   const freshness = h('div', { class: 'scope-freshness' });
   const progress = h('div', { class: 'scope-progress', hidden: true });
@@ -221,7 +229,8 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
 
   return {
     el,
-    update(state, preferences, sweep = null, catalog = null) {
+    update(state, preferences, sweepState = null, catalog = null) {
+      const sweep = sweepState?.sweep ?? null;
       const scope = state.route.scope;
       source = scope?.source ?? null;
       project =
@@ -269,6 +278,22 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       refreshProject.hidden = project === null || callbacks.refreshProject === undefined;
       refreshSource.hidden = callbacks.refreshSource === undefined;
       refreshAll.hidden = callbacks.refreshAllSources === undefined;
+      const activeJob = isActiveScopeJob(state.job) ? state.job : null;
+      refreshProject.disabled =
+        state.refreshingScope === 'project' || activeJob?.scope.kind === 'project';
+      refreshSource.disabled =
+        state.refreshingScope === 'source' || activeJob?.scope.kind === 'source';
+      refreshAll.disabled =
+        sweepState?.launching === true || sweep?.state === 'queued' || sweep?.state === 'running';
+      projectLabel.textContent = refreshProject.disabled
+        ? 'Refreshing project…'
+        : 'Refresh this project';
+      sourceLabel.textContent = refreshSource.disabled
+        ? 'Refreshing source…'
+        : 'Refresh this source';
+      allLabel.textContent = refreshAll.disabled
+        ? 'Refreshing all sources…'
+        : 'Refresh all sources';
 
       const now = Date.now();
       clear(freshness);

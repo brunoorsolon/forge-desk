@@ -254,6 +254,70 @@ describe('scope refresh jobs', () => {
     });
   });
 
+  it.each(['expired', 'invalidated', 'failed'])(
+    'refreshes and reuses a same-repository %s closed issue without a lookup',
+    async (condition) => {
+      const f = fixture(() => json(listing([issue('owner/a#1', 'Depends on #2')])));
+      const { jobs, store } = service(f.input);
+      const ref = { source: 'gh', key: 'owner/a#2' };
+      store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
+        result: { status: 'found', issue: issue(ref.key, '', 'closed') },
+      });
+      vi.setSystemTime(Date.now() + 60_001);
+      if (condition === 'invalidated')
+        store.invalidateRepository({ source: 'gh', repo: 'owner/a' });
+      if (condition === 'failed') store.fail(store.beginOutsideIssueRead(ref), 'Prior failure');
+      const checkedAt = new Date().toISOString();
+      const result = await jobs.refresh(project()).completion;
+      expect(result.state).toBe('completed');
+      expect(result.units).toMatchObject([{ kind: 'repository', state: 'checked' }]);
+      expect(result.units).toHaveLength(1);
+      expect(f.calls.map((call) => call.path)).toEqual(['/repos/owner/a']);
+      expect(store.readOutsideIssue(ref)).toMatchObject({
+        invalidated: false,
+        failedGeneration: null,
+        observation: { lastCheckedAt: checkedAt, lastAttempt: { outcome: 'success', error: null } },
+      });
+    },
+  );
+
+  it('still looks up a previously open same-repository issue missing from the listing', async () => {
+    const f = fixture((path) =>
+      json(
+        path === '/repos/owner/a'
+          ? listing([issue('owner/a#1', 'Depends on #2')])
+          : issue('owner/a#2', '', 'closed'),
+      ),
+    );
+    const { jobs, store } = service(f.input);
+    store.writeOutsideIssue(store.beginOutsideIssueRead({ source: 'gh', key: 'owner/a#2' }), {
+      result: { status: 'found', issue: issue('owner/a#2') },
+    });
+    expect((await jobs.refresh(project()).completion).state).toBe('completed');
+    expect(f.calls.map((call) => call.path)).toEqual(['/repos/owner/a', '/repos/owner/a/issues/2']);
+  });
+
+  it('does not reuse a listing result invalidated while its request was in flight', async () => {
+    const pending = gate();
+    const f = fixture(async (path) => {
+      if (path === '/repos/owner/a') {
+        await pending.promise;
+        return json(listing([issue('owner/a#1', 'Depends on #2')]));
+      }
+      return json(issue('owner/a#2'));
+    });
+    const { jobs, store } = service(f.input);
+    store.writeOutsideIssue(store.beginOutsideIssueRead({ source: 'gh', key: 'owner/a#2' }), {
+      result: { status: 'found', issue: issue('owner/a#2', '', 'closed') },
+    });
+    const job = jobs.refresh(project());
+    await tick();
+    store.invalidateRepository({ source: 'gh', repo: 'owner/a' });
+    pending.resolve();
+    expect((await job.completion).state).toBe('completed');
+    expect(f.calls.map((call) => call.path)).toEqual(['/repos/owner/a', '/repos/owner/a/issues/2']);
+  });
+
   it.each([0, 59_999, 60_000])(
     'reuses a stored closed prerequisite aged %i ms without changing its observation',
     async (age) => {

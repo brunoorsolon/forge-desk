@@ -174,10 +174,26 @@ try {
   fixtures.push(fixture);
   await visit(fixture, '#/project/alpha/demo/one/graph');
   await ready();
-  const click = (label) =>
-    evaluate(
-      `Array.from(document.querySelectorAll('.scope-refresh-controls button')).find(b => b.textContent.trim() === ${JSON.stringify(label)}).click()`,
-    );
+  const busyLabels = {
+    'Refresh this project': 'Refreshing project…',
+    'Refresh this source': 'Refreshing source…',
+    'Refresh all sources': 'Refreshing all sources…',
+  };
+  const click = async (label) => {
+    const immediate = await evaluate(`(() => {
+      const button = Array.from(document.querySelectorAll('.scope-refresh-controls button'))
+        .find(b => b.textContent.trim() === ${JSON.stringify(label)});
+      button.click();
+      const busy = { disabled: button.disabled, label: button.textContent.trim() };
+      button.click();
+      return busy;
+    })()`);
+    assert.deepEqual(immediate, { disabled: true, label: busyLabels[label] });
+  };
+  const refreshButton = (index) =>
+    `document.querySelectorAll('.scope-refresh-controls button')[${index}]`;
+  const idleButton = (index, label) =>
+    `!${refreshButton(index)}.disabled && ${refreshButton(index)}.textContent.trim() === ${JSON.stringify(label)}`;
   const launches = (f, suffix = '/refresh') =>
     f.requests.filter((r) => r.method === 'POST' && r.url.endsWith(suffix));
   const sweepReads = (f) =>
@@ -202,6 +218,10 @@ try {
     fixture.upstream.map((p) => p.repo),
     ['demo/one'],
   );
+  await until(
+    () => evaluate(idleButton(0, 'Refresh this project')),
+    'project button returns to idle',
+  );
   checks.push('Project refresh calls only its project and displays its returned check time');
   const beforeSourceRefresh = snapshotRequests(fixture).length;
   const projectTimes = await times();
@@ -213,6 +233,10 @@ try {
     'source refresh followed by updated project data',
   );
   await ready();
+  await until(
+    () => evaluate(idleButton(1, 'Refresh this source')),
+    'source button returns to idle',
+  );
   assert.equal(launches(fixture)[1].url, '/api/sources/alpha/refresh');
   assert.equal(snapshotRequests(fixture).at(-1).url, '/api/projects/alpha/demo/one/snapshot');
   await expect(
@@ -263,6 +287,14 @@ try {
     'project re-read after the source refresh response',
     5000,
   );
+  await expect(
+    `${refreshButton(1)}.disabled && ${refreshButton(1)}.textContent.trim() === 'Refreshing source…'`,
+    'Source button stays busy for the active source job on the project route',
+  );
+  await expect(
+    idleButton(0, 'Refresh this project'),
+    'Source job does not relabel the project button',
+  );
   // Advance the browser's real timers virtually so the minute cadence does not
   // add minutes to CI. Server-side upstream gates and request handling stay real.
   await cdp('Emulation.setVirtualTimePolicy', { policy: 'pause' });
@@ -303,6 +335,10 @@ try {
   const settledProjectReads = snapshotRequests(fixture).length;
   await advanceBrowserClock(61_000);
   assert.equal(snapshotRequests(fixture).length, settledProjectReads);
+  await expect(
+    idleButton(1, 'Refresh this source'),
+    'Source button returns to idle after job completion',
+  );
   checks.push('Project progress polling stops after the covering source job finishes');
 
   const releaseSweep = fixture.hold({ source: 'beta', repo: 'demo/three' });
@@ -320,31 +356,29 @@ try {
     () => evaluate(`Boolean(document.querySelector('.scope-sweep [data-state="checked"]'))`),
     'sweep progress rendered',
   );
-  const beforeJoin = launches(fixture).length;
-  await click('Refresh all sources');
-  await until(() => launches(fixture).length === beforeJoin + 1, 'joined sweep launch');
-  await until(
-    () =>
-      fixture.responses.filter((r) => r.method === 'POST' && r.url === '/api/refresh').length === 2,
-    'joined sweep result',
+  const beforeRepeat = launches(fixture).length;
+  await expect(
+    `${refreshButton(2)}.disabled && ${refreshButton(2)}.textContent.trim() === 'Refreshing all sources…'`,
+    'Sweep control remains disabled while running',
   );
-  const joined = fixture.responses
-    .filter((r) => r.method === 'POST' && r.url === '/api/refresh')
-    .at(-1).body;
-  assert.equal(joined.id, original.id);
-  assert.equal(joined.startedAt, original.startedAt);
-  assert.deepEqual(joined.sources[0].projects, original.sources[0].projects);
+  await evaluate(`${refreshButton(2)}.click()`);
+  await sleep(50);
+  assert.equal(launches(fixture).length, beforeRepeat, 'Disabled sweep does not launch again');
+  const currentSweep = fixture.sweep();
+  assert.equal(currentSweep.id, original.id);
+  assert.equal(currentSweep.startedAt, original.startedAt);
+  assert.deepEqual(currentSweep.sources[0].projects, original.sources[0].projects);
   await expect(
     `document.querySelector('.scope-sweep-summary time').dateTime === ${JSON.stringify(original.startedAt)}`,
-    'Joined sweep displays the original start time',
+    'Running sweep retains the original start time',
   );
-  for (const project of joined.sources[0].projects) {
+  for (const project of currentSweep.sources[0].projects) {
     await expect(
       `Array.from(document.querySelectorAll('.scope-sweep time')).some(t => t.dateTime === ${JSON.stringify(project.lastCheckedAt)})`,
-      'Joined sweep preserves a project successful check time',
+      'Running sweep preserves a project successful check time',
     );
   }
-  await shot('sweep-running-joined');
+  await shot('sweep-running-disabled');
   const activeReads = sweepReads(fixture).length;
   await advanceBrowserClock(59_999);
   assert.equal(sweepReads(fixture).length, activeReads, 'No sweep follow-up before a minute');
@@ -374,6 +408,7 @@ try {
   const completedReads = sweepReads(fixture).length;
   await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, completedReads);
+  await expect(idleButton(2, 'Refresh all sources'), 'Completed sweep releases the button');
   checks.push('Real hidden tab stops sweep polling; return shows completion, then polling stops');
   await shot('sweep-completed');
 
@@ -404,6 +439,8 @@ try {
     'Rejected sweep retains the completed sweep data',
   );
   assert.deepEqual(await times(), retainedTimes);
+  await expect(idleButton(1, 'Refresh this source'), 'Rejected source refresh releases the button');
+  await expect(idleButton(2, 'Refresh all sources'), 'Rejected sweep launch releases the button');
   checks.push('Rejected scope and sweep refreshes show errors and keep existing data');
   await shot('sweep-rejected');
   assert.ok(launches(fixture).every((r) => r.launchHeader === '1' && !r.hasCsrf));

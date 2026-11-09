@@ -59,7 +59,7 @@ describe('all-source refresh follow-up', () => {
       expect(read).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(read).toHaveBeenCalledTimes(2);
-      expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
+      expect(changed).toHaveBeenLastCalledWith({ launching: false, sweep: complete, error: null });
       expect(settled).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(120_000);
       expect(read).toHaveBeenCalledTimes(2);
@@ -77,10 +77,10 @@ describe('all-source refresh follow-up', () => {
       vi.fn(() => new Promise(() => {})),
     );
     const pending = controller.refresh();
-    expect(changed).toHaveBeenLastCalledWith({ sweep: null, error: null });
+    expect(changed).toHaveBeenLastCalledWith({ launching: true, sweep: null, error: null });
     finish(complete);
     await pending;
-    expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
+    expect(changed).toHaveBeenLastCalledWith({ launching: false, sweep: complete, error: null });
     expect(settled).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(1);
   });
@@ -91,7 +91,7 @@ describe('all-source refresh follow-up', () => {
     await controller.refresh();
     await vi.advanceTimersByTimeAsync(0);
     expect(start).toHaveBeenCalledTimes(2);
-    expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: null });
+    expect(changed).toHaveBeenLastCalledWith({ launching: false, sweep: running, error: null });
   });
   it('does not poll while hidden and checks once on return, including completion', async () => {
     const { controller, read, changed } = setup();
@@ -105,7 +105,7 @@ describe('all-source refresh follow-up', () => {
     controller.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
+    expect(changed).toHaveBeenLastCalledWith({ launching: false, sweep: complete, error: null });
   });
   it('retains progress and the launch rejection even if a running sweep can still be read', async () => {
     const { controller, start, changed } = setup();
@@ -113,18 +113,30 @@ describe('all-source refresh follow-up', () => {
     await vi.advanceTimersByTimeAsync(0);
     start.mockRejectedValueOnce(new Error('not allowed'));
     await controller.refresh();
-    expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: 'not allowed' });
+    expect(changed).toHaveBeenLastCalledWith({
+      launching: false,
+      sweep: running,
+      error: 'not allowed',
+    });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: 'not allowed' });
+    expect(changed).toHaveBeenLastCalledWith({
+      launching: false,
+      sweep: running,
+      error: 'not allowed',
+    });
   });
   it('retains progress on a read failure and retries status, never the launch', async () => {
     const { controller, start, read, changed } = setup();
     read.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(complete);
     await controller.refresh();
     await vi.advanceTimersByTimeAsync(0);
-    expect(changed).toHaveBeenLastCalledWith({ sweep: running, error: 'offline' });
+    expect(changed).toHaveBeenLastCalledWith({
+      launching: false,
+      sweep: running,
+      error: 'offline',
+    });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(changed).toHaveBeenLastCalledWith({ sweep: complete, error: null });
+    expect(changed).toHaveBeenLastCalledWith({ launching: false, sweep: complete, error: null });
     expect(start).toHaveBeenCalledTimes(1);
   });
   it('discards an older GET that finishes after a newer launch', async () => {
@@ -143,7 +155,7 @@ describe('all-source refresh follow-up', () => {
     await controller.refresh();
     finish(complete);
     await vi.advanceTimersByTimeAsync(0);
-    expect(changed).toHaveBeenLastCalledWith({ sweep: newer, error: null });
+    expect(changed).toHaveBeenLastCalledWith({ launching: false, sweep: newer, error: null });
   });
   it('does not begin polling if a launch finishes while hidden', async () => {
     let finish!: (r: SweepStatus) => void;
@@ -164,5 +176,58 @@ describe('all-source refresh follow-up', () => {
     controller.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('sweep launch busy state', () => {
+  it('clears launching after rejection and retries without treating a passive read as a launch', async () => {
+    let reject!: (error: Error) => void;
+    const { controller, changed, start, read } = setup(
+      vi.fn(
+        () =>
+          new Promise((_resolve, no) => {
+            reject = no;
+          }),
+      ),
+    );
+    const pending = controller.refresh();
+    expect(changed).toHaveBeenLastCalledWith({ sweep: null, launching: true, error: null });
+    reject(new Error('offline'));
+    await pending;
+    expect(changed).toHaveBeenLastCalledWith({ sweep: null, launching: false, error: 'offline' });
+    expect(read).not.toHaveBeenCalled();
+    start.mockResolvedValueOnce(complete);
+    read.mockImplementationOnce(() => new Promise(() => {}));
+    await controller.refresh();
+    expect(changed).toHaveBeenLastCalledWith({ sweep: complete, launching: false, error: null });
+  });
+
+  it('keeps a newer launch busy when the older launch settles', async () => {
+    let finishOld!: (sweep: SweepStatus) => void;
+    let finishNew!: (sweep: SweepStatus) => void;
+    const { controller, changed } = setup(
+      vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishOld = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishNew = resolve;
+            }),
+        ),
+    );
+    const old = controller.refresh();
+    const current = controller.refresh();
+    finishOld(complete);
+    await old;
+    expect(changed).toHaveBeenLastCalledWith({ sweep: null, launching: true, error: null });
+    finishNew(running);
+    await current;
+    expect(changed).toHaveBeenLastCalledWith({ sweep: running, launching: false, error: null });
   });
 });
