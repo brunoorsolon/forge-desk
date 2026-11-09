@@ -580,3 +580,188 @@ describe('observation identities and lifecycle', () => {
     expect(store.readOutsideIssue(outside)).toBeUndefined();
   });
 });
+
+describe('closed observations refreshed by repository listings', () => {
+  const seed = (store: ObservationStore, ref = outside, state: 'open' | 'closed' = 'closed') =>
+    store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
+      result: { status: 'found', issue: issue({ key: ref.key, state }) },
+      relationCoverage: complete,
+    });
+  const list = (store: ObservationStore, issues: Issue[] = []) =>
+    store.writeRepository(store.beginRepositoryRead(project), { issues, warnings: [] });
+
+  it('refreshes every absent closed observation, clearing old failures and invalidation only', () => {
+    const { store, clock } = setup();
+    const second = { ...outside, key: 'acme/app#2' };
+    seed(store);
+    seed(store, second);
+    store.invalidateRepository(project);
+    clock(t2);
+    store.fail(store.beginOutsideIssueRead(outside), 'offline');
+    const before = store.readOutsideIssue(outside)!;
+    clock(t3);
+    list(store);
+    for (const ref of [outside, second]) {
+      expect(store.readOutsideIssue(ref)).toMatchObject({
+        invalidated: false,
+        failedGeneration: null,
+        observation: {
+          lastCheckedAt: t3,
+          lastAttempt: { attemptedAt: t3, outcome: 'success', error: null },
+          invalidationGeneration: 1,
+          relationCoverage: complete,
+          relationsCheckedAt: { native: t1, subIssues: t1 },
+        },
+      });
+    }
+    const after = store.readOutsideIssue(outside)!;
+    expect(after.observation.result).toEqual(before.observation.result);
+    expect(after.version).not.toBe(before.version);
+    expect(store.readRepository(project)?.observation.lastCheckedAt).toBe(t3);
+  });
+
+  it('does not change present, open, unknown, missing, other-repository or other-source observations', () => {
+    const { store, clock } = setup();
+    const open = { ...outside, key: 'acme/app#2' };
+    const unknown = { ...outside, key: 'acme/app#3' };
+    const missing = { ...outside, key: 'acme/app#4' };
+    const otherRepo = { ...outside, key: 'acme/application#1' };
+    const otherSource = { ...outside, source: 'primary' };
+    seed(store);
+    seed(store, open, 'open');
+    store.beginOutsideIssueRead(unknown);
+    store.writeOutsideIssue(store.beginOutsideIssueRead(missing), {
+      result: { status: 'missing' },
+    });
+    seed(store, otherRepo);
+    seed(store, otherSource);
+    const refs = [outside, open, unknown, missing, otherRepo, otherSource];
+    const before = refs.map((ref) => store.readOutsideIssue(ref));
+    clock(t3);
+    list(store, [issue()]);
+    expect(refs.map((ref) => store.readOutsideIssue(ref))).toEqual(before);
+  });
+
+  it('canonicalizes the repository and returned open issue identity', () => {
+    const { store, clock } = setup();
+    seed(store);
+    const before = store.readOutsideIssue(outside);
+    clock(t2);
+    store.writeRepository(store.beginRepositoryRead({ ...project, repo: 'ACME/App' }), {
+      issues: [issue({ key: 'ACME/App#01' })],
+      warnings: [],
+    });
+    expect(store.readOutsideIssue(outside)).toEqual(before);
+    clock(t3);
+    store.writeRepository(store.beginRepositoryRead({ ...project, repo: 'ACME/App' }), {
+      issues: [],
+      warnings: [],
+    });
+    expect(store.readOutsideIssue(outside)?.observation.lastCheckedAt).toBe(t3);
+  });
+
+  it('does not refresh observations after a failed, superseded or explicitly partial listing', () => {
+    const { store, clock } = setup();
+    seed(store);
+    const before = store.readOutsideIssue(outside);
+    clock(t2);
+    store.fail(store.beginRepositoryRead(project), 'offline');
+    const old = store.beginRepositoryRead(project);
+    list(store, [issue()]);
+    expect(store.writeRepository(old, { issues: [], warnings: [] })).toBe(false);
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [],
+      warnings: [],
+      outcome: 'partial',
+      error: 'Listing capped',
+    });
+    expect(store.readOutsideIssue(outside)).toEqual(before);
+  });
+
+  it('refreshes closed state even when only the open issues relation reads are partial', () => {
+    const { store, clock } = setup();
+    seed(store);
+    clock(t2);
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [],
+      warnings: [],
+      relationCoverage: { native: 'failed', subIssues: 'unsupported' },
+    });
+    expect(store.readOutsideIssue(outside)?.observation).toMatchObject({
+      lastCheckedAt: t2,
+      lastAttempt: { outcome: 'success', error: null },
+      relationCoverage: complete,
+      relationsCheckedAt: { native: t1, subIssues: t1 },
+    });
+  });
+
+  it('preserves a webhook received during the listing and clears it on the next read', () => {
+    const { store, clock } = setup();
+    seed(store);
+    const read = store.beginRepositoryRead(project);
+    store.invalidateRepository(project);
+    clock(t2);
+    store.writeRepository(read, { issues: [], warnings: [] });
+    expect(store.readOutsideIssue(outside)).toMatchObject({ invalidated: true });
+    clock(t3);
+    list(store);
+    expect(store.readOutsideIssue(outside)).toMatchObject({
+      invalidated: false,
+      observation: { lastCheckedAt: t3 },
+    });
+  });
+
+  it.each(['success', 'failure'] as const)(
+    'preserves a newer targeted %s despite a backwards clock',
+    (outcome) => {
+      const { store, clock } = setup();
+      seed(store);
+      const listing = store.beginRepositoryRead(project);
+      clock('2026-11-06T09:00:00.000Z');
+      if (outcome === 'success') seed(store);
+      else store.fail(store.beginOutsideIssueRead(outside), 'Newer failure');
+      const before = store.readOutsideIssue(outside);
+      clock(t3);
+      store.writeRepository(listing, { issues: [], warnings: [] });
+      expect(store.readOutsideIssue(outside)).toEqual(before);
+    },
+  );
+
+  it('supersedes older targeted reads but allows a later in-flight read to finish', () => {
+    const { store, clock } = setup();
+    seed(store);
+    const older = store.beginOutsideIssueRead(outside);
+    const listing = store.beginRepositoryRead(project);
+    const newer = store.beginOutsideIssueRead(outside);
+    clock(t2);
+    store.writeRepository(listing, { issues: [], warnings: [] });
+    const refreshed = store.readOutsideIssue(outside);
+    expect(store.fail(older, 'Obsolete failure')).toBe(false);
+    expect(store.readOutsideIssue(outside)).toEqual(refreshed);
+    clock(t3);
+    expect(store.writeOutsideIssue(newer, { result: { status: 'found', issue: issue() } })).toBe(
+      true,
+    );
+    expect(store.readOutsideIssue(outside)?.observation.result).toMatchObject({
+      status: 'found',
+      issue: { state: 'open' },
+    });
+  });
+
+  it('does not restore pruned or replaced observations captured at listing start', () => {
+    const { store, clock } = setup();
+    seed(store);
+    const read = store.beginRepositoryRead(project);
+    store.prune(catalog(project), []);
+    clock(t2);
+    seed(store);
+    const replacement = store.readOutsideIssue(outside);
+    clock(t3);
+    store.writeRepository(read, { issues: [], warnings: [] });
+    expect(store.readOutsideIssue(outside)).toEqual(replacement);
+    const next = store.beginRepositoryRead(project);
+    store.prune(catalog(project), []);
+    store.writeRepository(next, { issues: [], warnings: [] });
+    expect(store.readOutsideIssue(outside)).toBeUndefined();
+  });
+});

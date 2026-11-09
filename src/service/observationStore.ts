@@ -69,6 +69,8 @@ interface PendingRead {
   entry: Entry<Observation>;
   sequence: number;
   generation: number;
+  /** Outside observations visible when a repository listing started. */
+  outsideIssues?: Map<string, { entry: Entry<OutsideIssueObservation>; generation: number }>;
 }
 
 const relationKinds: RelationKind[] = ['native', 'subIssues'];
@@ -195,6 +197,9 @@ export class ObservationStore {
     }
     entry.observation.warnings = copy.warnings;
     this.succeeded(entry, request, coverage, checkedAt, copy);
+    // Partial relationship reads still contain the complete issue listing. An explicitly
+    // partial/capped listing, however, cannot prove that an absent issue remains closed.
+    if (copy.outcome !== 'partial') this.refreshClosedIssues(request, copy.issues, checkedAt);
     return true;
   }
 
@@ -293,11 +298,24 @@ export class ObservationStore {
   }
 
   private capture(token: Read, entry: Entry<Observation>): void {
-    this.pending.set(token, {
+    const request: PendingRead = {
       entry,
       sequence: ++this.nextRead,
       generation: entry.observation.invalidationGeneration,
-    });
+    };
+    if (token.kind === 'repository') {
+      request.outsideIssues = new Map();
+      for (const [id, outside] of this.outsideIssues) {
+        const { source, key, invalidationGeneration } = outside.observation;
+        if (
+          source === token.project.source &&
+          key.slice(0, key.lastIndexOf('#')) === token.project.repo
+        ) {
+          request.outsideIssues.set(id, { entry: outside, generation: invalidationGeneration });
+        }
+      }
+    }
+    this.pending.set(token, request);
   }
 
   private accept(token: Read, entry: Entry<Observation> | undefined): PendingRead | undefined {
@@ -308,6 +326,37 @@ export class ObservationStore {
     }
     entry.lastAcceptedRead = request.sequence;
     return request;
+  }
+
+  /** A complete open listing verifies existing closed state, not issue details or relations. */
+  private refreshClosedIssues(request: PendingRead, issues: Issue[], checkedAt: string): void {
+    const openKeys = new Set(
+      issues
+        .filter((issue) => issue.state === 'open')
+        .map((issue) => {
+          const { repo, number } = parseKey(issue.key);
+          return makeKey(repo, number);
+        }),
+    );
+    for (const [id, captured] of request.outsideIssues ?? []) {
+      const { entry, generation } = captured;
+      const observation = entry.observation;
+      if (
+        this.outsideIssues.get(id) !== entry ||
+        entry.lastAcceptedRead > request.sequence ||
+        observation.result?.status !== 'found' ||
+        observation.result.issue.state !== 'closed' ||
+        openKeys.has(observation.key)
+      )
+        continue;
+      entry.lastAcceptedRead = request.sequence;
+      observation.lastCheckedAt = checkedAt;
+      observation.lastAttempt = { attemptedAt: checkedAt, outcome: 'success', error: null };
+      // A webhook arriving after this listing started must still force another read.
+      entry.invalidated = generation !== observation.invalidationGeneration;
+      entry.failedGeneration = null;
+      entry.version = ++this.nextVersion;
+    }
   }
 
   private failed(entry: Entry<Observation>, request: PendingRead, error: string): void {
