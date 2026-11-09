@@ -62,6 +62,7 @@ type CompleteRelations = Record<RelationKind, Map<IssueKey, RawRelation[]> | nul
 
 interface Entry<T extends Observation> extends StoredObservation<T> {
   lastAcceptedRead: number;
+  lastSuccessfulRead: number;
   completeRelations: CompleteRelations;
 }
 
@@ -189,6 +190,7 @@ export class ObservationStore {
     const copy = structuredClone(result);
     const coverage = copy.relationCoverage ?? noCoverage();
     const checkedAt = this.now().toISOString();
+    this.retainDroppedIssues(entry, copy.issues);
     entry.observation.issues = this.relations(entry, copy.issues, coverage, checkedAt);
     if (copy.pullRequests !== undefined) {
       entry.observation.pullRequests = copy.pullRequests;
@@ -224,6 +226,7 @@ export class ObservationStore {
     if (copy.result.status === 'found') {
       const [issue] = this.relations(entry, [copy.result.issue], coverage, checkedAt);
       entry.observation.result = { status: 'found', issue: issue! };
+      delete entry.observation.retainedFromListing;
     }
     this.succeeded(entry, request, coverage, checkedAt, copy);
     return true;
@@ -275,6 +278,7 @@ export class ObservationStore {
       invalidated: false,
       failedGeneration: null,
       lastAcceptedRead: 0,
+      lastSuccessfulRead: 0,
       completeRelations: { native: null, subIssues: null },
     };
   }
@@ -287,6 +291,56 @@ export class ObservationStore {
       this.repositories.set(id, entry);
     }
     return entry;
+  }
+
+  /** A missing listing member is unverified, not closed. Preserve its last-good payload. */
+  private retainDroppedIssues(repository: Entry<RepositoryObservation>, issues: Issue[]): void {
+    const listed = new Set(issues.map((issue) => issue.key));
+    for (const issue of repository.observation.issues ?? []) {
+      if (issue.state !== 'open' || listed.has(issue.key)) continue;
+      const ref = outsideRef({ source: repository.observation.project.source, key: issue.key });
+      const id = outsideId(ref);
+      let entry = this.outsideIssues.get(id);
+      // A targeted read can already have observed closure or updated details. Use
+      // read order, not timestamps, so equal/backwards clocks cannot revive stale data.
+      if (
+        entry?.observation.result?.status === 'found' &&
+        entry.lastSuccessfulRead >= repository.lastSuccessfulRead
+      ) {
+        if (
+          entry.observation.result.issue.state === 'open' &&
+          entry.lastSuccessfulRead < repository.lastAcceptedRead
+        ) {
+          entry.observation.retainedFromListing = true;
+          entry.invalidated = true;
+          entry.version = ++this.nextVersion;
+        }
+        continue;
+      }
+      if (!entry) {
+        entry = this.entry({ ...metadata(), ...ref, result: null });
+        this.outsideIssues.set(id, entry);
+      }
+      entry.observation.result = { status: 'found', issue: structuredClone(issue) };
+      entry.observation.retainedFromListing = true;
+      entry.observation.lastCheckedAt = repository.observation.lastCheckedAt;
+      entry.observation.relationCoverage = structuredClone(repository.observation.relationCoverage);
+      entry.observation.relationsCheckedAt = structuredClone(
+        repository.observation.relationsCheckedAt,
+      );
+      for (const kind of relationKinds) {
+        const retained = repository.completeRelations[kind]?.get(issue.key);
+        entry.completeRelations[kind] = retained
+          ? new Map([[issue.key, structuredClone(retained)]])
+          : null;
+      }
+      // Keep any pending token and failure history. A lookup begun after the last
+      // listing can still replace this fallback; older reads cannot overwrite it.
+      entry.lastSuccessfulRead = repository.lastSuccessfulRead;
+      entry.lastAcceptedRead = Math.max(entry.lastAcceptedRead, repository.lastSuccessfulRead);
+      entry.invalidated = true;
+      entry.version = ++this.nextVersion;
+    }
   }
 
   private readState(entry: Entry<Observation>): ReadState {
@@ -388,6 +442,7 @@ export class ObservationStore {
     };
     entry.invalidated = request.generation !== entry.observation.invalidationGeneration;
     entry.failedGeneration = null;
+    entry.lastSuccessfulRead = request.sequence;
     entry.version = ++this.nextVersion;
   }
 

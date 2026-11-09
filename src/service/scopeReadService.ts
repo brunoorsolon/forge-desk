@@ -218,6 +218,7 @@ export class ScopeReadService {
           provisionalCount: outside.filter(
             (r) =>
               !r ||
+              r.observation.retainedFromListing ||
               r.observation.result?.status !== 'found' ||
               r.observation.lastAttempt?.outcome === 'failed' ||
               this.partial(r.observation, source),

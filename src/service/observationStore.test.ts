@@ -395,6 +395,137 @@ describe('observation identities and lifecycle', () => {
     expect(store.readRepository(project)?.observation.issues?.[0]?.nativeRelations).toEqual([]);
   });
 
+  it('promotes dropped open issues with their original data and relation ages, then prunes unused copies', () => {
+    const { store, clock } = setup();
+    const original = issue({ nativeRelations: [relation('native', 2)], labels: ['P0'] });
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [original, issue({ key: 'acme/app#2', number: 2, state: 'closed' })],
+      warnings: [],
+      relationCoverage: complete,
+    });
+    const listing = store.readRepository(project)!;
+    clock(t2);
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [],
+      warnings: [],
+      relationCoverage: complete,
+    });
+    expect(store.readOutsideIssue(outside)).toMatchObject({
+      invalidated: true,
+      observation: {
+        result: { status: 'found', issue: original },
+        retainedFromListing: true,
+        relationCoverage: complete,
+        relationsCheckedAt: listing.observation.relationsCheckedAt,
+        lastCheckedAt: t1,
+        lastAttempt: null,
+      },
+    });
+    expect(store.readOutsideIssue({ ...outside, key: 'acme/app#2' })).toBeUndefined();
+    expect(store.readOutsideIssue({ ...outside, source: 'other' })).toBeUndefined();
+    // Partial lookup coverage must not clear the native edge inherited from the listing.
+    store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+      result: { status: 'found', issue: issue({ body: 'Updated' }) },
+      relationCoverage: { native: 'failed', subIssues: 'complete' },
+    });
+    expect(store.readOutsideIssue(outside)?.observation).toMatchObject({
+      result: { status: 'found', issue: { nativeRelations: original.nativeRelations } },
+      relationsCheckedAt: { native: t1, subIssues: t2 },
+    });
+    store.prune(catalog(project), []);
+    expect(store.readOutsideIssue(outside)).toBeUndefined();
+  });
+
+  it.each(['open', 'closed'] as const)(
+    'preserves a newer targeted %s result over the dropped listing even with a backwards clock',
+    (state) => {
+      const { store, clock } = setup();
+      store.writeRepository(store.beginRepositoryRead(project), {
+        issues: [issue()],
+        warnings: [],
+        relationCoverage: complete,
+      });
+      clock('2026-11-06T09:00:00.000Z');
+      store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+        result: { status: 'found', issue: issue({ state, title: 'Newer targeted data' }) },
+        relationCoverage: complete,
+      });
+      const targeted = store.readOutsideIssue(outside)!;
+      clock(t2);
+      store.writeRepository(store.beginRepositoryRead(project), { issues: [], warnings: [] });
+      expect(store.readOutsideIssue(outside)?.observation).toEqual({
+        ...targeted.observation,
+        ...(state === 'open'
+          ? { retainedFromListing: true }
+          : {
+              // #246 verifies already-closed state again without changing targeted details.
+              lastCheckedAt: t2,
+              lastAttempt: { attemptedAt: t2, outcome: 'success', error: null },
+            }),
+      });
+      expect(store.readOutsideIssue(outside)?.invalidated).toBe(state === 'open');
+    },
+  );
+
+  it('prefers a newer listing payload over an older targeted result without resetting failed reads', () => {
+    const { store } = setup();
+    store.writeOutsideIssue(store.beginOutsideIssueRead(outside), {
+      result: { status: 'found', issue: issue({ title: 'Older targeted data', state: 'closed' }) },
+      relationCoverage: complete,
+    });
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [issue({ title: 'Newer listing data' })],
+      warnings: [],
+      relationCoverage: complete,
+    });
+    store.fail(store.beginOutsideIssueRead(outside), 'offline');
+    const failed = store.readOutsideIssue(outside)!;
+    store.writeRepository(store.beginRepositoryRead(project), { issues: [], warnings: [] });
+    expect(store.readOutsideIssue(outside)).toMatchObject({
+      invalidated: true,
+      failedGeneration: failed.failedGeneration,
+      observation: {
+        lastAttempt: failed.observation.lastAttempt,
+        result: { status: 'found', issue: { title: 'Newer listing data', state: 'open' } },
+      },
+    });
+  });
+
+  it('keeps pending lookups usable after promotion while rejecting those older than the retained listing', () => {
+    const { store } = setup();
+    const obsolete = store.beginOutsideIssueRead(outside);
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [issue()],
+      warnings: [],
+      relationCoverage: complete,
+    });
+    const pending = store.beginOutsideIssueRead(outside);
+    store.writeRepository(store.beginRepositoryRead(project), { issues: [], warnings: [] });
+    expect(store.writeOutsideIssue(obsolete, { result: { status: 'missing' } })).toBe(false);
+    expect(
+      store.writeOutsideIssue(pending, {
+        result: { status: 'found', issue: issue({ state: 'closed' }) },
+        relationCoverage: complete,
+      }),
+    ).toBe(true);
+    expect(store.readOutsideIssue(outside)).toMatchObject({
+      invalidated: false,
+      observation: { result: { status: 'found', issue: { state: 'closed' } } },
+    });
+  });
+
+  it('does not promote data on a failed or superseded repository read', () => {
+    const { store } = setup();
+    const older = store.beginRepositoryRead(project);
+    store.writeRepository(store.beginRepositoryRead(project), {
+      issues: [issue()],
+      warnings: [],
+    });
+    expect(store.writeRepository(older, { issues: [], warnings: [] })).toBe(false);
+    store.fail(store.beginRepositoryRead(project), 'offline');
+    expect(store.readOutsideIssue(outside)).toBeUndefined();
+  });
+
   it('reports an initially missing outside issue without claiming successful data or relation removal', () => {
     const { store } = setup();
     store.invalidateRepository(project);
@@ -652,12 +783,23 @@ describe('closed observations refreshed by repository listings', () => {
       warnings: [],
     });
     expect(store.readOutsideIssue(outside)).toEqual(before);
+    const stillClosed = { ...outside, key: 'acme/app#2' };
+    seed(store, stillClosed);
     clock(t3);
     store.writeRepository(store.beginRepositoryRead({ ...project, repo: 'ACME/App' }), {
       issues: [],
       warnings: [],
     });
-    expect(store.readOutsideIssue(outside)?.observation.lastCheckedAt).toBe(t3);
+    // The newer open listing is retained, not replaced with the older closed lookup.
+    expect(store.readOutsideIssue(outside)).toMatchObject({
+      invalidated: true,
+      observation: {
+        result: { status: 'found', issue: { state: 'open' } },
+        retainedFromListing: true,
+        lastCheckedAt: t2,
+      },
+    });
+    expect(store.readOutsideIssue(stillClosed)?.observation.lastCheckedAt).toBe(t3);
   });
 
   it('does not refresh observations after a failed, superseded or explicitly partial listing', () => {
@@ -669,13 +811,17 @@ describe('closed observations refreshed by repository listings', () => {
     const old = store.beginRepositoryRead(project);
     list(store, [issue()]);
     expect(store.writeRepository(old, { issues: [], warnings: [] })).toBe(false);
+    expect(store.readOutsideIssue(outside)).toEqual(before);
+    // A later targeted lookup verifies closure after that listing observed it open.
+    seed(store);
+    const verifiedClosed = store.readOutsideIssue(outside);
     store.writeRepository(store.beginRepositoryRead(project), {
       issues: [],
       warnings: [],
       outcome: 'partial',
       error: 'Listing capped',
     });
-    expect(store.readOutsideIssue(outside)).toEqual(before);
+    expect(store.readOutsideIssue(outside)).toEqual(verifiedClosed);
   });
 
   it('refreshes closed state even when only the open issues relation reads are partial', () => {

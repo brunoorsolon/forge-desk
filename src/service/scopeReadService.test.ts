@@ -99,6 +99,130 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it.each(['closed', 'failed'] as const)(
+    'refreshes known closure while retaining a dropped open prerequisite until its %s lookup',
+    async (outcome) => {
+      const f = fixture();
+      const root = issue('o/a#1', 'Blocked by #2\nBlocked by #3');
+      const dropped = { ...issue('o/a#3'), title: 'Last known prerequisite', labels: ['P0'] };
+      f.seed('o/a', [root, dropped]);
+      f.store.writeOutsideIssue(f.store.beginOutsideIssueRead({ source: 'gh', key: 'o/a#2' }), {
+        result: { status: 'found', issue: issue('o/a#2', '', 'closed') },
+      });
+      vi.setSystemTime(Date.now() + 60_001);
+      f.store.invalidateRepository({ source: 'gh', repo: 'o/a' });
+      f.list.mockResolvedValue(listing([root]));
+      const lookup = gate();
+      f.lookup.mockImplementation(async () => {
+        await lookup.promise;
+        if (outcome === 'failed') throw new Error('offline');
+        return issue('o/a#3', '', 'closed');
+      });
+      const job = f.jobs.refresh(project());
+      await tick();
+      expect(f.lookup.mock.calls.map(([, number]) => number)).toEqual([3]);
+      const pending = await f.service.get(project());
+      expect(pending.snapshot!.plan.nodes.find((node) => node.key === 'o/a#3')).toMatchObject({
+        title: dropped.title,
+        labels: dropped.labels,
+      });
+      expect(pending.freshness.outsideIssues.provisionalCount).toBe(1);
+      expect(
+        pending.snapshot!.plan.warnings.some((warning) => warning.code === 'fetch-error'),
+      ).toBe(false);
+      expect(f.store.readOutsideIssue({ source: 'gh', key: 'o/a#2' })).toMatchObject({
+        invalidated: false,
+        observation: {
+          lastCheckedAt: new Date().toISOString(),
+          result: { issue: { state: 'closed' } },
+        },
+      });
+      lookup.resolve();
+      await job.completion;
+      const settled = await f.service.get(project());
+      expect(settled.snapshot!.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+        outcome === 'closed' ? 'ready' : 'blocked',
+      );
+      expect(settled.freshness.outsideIssues.provisionalCount).toBe(outcome === 'closed' ? 0 : 1);
+      expect(f.lookup.mock.calls.map(([, number]) => number)).toEqual([3]);
+    },
+  );
+
+  it('does not mark verified outside data provisional when a webhook invalidates it', async () => {
+    const f = fixture();
+    const roots = [issue('o/a#1', 'Blocked by external/repo#2')];
+    f.seed('o/a', roots);
+    f.store.writeOutsideIssue(
+      f.store.beginOutsideIssueRead({ source: 'gh', key: 'external/repo#2' }),
+      { result: { status: 'found', issue: issue('external/repo#2') } },
+    );
+    const before = await f.service.get(project());
+    expect(before.freshness.outsideIssues.provisionalCount).toBe(0);
+    const listingGate = gate();
+    f.list.mockImplementation(async () => {
+      await listingGate.promise;
+      return listing(roots);
+    });
+    f.lookup.mockResolvedValue(issue('external/repo#2'));
+    // This is the same invalidation entry point used by the webhook route.
+    f.store.invalidateRepository({ source: 'gh', repo: 'external/repo' });
+    const invalidated = await f.service.get(project());
+    expect(invalidated.snapshot!.contentHash).toBe(before.snapshot!.contentHash);
+    expect(invalidated.freshness.outsideIssues.provisionalCount).toBe(0);
+    expect(
+      invalidated.snapshot!.plan.warnings.filter((w) => w.code === 'dependency-provisional'),
+    ).toEqual([]);
+    listingGate.resolve();
+    await f.jobs.active(project())?.completion;
+  });
+
+  it.each(['closed', 'failed'] as const)(
+    'serves last-known dropped issue details while its lookup waits, then handles %s',
+    async (outcome) => {
+      const f = fixture();
+      const prerequisite = {
+        ...issue('o/a#2'),
+        title: 'Waiting prerequisite',
+        url: 'https://github.com/o/a/issues/2',
+        labels: ['P0'],
+      };
+      f.seed('o/a', [issue('o/a#1', 'Blocked by #2'), prerequisite]);
+      f.list.mockResolvedValue(listing([issue('o/a#1', 'Blocked by #2')]));
+      const lookup = gate();
+      f.lookup.mockImplementation(async () => {
+        await lookup.promise;
+        if (outcome === 'failed') throw new Error('offline');
+        return issue('o/a#2', '', 'closed');
+      });
+      const job = f.jobs.refresh(project());
+      await tick();
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      const pending = await f.service.get(project());
+      expect(pending.snapshot!.plan.nodes.find((n) => n.key === 'o/a#2')).toMatchObject({
+        title: prerequisite.title,
+        url: prerequisite.url,
+        labels: prerequisite.labels,
+      });
+      expect(pending.freshness.outsideIssues.provisionalCount).toBe(1);
+      expect(pending.snapshot!.plan.warnings.some((w) => w.code === 'fetch-error')).toBe(false);
+      expect(
+        pending.snapshot!.plan.warnings.find((w) => w.code === 'dependency-provisional')!.issues,
+      ).toEqual(['o/a#1', 'o/a#2']);
+      lookup.resolve();
+      await job.completion;
+      const settled = await f.service.get(project());
+      expect(settled.snapshot!.plan.nodes.find((n) => n.key === 'o/a#1')!.status).toBe(
+        outcome === 'closed' ? 'ready' : 'blocked',
+      );
+      expect(settled.snapshot!.plan.nodes.find((n) => n.key === 'o/a#2')?.title).toBe(
+        outcome === 'closed' ? undefined : prerequisite.title,
+      );
+      expect(settled.freshness.outsideIssues.provisionalCount).toBe(outcome === 'closed' ? 0 : 1);
+      expect(settled.snapshot!.plan.warnings.some((w) => w.code === 'fetch-error')).toBe(false);
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(['project', 'source'] as const)(
     'keeps same-repository closed prerequisites satisfied after a %s listing refresh',
     async (scopeKind) => {

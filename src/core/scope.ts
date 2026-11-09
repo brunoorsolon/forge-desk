@@ -89,6 +89,8 @@ export interface OutsideIssueObservation extends ObservationMetadata {
   key: IssueKey;
   /** Last-good issue includes state, body and observed relations; null means no result yet. */
   result: OutsideIssueResult | null;
+  /** Last-known open data retained after a listing dropped it; cleared by a successful lookup. */
+  retainedFromListing?: boolean;
 }
 
 export type FreshnessState =
