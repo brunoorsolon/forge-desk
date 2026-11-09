@@ -196,6 +196,7 @@ describe('source refresh route preservation', () => {
     expect(read.mock.calls).toEqual([[project], [project]]);
     expect(store.get().route).toBe(route);
     expect(store.get().freshness).toBe(before);
+    expect(store.get().refreshingScope).toBe('source');
 
     const refreshed = response(project, true);
     refreshed.freshness.computedAt = '2026-11-08T20:00:00Z';
@@ -240,6 +241,7 @@ describe('source refresh route preservation', () => {
     await pending;
     expect(read.mock.calls).toEqual([[project], [source], [project]]);
     expect(store.get().freshness).toBe(before);
+    expect(store.get().refreshingScope).toBeNull();
     expect(scopeFromRoute(store.get().route)).toEqual(project);
   });
 
@@ -329,5 +331,77 @@ describe('scope routing and panels', () => {
       kind: 'delayed',
       expectedEnd: '2026-11-08T00:00:00Z',
     });
+  });
+});
+
+describe('explicit scope request busy state', () => {
+  it.each(['project', 'source'] as const)(
+    'tracks a pending %s request through its active job and completion',
+    async (kind) => {
+      const posted = deferred<ScopeResponse>();
+      const target: Scope = kind === 'project' ? project : { kind, source: project.source };
+      const active = response(project, true);
+      active.job!.scope = target;
+      const read = vi.fn(async () => response(project));
+      const { store, navigation } = setup(read, () => posted.promise);
+      navigation.open(project);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.get().refreshingScope).toBeNull();
+      if (kind === 'source') read.mockResolvedValueOnce(active);
+      const pending = navigation.refresh(target);
+      expect(store.get().refreshingScope).toBe(kind);
+      posted.resolve(kind === 'project' ? active : response(target, true));
+      await pending;
+      expect(store.get().refreshingScope).toBeNull();
+      expect(store.get().job?.scope).toEqual(target);
+      read.mockResolvedValue(response(project));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.get().job).toBeNull();
+      expect(store.get().refreshingScope).toBeNull();
+    },
+  );
+
+  it.each(['project', 'source'] as const)(
+    'clears a rejected %s request and permits retry',
+    async (kind) => {
+      const posted = deferred<ScopeResponse>();
+      const target: Scope = kind === 'project' ? project : { kind, source: project.source };
+      const refresh = vi.fn(() => posted.promise);
+      const { store, navigation } = setup(undefined, refresh);
+      navigation.open(project);
+      await vi.advanceTimersByTimeAsync(0);
+      const pending = navigation.refresh(target);
+      expect(store.get().refreshingScope).toBe(kind);
+      posted.reject(new Error('offline'));
+      await pending;
+      expect(store.get().refreshingScope).toBeNull();
+      refresh.mockResolvedValueOnce(response(target));
+      await navigation.refresh(target);
+      expect(store.get().refreshingScope).toBeNull();
+      expect(refresh).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not let a superseded refresh clear a newer request after navigation away and back', async () => {
+    const old = deferred<ScopeResponse>();
+    const current = deferred<ScopeResponse>();
+    const refresh = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    const { store, navigation } = setup(undefined, refresh);
+    navigation.open(project);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = navigation.refresh(project);
+    expect(store.get().refreshingScope).toBe('project');
+    store.dispatch({ type: 'route', route: routeForScope(source, DEFAULT_ROUTE) });
+    navigation.open(source);
+    expect(store.get().refreshingScope).toBeNull();
+    store.dispatch({ type: 'route', route: routeForScope(project, DEFAULT_ROUTE) });
+    navigation.open(project);
+    const second = navigation.refresh({ kind: 'source', source: project.source });
+    old.resolve(response(project));
+    await first;
+    expect(store.get().refreshingScope).toBe('source');
+    current.resolve(response({ kind: 'source', source: project.source }));
+    await second;
+    expect(store.get().refreshingScope).toBeNull();
   });
 });

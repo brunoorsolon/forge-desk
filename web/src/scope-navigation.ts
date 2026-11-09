@@ -104,7 +104,11 @@ export function createScopeNavigation(
     const recheckAtStart = requestedRecheck;
     let succeeded = false;
     pending = true;
-    store.dispatch({ type: 'scope-load-start', scope: origin });
+    store.dispatch({
+      type: 'scope-load-start',
+      scope: origin,
+      refreshingScope: explicit ? target.kind : null,
+    });
     try {
       let response = await (explicit ? refresh : read)(target);
       if (token !== generation) return;

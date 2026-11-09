@@ -158,7 +158,7 @@ function resolveLocation(): void {
 }
 
 // -------------------------------------------------------- explicit refresh wiring
-let sweepState: SweepRefreshState = { sweep: null, error: null };
+let sweepState: SweepRefreshState = { sweep: null, launching: false, error: null };
 const sweepRefresh = createSweepRefresh(
   (state) => {
     sweepState = state;
@@ -426,7 +426,7 @@ function updateNavigation(state: ReturnType<Store['get']>): void {
       ? state
       : { ...state, refreshError: `All sources refresh: ${sweepState.error}` },
     preferenceState,
-    sweepState.sweep,
+    sweepState,
     catalog,
   );
   preferenceError.textContent = preferenceState.error ?? '';

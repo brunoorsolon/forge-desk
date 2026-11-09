@@ -55,7 +55,7 @@ for (const [width, height] of [[1280, 713], [400, 713], [400, 500]]) {
           projects: repositories.map(r => ({ project: r.project, state: 'checked', lastCheckedAt: checked, error: null })) }],
       };
       const heading = createScopeHeading({ toggleFavorite() {} });
-      heading.update(state, initialPreferenceState(), sweeping ? sweep : null);
+      heading.update(state, initialPreferenceState(), sweeping ? { sweep, launching: false, error: null } : null);
       const ctx = { store: new Store(state), actions: { select() {}, showInGraph() {}, setTab() {}, openReleases() {}, setView() {}, setQuery() {}, setSort() {}, refresh() {}, reload() {} } };
       const header = createHeader(ctx);
       const summary = createSummary(ctx);
