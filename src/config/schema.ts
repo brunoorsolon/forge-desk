@@ -233,6 +233,39 @@ const gitIdentitySchema = z
   })
   .strict();
 
+const expectedApiUserSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((s) => printable(s), 'must not contain control characters');
+const releaseCiSchema = z.object({ workflowPath: workflowPathSchema }).strict();
+const releaseSshSchema = z
+  .object({ privateKeyFile: absolutePathSchema, knownHostsFile: absolutePathSchema })
+  .strict();
+
+/** Defaults never add repositories to the allowlist or supply repository identities/origins. */
+export const releaseDefaultsSchema = z
+  .object({
+    apiTokenFile: absolutePathSchema.optional(),
+    apiTokenEnv: envNameSchema.optional(),
+    expectedApiUser: expectedApiUserSchema.optional(),
+    ci: releaseCiSchema.partial().optional(),
+    ssh: releaseSshSchema.partial().optional(),
+    tagger: gitIdentitySchema.partial().optional(),
+  })
+  .strict()
+  .superRefine((r, ctx) => {
+    if (r.apiTokenFile !== undefined && r.apiTokenEnv !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['apiTokenFile'],
+        message: 'at most one of apiTokenFile or apiTokenEnv is allowed in source defaults',
+      });
+    }
+  });
+
+export type ReleaseDefaults = z.infer<typeof releaseDefaultsSchema>;
+
 const releaseRepoSchema = z
   .object({
     id: idSchema,
@@ -241,15 +274,9 @@ const releaseRepoSchema = z
     origin: sshOriginSchema,
     apiTokenFile: absolutePathSchema.optional(),
     apiTokenEnv: envNameSchema.optional(),
-    expectedApiUser: z
-      .string()
-      .trim()
-      .min(1)
-      .refine((s) => printable(s), 'must not contain control characters'),
-    ci: z.object({ workflowPath: workflowPathSchema }).strict(),
-    ssh: z
-      .object({ privateKeyFile: absolutePathSchema, knownHostsFile: absolutePathSchema })
-      .strict(),
+    expectedApiUser: expectedApiUserSchema,
+    ci: releaseCiSchema,
+    ssh: releaseSshSchema,
     tagger: gitIdentitySchema,
   })
   .strict()
@@ -315,6 +342,8 @@ const sourceSchema = z
     token: z.string().optional(),
     path: z.string().min(1).optional(),
     planning: planningSchema.optional(),
+    // Like the top-level release allowlist, validate defaults only when releases are enabled.
+    releases: z.unknown().optional(),
   })
   .strict()
   .superRefine((s, ctx) => {

@@ -128,7 +128,7 @@ function fixture(
 }
 function service(...sources: ScopeRefreshSource[]) {
   const store = new ObservationStore();
-  const jobs = new ScopeRefreshJobs({ sources, store });
+  const jobs = new ScopeRefreshJobs({ sources, store, cache: { ttlSeconds: 60 } });
   return { jobs, store };
 }
 
@@ -252,6 +252,178 @@ describe('scope refresh jobs', () => {
       issues: [],
       lastCheckedAt: '2026-01-01T00:00:00.000Z',
     });
+  });
+
+  it.each([0, 59_999, 60_000])(
+    'reuses a stored closed prerequisite aged %i ms without changing its observation',
+    async (age) => {
+      const f = fixture(() => json(listing([issue('owner/a#1', 'Depends on other/lib#1')])));
+      const { jobs, store } = service(f.input);
+      const ref = { source: 'gh', key: 'other/lib#1' };
+      store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
+        result: {
+          status: 'found',
+          issue: issue(ref.key, 'Depends on other/lib#2', 'closed'),
+        },
+      });
+      const before = store.readOutsideIssue(ref);
+      vi.setSystemTime(Date.now() + age);
+      const result = await jobs.refresh(project()).completion;
+      expect(result.state).toBe('completed');
+      expect(result.units).toMatchObject([{ kind: 'repository', state: 'checked' }]);
+      expect(result.units).toHaveLength(1);
+      expect(f.calls.map((call) => call.path)).toEqual(['/repos/owner/a']);
+      expect(jobs.lastCompleted(project())?.unitKeys).toEqual(['repository:owner/a']);
+      expect(store.readOutsideIssue(ref)).toEqual(before);
+    },
+  );
+
+  it.each([
+    'unknown',
+    'unattempted',
+    'open',
+    'missing',
+    'failed',
+    'invalidated',
+    'expired',
+    'other-source',
+  ])('fetches a %s outside prerequisite rather than reusing it', async (condition) => {
+    const ref = { source: 'gh', key: 'other/lib#1' };
+    const f = fixture((path) =>
+      json(
+        path === '/repos/owner/a'
+          ? listing([issue('owner/a#1', `Depends on ${ref.key}`)])
+          : issue(ref.key),
+      ),
+    );
+    const { jobs, store } = service(f.input);
+    if (condition === 'unattempted') store.beginOutsideIssueRead(ref);
+    else if (condition !== 'unknown') {
+      const storedRef = condition === 'other-source' ? { ...ref, source: 'elsewhere' } : ref;
+      store.writeOutsideIssue(store.beginOutsideIssueRead(storedRef), {
+        result:
+          condition === 'missing'
+            ? { status: 'missing' }
+            : {
+                status: 'found',
+                issue: issue(ref.key, '', condition === 'open' ? 'open' : 'closed'),
+              },
+      });
+    }
+    if (condition === 'failed') store.fail(store.beginOutsideIssueRead(ref), 'Latest read failed');
+    if (condition === 'invalidated')
+      store.invalidateRepository({ source: ref.source, repo: 'other/lib' });
+    if (condition === 'expired') vi.setSystemTime(Date.now() + 60_001);
+    const result = await jobs.refresh(project()).completion;
+    expect(result.state).toBe('completed');
+    expect(result.units).toMatchObject([
+      { kind: 'repository', state: 'checked' },
+      { kind: 'outside-issue', key: ref.key, state: 'checked' },
+    ]);
+    expect(f.calls.map((call) => call.path)).toEqual([
+      '/repos/owner/a',
+      '/repos/other/lib/issues/1',
+    ]);
+    expect(store.readOutsideIssue(ref)?.observation.result).toMatchObject({
+      status: 'found',
+      issue: { state: 'open' },
+    });
+  });
+
+  it.each([0, 86_400_000])(
+    'rechecks a closed observation aged %i ms with zero TTL',
+    async (age) => {
+      const f = fixture((path) =>
+        json(
+          path === '/repos/owner/a'
+            ? listing([issue('owner/a#1', 'Depends on other/lib#1')])
+            : issue('other/lib#1'),
+        ),
+      );
+      const store = new ObservationStore();
+      const jobs = new ScopeRefreshJobs({ sources: [f.input], store, cache: { ttlSeconds: 0 } });
+      const ref = { source: 'gh', key: 'other/lib#1' };
+      store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
+        result: { status: 'found', issue: issue(ref.key, '', 'closed') },
+      });
+      vi.setSystemTime(Date.now() + age);
+      const result = await jobs.refresh(project()).completion;
+      expect(result.state).toBe('completed');
+      expect(result.units).toMatchObject([
+        { kind: 'repository', state: 'checked' },
+        { kind: 'outside-issue', key: ref.key, state: 'checked' },
+      ]);
+      expect(f.calls.map((call) => call.path)).toEqual([
+        '/repos/owner/a',
+        '/repos/other/lib/issues/1',
+      ]);
+      expect(store.readOutsideIssue(ref)?.observation.result).toMatchObject({
+        status: 'found',
+        issue: { state: 'open' },
+      });
+    },
+  );
+
+  it.each(['verified', 'expired', 'invalidated', 'failed'])(
+    'checks the shared observation again for a later breadth-first level after it is %s',
+    async (change) => {
+      const firstLevel = gate();
+      const f = fixture(async (path) => {
+        if (path === '/repos/owner/a')
+          return json(listing([issue('owner/a#1', 'Depends on other/lib#1')]));
+        if (path === '/repos/other/lib/issues/1') {
+          await firstLevel.promise;
+          return json(issue('other/lib#1', 'Depends on other/lib#2'));
+        }
+        return json(issue('other/lib#2'));
+      });
+      const { jobs, store } = service(f.input);
+      const ref = { source: 'gh', key: 'other/lib#2' };
+      const seed = () =>
+        store.writeOutsideIssue(store.beginOutsideIssueRead(ref), {
+          result: { status: 'found', issue: issue(ref.key, '', 'closed') },
+        });
+      if (change !== 'verified') seed();
+      const job = jobs.refresh(project());
+      await tick();
+      if (change === 'verified') seed();
+      if (change === 'expired') vi.setSystemTime(Date.now() + 60_001);
+      if (change === 'invalidated') store.invalidateRepository({ source: 'gh', repo: 'other/lib' });
+      if (change === 'failed') store.fail(store.beginOutsideIssueRead(ref), 'Concurrent failure');
+      firstLevel.resolve();
+      expect((await job.completion).state).toBe('completed');
+      expect(f.calls.map((call) => call.path)).toEqual([
+        '/repos/owner/a',
+        '/repos/other/lib/issues/1',
+        ...(change === 'verified' ? [] : ['/repos/other/lib/issues/2']),
+      ]);
+    },
+  );
+
+  it('does not charge reused closed observations to the 200-lookup budget', async () => {
+    const cachedKeys = Array.from({ length: 205 }, (_, index) => `other/lib#${index + 1}`);
+    const f = fixture((path) =>
+      json(
+        path === '/repos/owner/a'
+          ? listing([
+              issue('owner/a#1', `Depends on ${[...cachedKeys, 'other/lib#206'].join(', ')}`),
+            ])
+          : issue('other/lib#206'),
+      ),
+    );
+    const { jobs, store } = service(f.input);
+    for (const key of cachedKeys) {
+      store.writeOutsideIssue(store.beginOutsideIssueRead({ source: 'gh', key }), {
+        result: { status: 'found', issue: issue(key, '', 'closed') },
+      });
+    }
+    const result = await jobs.refresh(project()).completion;
+    expect(result).toMatchObject({ state: 'completed', error: null });
+    expect(result.units).toHaveLength(2);
+    expect(f.calls.map((call) => call.path)).toEqual([
+      '/repos/owner/a',
+      '/repos/other/lib/issues/206',
+    ]);
   });
 
   it('joins identical jobs and shares listing and outside-issue units across scopes', async () => {

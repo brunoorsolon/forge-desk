@@ -145,7 +145,7 @@ describe('sweep completion and the visible scope lane', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(read).toHaveBeenCalledTimes(1);
   });
-  it('rechecks a pending source refresh in its returned scope, not the old project', async () => {
+  it('keeps sweep rechecks on the open project during a source refresh', async () => {
     const { old, read, refresh, store, navigation, sweep } = setup();
     old.resolve(response(project, 'old'));
     await vi.advanceTimersByTimeAsync(0);
@@ -156,8 +156,7 @@ describe('sweep completion and the visible scope lane', () => {
     manual.resolve(response(source, 'manual'));
     await pending;
     await vi.advanceTimersByTimeAsync(0);
-    expect(read).toHaveBeenCalledTimes(2);
-    expect(read).toHaveBeenLastCalledWith(source);
+    expect(read.mock.calls).toEqual([[project], [project], [project]]);
     expect(store.get().snapshot?.fetchedAt).toBe('fresh');
   });
   it.each(['queued', 'in-flight'])(

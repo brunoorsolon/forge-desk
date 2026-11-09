@@ -46,9 +46,9 @@ The schema is **strict**: an unknown key is an error, and all errors are reporte
 
 ### `cache`
 
-| Key                | Type               | Default | Description                                                                                                                                    |
-| ------------------ | ------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cache.ttlSeconds` | integer, 0 or more | `300`   | TTL for named-view snapshots and project/source observations. `0` requires revalidation and disables sweep work. Overridden by `FD_CACHE_TTL`. |
+| Key                | Type               | Default | Description                                                                                                                                                                 |
+| ------------------ | ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache.ttlSeconds` | integer, 0 or more | `300`   | TTL for named-view snapshots and project/source observations. `0` requires revalidation, disables closed-issue reuse and disables sweep work. Overridden by `FD_CACHE_TTL`. |
 
 ### `ui`
 
@@ -101,6 +101,9 @@ A list (at least one) of places where issues come from.
 | `sources[].path`     | string                          | required for `fixture`                                          | Fixture JSON file, relative to the config file's directory.                                                                                                                                                                |
 
 Derived `webUrl`: for `github`, `https://github.com` when `baseUrl` is `https://api.github.com`, otherwise `baseUrl` without a trailing `/api/v3`; for `gitea`, `baseUrl`; for `fixture`, none (issue URLs default to `https://fixture.local/...`, and URLs in bodies are only recognised if you set `webUrl` explicitly, as `config.demo.yaml` does).
+
+Gitea sources also support optional [release defaults](#source-level-release-defaults) in
+`sources[].releases`. These do not enable releases or add projects to the catalog.
 
 #### Source catalogs and `sources[].planning`
 
@@ -204,6 +207,66 @@ releases:
 | `releases.repositories[].ssh.knownHostsFile` | absolute path             | required | Trusted host keys for the SSH origin. Must be readable by the runtime user and not writable by group or others (`0600` or `0644`).                                                                                |
 | `releases.repositories[].tagger.name`        | string                    | required | Name on the annotated tag object.                                                                                                                                                                                 |
 | `releases.repositories[].tagger.email`       | email                     | required | Email on the annotated tag object.                                                                                                                                                                                |
+
+#### Source-level release defaults
+
+Gitea sources may set `sources[].releases` to share release settings across their explicit
+`releases.repositories` entries. Each field in this defaults block is optional. The supported
+fields are `apiTokenFile` or `apiTokenEnv`, `expectedApiUser`, `ci.workflowPath`,
+`ssh.privateKeyFile`, `ssh.knownHostsFile`, `tagger.name` and `tagger.email`, with the same
+validation rules as the repository fields above.
+
+```yaml
+sources:
+  - id: gt
+    kind: gitea
+    baseUrl: https://gitea.example.com
+    tokenEnv: GITEA_READ_TOKEN # Planning credentials remain separate.
+    releases:
+      apiTokenFile: /run/secrets/forge_desk_release_token
+      expectedApiUser: release-bot
+      ci:
+        workflowPath: .gitea/workflows/validate.yaml
+      ssh:
+        privateKeyFile: /run/secrets/forge_desk_release_key
+        knownHostsFile: /run/secrets/forge_desk_known_hosts
+      tagger:
+        name: Forge Desk Release Bot
+        email: releases@example.com
+releases:
+  enabled: true
+  publicOrigin: https://forge-desk.example.com
+  stateDir: /var/lib/forge-desk
+  repositories:
+    - id: app
+      source: gt
+      repo: example/app
+      origin: ssh://git@gitea.example.com/example/app.git
+    - id: tools
+      source: gt
+      repo: example/tools
+      origin: ssh://git@gitea.example.com/example/tools.git
+      apiTokenEnv: TOOLS_RELEASE_TOKEN # Replaces the source's file selector entirely.
+      ci:
+        workflowPath: .gitea/workflows/tools.yaml
+      ssh:
+        privateKeyFile: /run/secrets/tools_release_key # Inherits knownHostsFile.
+```
+
+The example assumes the application login and planning views are also configured. An entry
+inherits defaults only from its referenced source id, even when multiple sources use the same
+forge URL. Repository values override source values field by field, including within `ci`,
+`ssh` and `tagger`. A repository token selector replaces the source selector as a unit: setting
+`apiTokenEnv` overrides a source `apiTokenFile`, and vice versa. There is no credential fallback
+if that selected variable or file is missing. Specifying both selectors at either level is an error.
+
+`id`, `source`, `repo` and `origin` remain explicit on every repository; defaults never create
+allowlist entries. Missing required fields after inheritance, invalid explicit overrides and
+unknown keys are errors. When releases are enabled, defaults themselves must be valid, even
+if overridden, and are accepted only on Gitea sources. When releases are disabled or absent,
+source release defaults are ignored, including stale or partial blocks, with no release credential
+reads or release runtime requirements. Existing configurations with all fields on each repository
+continue to work unchanged.
 
 Only Gitea sources can be release repositories; the initial publication target is Gitea 1.26.1, and the release client verifies the server identity before trusting remote observations. Forgejo and other server versions are unsupported until their publication behavior is verified. The final image carries real `git`, `ssh` and `flock`, and the state directory must be a private local volume; see [RELEASES.md](RELEASES.md#image-and-runtime).
 

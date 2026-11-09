@@ -59,7 +59,32 @@ function cdp(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+async function connectTarget(target) {
+  socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', reject, { once: true });
+  });
+  socket.addEventListener('message', (event) => {
+    const response = JSON.parse(event.data);
+    const call = pending.get(response.id);
+    if (!call) return;
+    clearTimeout(call.timer);
+    pending.delete(response.id);
+    if (response.error) call.reject(new Error(JSON.stringify(response.error)));
+    else call.resolve(response.result);
+  });
+  await cdp('Page.enable');
+  await cdp('Emulation.setDeviceMetricsOverride', {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+}
+let clockControlled = false;
 async function advanceBrowserClock(budget) {
+  clockControlled = true;
   const expired = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.removeEventListener('message', receive);
@@ -93,6 +118,8 @@ let visitNumber = 0;
 async function visit(fixture, hash = '') {
   const search = '?browser-case=' + ++visitNumber;
   await cdp('Page.navigate', { url: fixture.origin + '/' + search + hash });
+  // A spent virtual-time budget pauses navigation tasks too, not only app timers.
+  if (clockControlled) await advanceBrowserClock(1000);
   await until(
     () =>
       evaluate(
@@ -142,27 +169,7 @@ try {
   }, 'Chromium debugging port');
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const pageTarget = targets.find((target) => target.type === 'page');
-  socket = new WebSocket(pageTarget.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true });
-    socket.addEventListener('error', reject, { once: true });
-  });
-  socket.addEventListener('message', (event) => {
-    const response = JSON.parse(event.data);
-    const call = pending.get(response.id);
-    if (!call) return;
-    clearTimeout(call.timer);
-    pending.delete(response.id);
-    if (response.error) call.reject(new Error(JSON.stringify(response.error)));
-    else call.resolve(response.result);
-  });
-  await cdp('Page.enable');
-  await cdp('Emulation.setDeviceMetricsOverride', {
-    width: 1280,
-    height: 800,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
+  await connectTarget(pageTarget);
   const fixture = await navigationFixture({ sweeps: true });
   fixtures.push(fixture);
   await visit(fixture, '#/project/alpha/demo/one/graph');
@@ -196,16 +203,21 @@ try {
     ['demo/one'],
   );
   checks.push('Project refresh calls only its project and displays its returned check time');
+  const beforeSourceRefresh = snapshotRequests(fixture).length;
+  const projectTimes = await times();
   await click('Refresh this source');
   await until(
-    () => evaluate(`location.hash === '#/source/alpha/graph'`),
-    'source response displayed',
+    async () =>
+      snapshotRequests(fixture).length > beforeSourceRefresh &&
+      JSON.stringify(await times()) !== JSON.stringify(projectTimes),
+    'source refresh followed by updated project data',
   );
   await ready();
   assert.equal(launches(fixture)[1].url, '/api/sources/alpha/refresh');
+  assert.equal(snapshotRequests(fixture).at(-1).url, '/api/projects/alpha/demo/one/snapshot');
   await expect(
-    `document.querySelector('.scope-refresh-controls button').hidden`,
-    'Project-only refresh is hidden in All projects',
+    `location.hash === '#/project/alpha/demo/one/graph' && !document.querySelector('.scope-refresh-controls button').hidden`,
+    'Source refresh keeps the project route and project-only refresh control',
   );
   assert.deepEqual(
     fixture.upstream
@@ -214,34 +226,84 @@ try {
       .sort(),
     ['demo/one', 'demo/two'],
   );
-  checks.push('Source refresh displays All projects after success and lists the full source only');
+  checks.push('Source refresh lists the full source, then re-reads and displays the open project');
+  await shot('project-after-source-refresh');
+
+  await visit(fixture, '#/source/alpha/graph');
+  await ready();
+  const sourceTimes = await times();
+  const sourceReads = snapshotRequests(fixture).length;
+  await click('Refresh this source');
+  await until(
+    async () => JSON.stringify(await times()) !== JSON.stringify(sourceTimes),
+    'All projects source refresh displayed',
+  );
+  assert.equal(snapshotRequests(fixture).length, sourceReads);
+  await expect(
+    `location.hash === '#/source/alpha/graph' && document.querySelector('.scope-refresh-controls button').hidden`,
+    'All projects keeps its source route and displays the source refresh response directly',
+  );
   await shot('source-controls');
 
-  // Hold actual upstream work. Scope refresh waits its real 15-second response bound.
-  const releaseProject = fixture.hold({ source: 'alpha', repo: 'demo/one' });
+  // Manual refresh does not invalidate the fresh cache. A project read must
+  // follow the covering source job, rather than launching its own project job.
+  await visit(fixture, '#/project/alpha/demo/one/graph');
+  await ready();
+  const beforeSlowTimes = await times();
+  const beforeSlowReads = snapshotRequests(fixture).length;
+  const releaseProject = fixture.hold({ source: 'alpha', repo: 'demo/one' }, { invalidate: false });
   await click('Refresh this source');
   await until(
     () => fixture.responses.some((r) => r.method === 'POST' && r.body.job?.state === 'running'),
     'active source job response',
     20000,
   );
-  const beforeFollow = snapshotRequests(fixture).length;
   await until(
-    () => snapshotRequests(fixture).length > beforeFollow,
-    'two-second scope job follow-up',
+    () => snapshotRequests(fixture).length > beforeSlowReads,
+    'project re-read after the source refresh response',
     5000,
   );
+  // Advance the browser's real timers virtually so the minute cadence does not
+  // add minutes to CI. Server-side upstream gates and request handling stay real.
+  await cdp('Emulation.setVirtualTimePolicy', { policy: 'pause' });
+  const beforeFollow = snapshotRequests(fixture).length;
+  await advanceBrowserClock(59_000);
+  assert.equal(
+    snapshotRequests(fixture).length,
+    beforeFollow,
+    'No scope follow-up before a minute',
+  );
+  await advanceBrowserClock(2_000);
+  await until(
+    () => snapshotRequests(fixture).length > beforeFollow,
+    '60-second source job follow-up on the open project',
+  );
+  assert.equal(snapshotRequests(fixture).length, beforeFollow + 1);
+  assert.ok(
+    snapshotRequests(fixture)
+      .slice(beforeSlowReads)
+      .every((request) => request.url === '/api/projects/alpha/demo/one/snapshot'),
+  );
   checks.push(
-    'A bounded source refresh response with an active job follows the normal scope-read lane',
+    'A source refresh exceeding the POST wait keeps polling the open project every 60 seconds with periodic checks disabled',
   );
   releaseProject();
+  await advanceBrowserClock(60_000);
   await until(
-    () =>
-      evaluate(
+    async () =>
+      (await evaluate(
         `Array.from(document.querySelectorAll('.scope-freshness .scope-repository')).every(r => r.dataset.state === 'fresh')`,
-      ),
-    'source job completed',
+      )) && JSON.stringify(await times()) !== JSON.stringify(beforeSlowTimes),
+    'source job completed and refreshed observations displayed in the project',
   );
+  await expect(
+    `location.hash === '#/project/alpha/demo/one/graph'`,
+    'A slow source refresh keeps the project route through completion',
+  );
+  const settledProjectReads = snapshotRequests(fixture).length;
+  await advanceBrowserClock(61_000);
+  assert.equal(snapshotRequests(fixture).length, settledProjectReads);
+  checks.push('Project progress polling stops after the covering source job finishes');
 
   const releaseSweep = fixture.hold({ source: 'beta', repo: 'demo/three' });
   await click('Refresh all sources');
@@ -284,21 +346,18 @@ try {
   }
   await shot('sweep-running-joined');
   const activeReads = sweepReads(fixture).length;
-  await sleep(2200);
-  assert.ok(sweepReads(fixture).length > activeReads, 'Active sweep must be followed');
-  const recent = sweepReads(fixture).slice(-2);
-  assert.ok(
-    recent[1].at - recent[0].at >= 1900,
-    'Sweep polling must not run faster than two seconds',
-  );
-  checks.push('Running sweep is followed every two seconds through GET /api/refresh');
+  await advanceBrowserClock(59_999);
+  assert.equal(sweepReads(fixture).length, activeReads, 'No sweep follow-up before a minute');
+  await advanceBrowserClock(1);
+  await until(() => sweepReads(fixture).length === activeReads + 1, '60-second sweep follow-up');
+  checks.push('Running sweep is followed every 60 seconds through GET /api/refresh');
 
   const other = await cdp('Target.createTarget', { url: 'about:blank' });
   await cdp('Target.activateTarget', { targetId: other.targetId });
   await until(() => evaluate(`document.visibilityState === 'hidden'`), 'real tab hidden');
   await sleep(100);
   const hiddenReads = sweepReads(fixture).length;
-  await sleep(2200);
+  await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, hiddenReads);
   releaseSweep();
   await until(() => fixture.sweep().state === 'completed', 'sweep completes while tab hidden');
@@ -313,7 +372,7 @@ try {
   );
   await cdp('Target.closeTarget', { targetId: other.targetId });
   const completedReads = sweepReads(fixture).length;
-  await sleep(2200);
+  await advanceBrowserClock(120_000);
   assert.equal(sweepReads(fixture).length, completedReads);
   checks.push('Real hidden tab stops sweep polling; return shows completion, then polling stops');
   await shot('sweep-completed');
@@ -363,9 +422,14 @@ try {
   await click('Refresh all sources');
   await until(() => sweepReads(conflicted).length > 0, 'conflicted-scope sweep read');
   const conflictReads = sweepReads(conflicted).length;
-  await sleep(2200);
-  assert.ok(sweepReads(conflicted).length > conflictReads);
+  await advanceBrowserClock(61_000);
+  await until(
+    () => sweepReads(conflicted).length === conflictReads + 1,
+    'conflicted-scope minute follow-up',
+  );
   releaseHealthy();
+  await until(() => conflicted.sweep().state === 'partial', 'conflicted-scope upstream completes');
+  await advanceBrowserClock(60_000);
   await until(
     () =>
       evaluate(`document.querySelector('.scope-sweep-summary')?.textContent.startsWith('Partial')`),
@@ -385,6 +449,13 @@ try {
 
   const authenticated = await navigationFixture({ sweeps: true, login: true });
   fixtures.push(authenticated);
+  // The login flow redirects across documents. Give it a fresh target with the
+  // normal browser clock, independent of the paused polling scenarios above.
+  const loginTarget = await cdp('Target.createTarget', { url: 'about:blank' });
+  const loginTargets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  socket.close();
+  await connectTarget(loginTargets.find((target) => target.id === loginTarget.targetId));
+  await cdp('Target.closeTarget', { targetId: pageTarget.id });
   await cdp('Page.navigate', { url: authenticated.origin + '/login' });
   await until(
     () => evaluate(`Boolean(document.querySelector('input[name="username"]'))`),
@@ -406,10 +477,15 @@ try {
     () => authenticated.responses.some((r) => r.method === 'POST'),
     'authenticated project success',
   );
+  const authenticatedReads = snapshotRequests(authenticated).length;
   await click('Refresh this source');
   await until(
-    () => evaluate(`location.hash === '#/source/alpha/graph'`),
-    'authenticated source success',
+    () => snapshotRequests(authenticated).length > authenticatedReads,
+    'authenticated project re-read after source refresh',
+  );
+  await expect(
+    `location.hash === '#/project/alpha/demo/one/graph'`,
+    'Authenticated source refresh keeps the open project route',
   );
   await click('Refresh all sources');
   await until(

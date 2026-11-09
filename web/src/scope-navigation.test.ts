@@ -26,11 +26,23 @@ function response(scope = project, active = false): ScopeResponse {
       : null,
   };
 }
-function setup(read = vi.fn(async (scope: Scope) => response(scope))) {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+function setup(
+  read = vi.fn(async (scope: Scope) => response(scope)),
+  refresh?: (scope: Scope) => Promise<ScopeResponse>,
+) {
   vi.useFakeTimers();
   vi.setSystemTime(10_000);
   const store = new Store({ ...INITIAL_STATE, route: routeForScope(project, DEFAULT_ROUTE) });
-  return { store, read, navigation: createScopeNavigation(store, read) };
+  return { store, read, navigation: createScopeNavigation(store, read, refresh) };
 }
 afterEach(() => vi.useRealTimers());
 
@@ -44,37 +56,44 @@ describe('visible scope requests', () => {
     await vi.advanceTimersByTimeAsync(120_000);
     expect(read.mock.calls).toEqual([[project]]);
   });
-  it('follows active jobs every two seconds and stops after completion', async () => {
-    const read = vi.fn(async (scope: Scope) => response(scope, read.mock.calls.length < 3));
-    const { navigation } = setup(read);
-    navigation.open(project);
-    await vi.advanceTimersByTimeAsync(1999);
-    expect(read).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(read).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(read).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(read).toHaveBeenCalledTimes(3);
-  });
+  it.each(['queued', 'running'] as const)(
+    'follows %s jobs every 60 seconds and stops after completion',
+    async (state) => {
+      const read = vi.fn(async (scope: Scope) => {
+        const result = response(scope, read.mock.calls.length < 3);
+        if (result.job) result.job.state = state;
+        return result;
+      });
+      const { navigation } = setup(read);
+      navigation.open(project);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(read).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(read).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(read).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(read).toHaveBeenCalledTimes(3);
+    },
+  );
   it('pauses job and periodic checks while hidden and reads once on return', async () => {
     const { navigation, read } = setup(vi.fn(async (scope: Scope) => response(scope, true)));
-    navigation.setRefreshMinutes(0.1);
+    navigation.setRefreshMinutes(1);
     navigation.setVisible(false);
     navigation.open(project);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).not.toHaveBeenCalled();
     navigation.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(1);
     navigation.setVisible(false);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).toHaveBeenCalledTimes(1);
     navigation.setVisible(true);
     navigation.setVisible(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenCalledTimes(3);
   });
   it('rechecks the open scope periodically without polling other projects', async () => {
@@ -105,7 +124,7 @@ describe('visible scope requests', () => {
     await navigation.check();
     navigation.setVisible(false);
     navigation.setVisible(true);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(read).toHaveBeenCalledTimes(1);
     finish(response());
     await vi.advanceTimersByTimeAsync(0);
@@ -133,7 +152,7 @@ describe('visible scope requests', () => {
     expect(store.get().status).toBe('loading');
     expect(store.get().job?.state).toBe('running');
     expect(store.get().error).toBeNull();
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenCalledTimes(4);
   });
   it('reports API failures and can recover with a visible-tab check', async () => {
@@ -150,6 +169,102 @@ describe('visible scope requests', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(store.get().status).toBe('loading');
   });
+});
+
+describe('source refresh route preservation', () => {
+  const projectSource: Scope = { kind: 'source', source: project.source };
+
+  it('posts the source, then reads the project without changing its route or showing source data', async () => {
+    const posted = deferred<ScopeResponse>();
+    const reread = deferred<ScopeResponse>();
+    const read = vi.fn(async (scope: Scope) => response(scope));
+    const refresh = vi.fn(() => posted.promise);
+    const { store, navigation } = setup(read, refresh);
+    const route = { ...store.get().route, tab: 'order' as const, q: 'label:bug' };
+    store.dispatch({ type: 'route', route });
+    navigation.open(project);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = store.get().freshness;
+    read.mockImplementationOnce(() => reread.promise);
+
+    const pending = navigation.refresh(projectSource);
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(projectSource);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(store.get().route).toBe(route);
+    posted.resolve(response(projectSource));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.mock.calls).toEqual([[project], [project]]);
+    expect(store.get().route).toBe(route);
+    expect(store.get().freshness).toBe(before);
+
+    const refreshed = response(project, true);
+    refreshed.freshness.computedAt = '2026-11-08T20:00:00Z';
+    reread.resolve(refreshed);
+    await pending;
+    expect(store.get().route).toBe(route);
+    expect(store.get().freshness).toBe(refreshed.freshness);
+    expect(store.get().job?.scope).toEqual(project);
+  });
+
+  it('uses the source refresh response directly when All projects is already open', async () => {
+    const refreshed = response(source, true);
+    const refresh = vi.fn(async () => refreshed);
+    const { store, read, navigation } = setup(undefined, refresh);
+    const route = routeForScope(source, DEFAULT_ROUTE);
+    store.dispatch({ type: 'route', route });
+    navigation.open(source);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = store.get().route;
+    await navigation.refresh(source);
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(source);
+    expect(read.mock.calls).toEqual([[source]]);
+    expect(store.get().route).toBe(before);
+    expect(store.get().route).toEqual(route);
+    expect(store.get().freshness).toBe(refreshed.freshness);
+    expect(store.get().job?.scope).toEqual(source);
+  });
+
+  it('does not start an obsolete project read after navigating away and back during the POST', async () => {
+    const posted = deferred<ScopeResponse>();
+    const { store, read, navigation } = setup(undefined, () => posted.promise);
+    navigation.open(project);
+    await vi.advanceTimersByTimeAsync(0);
+    const pending = navigation.refresh(projectSource);
+    for (const next of [source, project]) {
+      store.dispatch({ type: 'route', route: routeForScope(next, store.get().route) });
+      navigation.open(next);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    const before = store.get().freshness;
+    posted.resolve(response(projectSource));
+    await pending;
+    expect(read.mock.calls).toEqual([[project], [source], [project]]);
+    expect(store.get().freshness).toBe(before);
+    expect(scopeFromRoute(store.get().route)).toEqual(project);
+  });
+
+  it.each(['success', 'failure'])(
+    'ignores an obsolete follow-up project read %s after newer navigation',
+    async (outcome) => {
+      const reread = deferred<ScopeResponse>();
+      const { store, read, navigation } = setup(undefined, async () => response(projectSource));
+      navigation.open(project);
+      await vi.advanceTimersByTimeAsync(0);
+      read.mockImplementationOnce(() => reread.promise);
+      const pending = navigation.refresh(projectSource);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read).toHaveBeenCalledTimes(2);
+      store.dispatch({ type: 'route', route: routeForScope(source, store.get().route) });
+      navigation.open(source);
+      await vi.advanceTimersByTimeAsync(0);
+      const before = store.get();
+      if (outcome === 'success') reread.resolve(response(project));
+      else reread.reject(new ApiError('obsolete project error', 404));
+      await pending;
+      expect(scopeFromRoute(store.get().route)).toEqual(source);
+      expect(store.get()).toBe(before);
+    },
+  );
 });
 
 describe('scope routing and panels', () => {

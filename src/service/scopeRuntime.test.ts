@@ -50,6 +50,52 @@ function runtime(...args: Parameters<typeof createScopeRuntime>) {
 }
 
 describe('shared scope server runtime', () => {
+  it.each(['interactive', 'export'])(
+    'uses the configured closed-issue TTL for %s refreshes',
+    async (lane) => {
+      const c = config();
+      c.cache.ttlSeconds = 7;
+      c.refresh.requestsPerMinute = 1000;
+      c.sources[0]!.planning!.dependencies.body = true;
+      const raw = {
+        number: 1,
+        title: 'Needs a closed issue',
+        state: 'open',
+        html_url: 'https://github.com/acme/api/issues/1',
+        body: 'Depends on other/lib#7',
+        labels: [],
+        assignees: [],
+        milestone: null,
+      };
+      const fetch = vi.fn(
+        async (input: string | URL | Request) =>
+          new Response(
+            JSON.stringify(
+              String(input).includes('/repos/other/lib/issues/7')
+                ? { ...raw, number: 7, state: 'closed', body: '' }
+                : [raw],
+            ),
+          ),
+      );
+      const r = runtime(c, { fetch });
+      const refresh = () =>
+        lane === 'interactive'
+          ? r.reads.refresh(project())
+          : r.exportRead(project(), { refresh: true });
+      const lookupCount = () =>
+        fetch.mock.calls.filter(([input]) => String(input).includes('/repos/other/lib/issues/7'))
+          .length;
+      await refresh();
+      expect(lookupCount()).toBe(1);
+      vi.setSystemTime(Date.now() + 7000);
+      await refresh();
+      expect(lookupCount()).toBe(1);
+      vi.setSystemTime(Date.now() + 1);
+      await refresh();
+      expect(lookupCount()).toBe(2);
+    },
+  );
+
   it('shares one provider and GitHub conditional cache across named views and scope reads', async () => {
     const calls: Headers[] = [];
     const c = config();

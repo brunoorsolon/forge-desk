@@ -189,8 +189,15 @@ export class ScopeReadService {
     // Prune on the first settled read instead of retiring that token mid-flight.
     if (!active)
       this.options.store.prune({ sources: this.options.sources.map((s) => s.catalog) }, references);
+    // A source job refreshes every project it contains. Keep it visible on a
+    // project read after a bounded refresh POST so the client follows progress
+    // until the refreshed observations settle, even without periodic polling.
+    const coveringScopes: Scope[] =
+      scope.kind === 'project' ? [scope, { kind: 'source', source: scope.source }] : [scope];
     const job =
-      this.jobLanes.map((jobs) => jobs.active(scope)).find((job) => job !== null)?.status ?? null;
+      coveringScopes
+        .flatMap((current) => this.jobLanes.map((jobs) => jobs.active(current)))
+        .find((job) => job !== null)?.status ?? null;
     const status = revalidation?.status;
     const hideCached = status && status.finishedAt === null;
     const outside = result.referencedOutsideIssues.map((key) =>
