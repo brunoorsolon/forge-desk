@@ -55,6 +55,7 @@ interface Job {
   status: ScopeRefreshJobStatus;
   units: Set<Unit>;
   handle: ScopeRefreshJob;
+  repositories: Promise<void>;
 }
 
 interface Unit {
@@ -137,7 +138,7 @@ export class ScopeRefreshJobs {
   /** Repeated opens/checks/refreshes join the same queued or running scope job. */
   refresh(
     requested: Scope,
-    options: { priority?: AdmissionPriority; trigger?: RefreshTrigger } = {},
+    options: { priority?: AdmissionPriority; trigger?: RefreshTrigger; explicit?: boolean } = {},
   ): ScopeRefreshJob {
     const scope = this.canonicalScope(requested);
     const source = this.sources.get(scope.source);
@@ -168,6 +169,17 @@ export class ScopeRefreshJobs {
         existing.status.priority = priority;
         for (const unit of existing.units) this.promote(source, unit);
       }
+      const repositories = [...existing.units].filter((unit) => unit.status.kind === 'repository');
+      if (
+        options.explicit &&
+        (existing.status.state === 'queued' || existing.status.state === 'running') &&
+        repositories.length > 0 &&
+        repositories.every((unit) => ['checked', 'failed'].includes(unit.status.state))
+      ) {
+        // Queue immediately, rather than waiting behind the current lookup batch.
+        // Pending repository units also coalesce repeated explicit refreshes.
+        existing.repositories = this.listRepositories(source, existing);
+      }
       return existing.handle;
     }
     const status: ScopeRefreshJobStatus = {
@@ -183,7 +195,13 @@ export class ScopeRefreshJobs {
       error: null,
       units: [],
     };
-    const job: Job = { status, units: new Set(), handle: undefined! };
+    const job: Job = {
+      status,
+      units: new Set(),
+      handle: undefined!,
+      repositories: undefined!,
+    };
+    job.repositories = this.listRepositories(source, job);
     const completion = (async () => {
       try {
         await this.runJob(source, job);
@@ -213,76 +231,102 @@ export class ScopeRefreshJobs {
     return job.handle;
   }
 
-  private async runJob(source: SourceState, job: Job): Promise<void> {
+  private projects(source: SourceState, job: Job) {
     const scope = job.status.scope;
-    const projects = source.catalog.projects
+    return source.catalog.projects
       .filter((p) => scope.kind === 'source' || p.repo.toLowerCase() === scope.repo)
       .map((p) => ({ source: scope.source, repo: p.repo.toLowerCase() }));
+  }
+
+  private async listRepositories(source: SourceState, job: Job): Promise<void> {
+    for (const unit of job.units) {
+      if (unit.status.kind === 'repository') {
+        job.units.delete(unit);
+        unit.jobs.delete(job);
+      }
+    }
     await Promise.all(
-      projects.map((project) =>
+      this.projects(source, job).map((project) =>
         this.unit(source, job, `repository:${project.repo}`, {
           kind: 'repository',
           project,
         }),
       ),
     );
-    // Read the store, not the raw response: failed/weaker reads retain last-good
-    // relationships, and a newer observation may have superseded this job's read.
-    const nodes = new Map<IssueKey, Issue>();
-    for (const project of projects) {
-      for (const issue of this.options.store.readRepository(project)?.observation.issues ?? []) {
-        if (issue.state === 'open') nodes.set(issue.key, issue);
-      }
-    }
-    const lookups = new Map<IssueKey, OutsideIssueLookup>();
+  }
+
+  private async runJob(source: SourceState, job: Job): Promise<void> {
+    const scope = job.status.scope;
     const settings = {
       dependencies: source.source.planning!.dependencies,
       webHosts:
         source.source.webUrl === '' ? [] : [new URL(source.source.webUrl).host.toLowerCase()],
     };
     const limit = createLimiter(LOOKUP_CONCURRENCY);
+    const attempted = new Set<IssueKey>();
     let fetches = 0;
     let capped = false;
     while (true) {
-      // Recheck newly discovered references against the shared store each level:
-      // another job may have verified a closed prerequisite during the last batch.
-      const pending = pendingOutsideIssueKeys([...nodes.values()], lookups, settings).filter(
-        (key) => {
-          const reused = reusableClosedIssue(
-            this.options.store.readOutsideIssue({ source: scope.source, key }),
-            this.options.cache.ttlSeconds,
-            this.now().getTime(),
-          );
+      const repositories = job.repositories;
+      await repositories;
+      if (repositories !== job.repositories) continue;
+      // Rebuild from the latest listing after an explicit recheck. Do not traverse
+      // dependencies removed by that listing or fetch the same outside issue twice.
+      const nodes = new Map<IssueKey, Issue>();
+      for (const project of this.projects(source, job)) {
+        for (const issue of this.options.store.readRepository(project)?.observation.issues ?? []) {
+          if (issue.state === 'open') nodes.set(issue.key, issue);
+        }
+      }
+      const lookups = new Map<IssueKey, OutsideIssueLookup>();
+      capped = false;
+      while (repositories === job.repositories) {
+        // Recheck newly discovered references against the shared store each level:
+        // another job may have verified a closed prerequisite during the last batch.
+        const pending = pendingOutsideIssueKeys([...nodes.values()], lookups, settings);
+        if (pending.length === 0) break;
+        const uncached = pending.filter((key) => {
+          const record = this.options.store.readOutsideIssue({ source: scope.source, key });
+          const reused = attempted.has(key)
+            ? (record?.observation.result ?? {
+                status: 'unresolved' as const,
+                error: 'Issue lookup failed',
+              })
+            : reusableClosedIssue(record, this.options.cache.ttlSeconds, this.now().getTime());
           if (reused) {
             lookups.set(key, reused);
+            if (reused.status === 'found' && reused.issue.state === 'open')
+              nodes.set(key, reused.issue);
             return false;
           }
           return true;
-        },
-      );
-      if (pending.length === 0) break;
-      const keys = pending.slice(0, MAX_EXTERNAL_FETCHES - fetches);
-      capped ||= keys.length < pending.length;
-      if (keys.length === 0) break;
-      fetches += keys.length;
-      await Promise.all(
-        keys.map((key) =>
-          limit(() =>
-            this.unit(source, job, `outside-issue:${key}`, {
-              kind: 'outside-issue',
-              source: scope.source,
-              key,
-            }),
+        });
+        if (uncached.length === 0) continue;
+        const keys = uncached.slice(0, MAX_EXTERNAL_FETCHES - fetches);
+        capped ||= keys.length < uncached.length;
+        if (keys.length === 0) break;
+        fetches += keys.length;
+        await Promise.all(
+          keys.map((key) =>
+            limit(() =>
+              this.unit(source, job, `outside-issue:${key}`, {
+                kind: 'outside-issue',
+                source: scope.source,
+                key,
+              }),
+            ),
           ),
-        ),
-      );
-      for (const key of keys) {
-        const result = this.options.store.readOutsideIssue({ source: scope.source, key })
-          ?.observation.result;
-        lookups.set(key, result ?? { status: 'unresolved', error: 'Issue lookup failed' });
-        if (result?.status === 'found' && result.issue.state === 'open')
-          nodes.set(key, result.issue);
+        );
+        for (const key of keys) {
+          attempted.add(key);
+          const result = this.options.store.readOutsideIssue({ source: scope.source, key })
+            ?.observation.result;
+          lookups.set(key, result ?? { status: 'unresolved', error: 'Issue lookup failed' });
+          if (result?.status === 'found' && result.issue.state === 'open')
+            nodes.set(key, result.issue);
+        }
       }
+      if (repositories === job.repositories) break;
     }
     const units = [...job.units];
     const failures = units.filter((unit) => unit.status.state === 'failed');
@@ -307,6 +351,8 @@ export class ScopeRefreshJobs {
       | { kind: 'outside-issue'; source: string; key: IssueKey },
   ): Promise<void> {
     let unit = source.units.get(key);
+    if (unit && (unit.status.state === 'checked' || unit.status.state === 'failed'))
+      unit = undefined;
     if (!unit) {
       unit = {
         key,
@@ -331,7 +377,9 @@ export class ScopeRefreshJobs {
       const created = unit;
       unit.completion = Promise.resolve()
         .then(() => this.runUnit(source, created))
-        .finally(() => source.units.delete(key));
+        .finally(() => {
+          if (source.units.get(key) === created) source.units.delete(key);
+        });
     }
     job.units.add(unit);
     unit.jobs.add(job);

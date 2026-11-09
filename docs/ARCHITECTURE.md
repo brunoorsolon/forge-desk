@@ -1320,6 +1320,12 @@ missing from the listing still need a lookup. Other closed observations keep the
 check time, and unknown, open, failed, invalidated and expired observations still require
 individual lookups. Zero TTL continues to require targeted revalidation even after a successful
 same-repository listing.
+Explicit refreshes from `ScopeReadService.refresh` join the existing scope job, but queue a new
+repository pass when all of its repository units have already been checked or failed. Pending
+repository work and non-explicit joins are still coalesced. The job waits for the new pass and
+traverses dependencies from its latest listings without repeating outside issues already
+attempted in that job or resetting its lookup budget. Job identity and original start time stay
+unchanged, and the read service retains its 15-second HTTP wait limit.
 The queue's fetch context keeps provider-level in-flight
 coalescing and provider concurrency lanes separate from ordinary reads, so paced work cannot
 bypass admission by joining an unpaced request.

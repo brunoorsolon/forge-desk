@@ -712,6 +712,80 @@ describe('cache-first scope reads', () => {
     expect((await second).job).toBeNull();
   });
 
+  it.each(['project', 'source'] as const)(
+    'explicitly re-lists a %s during lookup work while ordinary reads only join',
+    async (kind) => {
+      const f = fixture();
+      const lookup = gate();
+      const recheck = gate();
+      const counts = new Map<string, number>();
+      f.list.mockImplementation(async ({ repo }) => {
+        const count = (counts.get(repo) ?? 0) + 1;
+        counts.set(repo, count);
+        if (count > 1) await recheck.promise;
+        return listing([issue(`o/${repo}#${count}`, 'Depends on external/repo#1')]);
+      });
+      f.lookup.mockImplementation(async () => {
+        await lookup.promise;
+        return issue('external/repo#1', '', 'closed');
+      });
+      const scope = kind === 'project' ? project() : all;
+      const background = f.jobs.refresh(scope);
+      await tick();
+      const ordinary = await f.service.get(scope);
+      expect(ordinary.job?.id).toBe(background.status.id);
+      expect([...counts.values()]).toEqual(kind === 'project' ? [1] : [1, 1]);
+      let settled = false;
+      const explicit = f.service.refresh(scope).then((response) => {
+        settled = true;
+        return response;
+      });
+      await tick();
+      const countsWhileLookupBlocked = [...counts.values()];
+      lookup.resolve();
+      await tick();
+      const settledBeforeRecheck = settled;
+      recheck.resolve();
+      const refreshed = await explicit;
+      expect(countsWhileLookupBlocked).toEqual(kind === 'project' ? [2] : [2, 2]);
+      expect(settledBeforeRecheck).toBe(false);
+      expect(refreshed.job).toBeNull();
+      expect(refreshed.snapshot?.plan.nodes.map((node) => node.key)).toEqual(
+        kind === 'project' ? ['o/a#2'] : ['o/a#2', 'o/b#2'],
+      );
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps a re-list pending after the bounded explicit HTTP wait expires', async () => {
+    const f = fixture();
+    const lookup = gate();
+    const recheck = gate();
+    f.list.mockResolvedValueOnce(listing([issue('o/a#1', 'Depends on external/repo#1')]));
+    f.list.mockImplementation(async () => {
+      await recheck.promise;
+      return listing([issue('o/a#2')]);
+    });
+    f.lookup.mockImplementation(async () => {
+      await lookup.promise;
+      return issue('external/repo#1', '', 'closed');
+    });
+    const background = f.jobs.refresh(project());
+    await tick();
+    const explicit = f.service.refresh(project());
+    await tick();
+    lookup.resolve();
+    await vi.advanceTimersByTimeAsync(15_000);
+    const response = await explicit;
+    const pendingRepository = background.status.units.find((unit) => unit.kind === 'repository');
+    recheck.resolve();
+    await background.completion;
+    expect(response.job?.id).toBe(background.status.id);
+    expect(pendingRepository?.state).toBe('checking');
+    expect((await f.service.get(project())).snapshot?.plan.nodes[0]?.key).toBe('o/a#2');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('revalidates every zero-TTL read, joins concurrent work, and never falls back after failure', async () => {
     const f = fixture(0);
     f.seed('o/a', [issue('o/a#99')]);
