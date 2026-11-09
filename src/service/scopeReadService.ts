@@ -56,7 +56,10 @@ export class ScopeReadService {
     }
     let response = this.response(scope, source);
     if (!uncached && !options.refresh && !this.needsRefresh(response, source)) return response;
-    const job = this.options.jobs.refresh(scope, { priority: 'interactive' });
+    const job = this.options.jobs.refresh(scope, {
+      priority: 'interactive',
+      explicit: options.refresh,
+    });
     if (uncached || options.refresh || response.snapshot === null) {
       await this.wait(job);
       if (uncached && source.queue.status.delayedUntil !== null) {

@@ -529,6 +529,197 @@ describe('scope refresh jobs', () => {
     expect(f.calls).toHaveLength(5);
   });
 
+  it.each(['project', 'source'] as const)(
+    're-lists an explicitly joined %s before settling and resolves its new dependencies',
+    async (kind) => {
+      const lookup = gate();
+      const recheck = gate();
+      const counts = new Map<string, number>();
+      const f = fixture(async (path) => {
+        if (path.includes('/issues/')) {
+          if (path.endsWith('/1')) await lookup.promise;
+          return json(
+            issue(
+              `other/lib#${path.split('/').at(-1)}`,
+              path.endsWith('/1') ? 'Depends on other/lib#99' : '',
+              'open',
+            ),
+          );
+        }
+        const count = (counts.get(path) ?? 0) + 1;
+        counts.set(path, count);
+        if (count > 1) await recheck.promise;
+        return json(listing([issue(`${path.slice(7)}#${count}`, `Depends on other/lib#${count}`)]));
+      });
+      const { jobs, store } = service(f.input);
+      const scope = kind === 'project' ? project() : sourceScope();
+      const job = jobs.refresh(scope, { priority: 'sweep' });
+      await tick();
+      const startedAt = job.status.startedAt;
+      vi.setSystemTime(Date.now() + 120_000);
+      expect(jobs.refresh(scope, { explicit: true })).toBe(job);
+      expect(jobs.refresh(scope, { explicit: true })).toBe(job);
+      let settled = false;
+      void job.completion.then(() => {
+        settled = true;
+      });
+      await tick();
+      const countsWhileLookupBlocked = [...counts.values()];
+      expect(job.status.startedAt).toBe(startedAt);
+      expect(job.status.priority).toBe('interactive');
+      expect(job.status.trigger).toBe('scheduled');
+      lookup.resolve();
+      await tick();
+      const settledBeforeRecheck = settled;
+      recheck.resolve();
+      const result = await job.completion;
+      expect(countsWhileLookupBlocked).toEqual(kind === 'project' ? [2] : [2, 2]);
+      expect(settledBeforeRecheck).toBe(false);
+      expect(result.state).toBe('completed');
+      expect(result.units.filter((unit) => unit.kind === 'repository')).toHaveLength(
+        kind === 'project' ? 1 : 2,
+      );
+      expect(
+        store.readRepository({ source: 'gh', repo: 'owner/a' })?.observation.issues?.[0]?.key,
+      ).toBe('owner/a#2');
+      expect(
+        f.calls.filter((call) => call.path.includes('/issues/')).map((call) => call.path),
+      ).toEqual(['/repos/other/lib/issues/1', '/repos/other/lib/issues/2']);
+    },
+  );
+
+  it('does not re-list for non-explicit joins during outside-issue lookups', async () => {
+    const lookup = gate();
+    const f = fixture(async (path) => {
+      if (!path.includes('/issues/'))
+        return json(listing([issue('owner/a#1', 'Depends on other/lib#1')]));
+      await lookup.promise;
+      return json(issue('other/lib#1', '', 'closed'));
+    });
+    const { jobs } = service(f.input);
+    const job = jobs.refresh(project());
+    await tick();
+    expect(jobs.refresh(project())).toBe(job);
+    expect(jobs.refresh(project(), { explicit: false })).toBe(job);
+    lookup.resolve();
+    await job.completion;
+    expect(f.calls.map((call) => call.path)).toEqual([
+      '/repos/owner/a',
+      '/repos/other/lib/issues/1',
+    ]);
+  });
+
+  it('does not re-list an explicit source join while any repository is pending', async () => {
+    const pending = gate();
+    const f = fixture(async (path) => {
+      if (path.endsWith('/b')) await pending.promise;
+      return json(listing());
+    });
+    const { jobs } = service(f.input);
+    const job = jobs.refresh(sourceScope());
+    expect(jobs.refresh(sourceScope(), { explicit: true })).toBe(job);
+    await tick();
+    expect(job.status.units.map((unit) => unit.state)).toEqual(['checked', 'checking']);
+    expect(jobs.refresh(sourceScope(), { explicit: true })).toBe(job);
+    pending.resolve();
+    await job.completion;
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it.each([false, true])(
+    'rechecks a failed listing and reports the latest failure=%s',
+    async (failsAgain) => {
+      const lookup = gate();
+      let listings = 0;
+      const f = fixture(async (path) => {
+        if (!path.includes('/issues/')) {
+          listings++;
+          if (listings === 1 || failsAgain) return json({ message: 'offline' }, { status: 500 });
+          return json(listing([issue('owner/a#2')]));
+        }
+        await lookup.promise;
+        return json(issue('other/lib#1', '', 'closed'));
+      });
+      const { jobs, store } = service(f.input);
+      store.writeRepository(
+        store.beginRepositoryRead({ source: 'gh', repo: 'owner/a' }),
+        listing([issue('owner/a#1', 'Depends on other/lib#1')]),
+      );
+      const job = jobs.refresh(project());
+      await tick();
+      expect(job.status.units[0]?.state).toBe('failed');
+      expect(jobs.refresh(project(), { explicit: true })).toBe(job);
+      await tick();
+      expect(listings).toBe(2);
+      lookup.resolve();
+      const result = await job.completion;
+      expect(result.state).toBe(failsAgain ? 'partial' : 'completed');
+      expect(result.units.filter((unit) => unit.kind === 'repository')).toMatchObject([
+        { state: failsAgain ? 'failed' : 'checked' },
+      ]);
+      expect(jobs.lastCompleted(project())?.unitKeys).toEqual([
+        'outside-issue:other/lib#1',
+        'repository:owner/a',
+      ]);
+    },
+  );
+
+  it('rechecks a second explicit lookup-phase join without repeating outside lookups', async () => {
+    const lookup = gate();
+    let listings = 0;
+    const f = fixture(async (path) => {
+      if (!path.includes('/issues/')) {
+        listings++;
+        return json(listing([issue('owner/a#1', 'Depends on other/lib#1')]));
+      }
+      await lookup.promise;
+      return json(issue('other/lib#1', '', 'closed'));
+    });
+    const { jobs } = service(f.input);
+    const job = jobs.refresh(project());
+    await tick();
+    jobs.refresh(project(), { explicit: true });
+    await tick();
+    jobs.refresh(project(), { explicit: true });
+    await tick();
+    expect(listings).toBe(3);
+    lookup.resolve();
+    await job.completion;
+    expect(f.calls.filter((call) => call.path.includes('/issues/'))).toHaveLength(1);
+  });
+
+  it('shares pending re-list units between explicitly joined project and source jobs', async () => {
+    const lookup = gate();
+    const recheck = gate();
+    const counts = new Map<string, number>();
+    const f = fixture(async (path) => {
+      if (path.includes('/issues/')) {
+        await lookup.promise;
+        return json(issue('other/lib#1', '', 'closed'));
+      }
+      const count = (counts.get(path) ?? 0) + 1;
+      counts.set(path, count);
+      if (count > 1) await recheck.promise;
+      return json(listing([issue(`${path.slice(7)}#1`, 'Depends on other/lib#1')]));
+    });
+    const { jobs } = service(f.input);
+    const all = jobs.refresh(sourceScope());
+    const one = jobs.refresh(project());
+    await tick();
+    jobs.refresh(sourceScope(), { explicit: true });
+    jobs.refresh(project(), { explicit: true });
+    await tick();
+    const countsWhileBlocked = [...counts.values()];
+    lookup.resolve();
+    recheck.resolve();
+    const results = await Promise.all([all.completion, one.completion]);
+    expect(countsWhileBlocked).toEqual([2, 2]);
+    expect(results.map((result) => result.state)).toEqual(['completed', 'completed']);
+    expect(f.calls.filter((call) => call.path.includes('/issues/'))).toHaveLength(1);
+    expect(one.status.units.filter((unit) => unit.kind === 'repository')).toHaveLength(1);
+    expect(all.status.units.filter((unit) => unit.kind === 'repository')).toHaveLength(2);
+  });
+
   it('promotes an already queued sweep job and shared units ahead of queued sweep work', async () => {
     const blocker = gate();
     const f = fixture(
