@@ -99,6 +99,57 @@ afterEach(async () => {
 });
 
 describe('cache-first scope reads', () => {
+  it.each(['project', 'source'] as const)(
+    'keeps same-repository closed prerequisites satisfied after a %s listing refresh',
+    async (scopeKind) => {
+      const f = fixture();
+      f.list.mockImplementation(async ({ repo }) =>
+        listing(repo === 'a' ? [issue('o/a#1', 'Depends on #2')] : []),
+      );
+      f.lookup.mockResolvedValue(issue('o/a#2', '', 'closed'));
+      const scope = scopeKind === 'project' ? project() : all;
+      await f.service.refresh(scope);
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 60_001);
+      f.store.invalidateRepository({ source: 'gh', repo: 'o/a' });
+      f.store.fail(f.store.beginOutsideIssueRead({ source: 'gh', key: 'o/a#2' }), 'Prior failure');
+      const refreshed = await f.service.refresh(scope);
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      expect(refreshed.snapshot?.plan.nodes).toMatchObject([{ key: 'o/a#1', status: 'ready' }]);
+      expect(refreshed.snapshot?.plan.warnings).toEqual([]);
+      expect(refreshed.freshness.outsideIssues).toMatchObject({ count: 1, provisionalCount: 0 });
+      expect(
+        f.store.readOutsideIssue({ source: 'gh', key: 'o/a#2' })?.observation.lastCheckedAt,
+      ).toBe(new Date().toISOString());
+    },
+  );
+
+  it('detects a previously closed prerequisite reopened in the new open listing', async () => {
+    const f = fixture();
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on #2')]));
+    f.lookup.mockResolvedValue(issue('o/a#2', '', 'closed'));
+    await f.service.refresh(project());
+    vi.setSystemTime(Date.now() + 60_001);
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on #2'), issue('o/a#2')]));
+    const refreshed = await f.service.refresh(project());
+    expect(f.lookup).toHaveBeenCalledTimes(1);
+    expect(refreshed.snapshot?.plan.nodes.find((node) => node.key === 'o/a#1')?.status).toBe(
+      'blocked',
+    );
+    expect(refreshed.snapshot?.plan.nodes.find((node) => node.key === 'o/a#2')?.status).toBe(
+      'ready',
+    );
+  });
+
+  it('preserves zero-TTL targeted revalidation after the same-repository listing succeeds', async () => {
+    const f = fixture(0);
+    f.list.mockResolvedValue(listing([issue('o/a#1', 'Depends on #2')]));
+    f.lookup.mockResolvedValue(issue('o/a#2', '', 'closed'));
+    await f.service.refresh(project());
+    await f.service.refresh(project());
+    expect(f.lookup).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['closed', 'open', 'missing', 'failed', 'partial'] as const)(
     'rechecks sibling context after a newer listing replaces its lookup, then paces the %s result',
     async (outcome) => {

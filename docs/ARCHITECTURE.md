@@ -1311,8 +1311,15 @@ coverage and check/error times. Before each breadth-first lookup batch, jobs reu
 issues when they are not invalidated, their last attempt did not fail, and their successful check
 is within a positive `cache.ttlSeconds`. Zero TTL disables reuse and requires revalidation.
 Reused observations do not enter the
-admission queue or consume the 200-lookup budget, and keep their original check time. Unknown,
-open, failed, invalidated and expired observations still require individual lookups.
+admission queue or consume the 200-lookup budget. A successful complete open-issues listing
+refreshes the check time of already-closed outside observations absent from that listing in the
+same source/repository, clearing earlier failure and invalidation. Issue details and relation
+check times stay unchanged. Newer targeted results and webhooks received during the listing
+remain authoritative; a partial/capped listing cannot verify absence. Previously open issues
+missing from the listing still need a lookup. Other closed observations keep their original
+check time, and unknown, open, failed, invalidated and expired observations still require
+individual lookups. Zero TTL continues to require targeted revalidation even after a successful
+same-repository listing.
 The queue's fetch context keeps provider-level in-flight
 coalescing and provider concurrency lanes separate from ordinary reads, so paced work cannot
 bypass admission by joining an unpaced request.
