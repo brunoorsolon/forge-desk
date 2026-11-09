@@ -1,7 +1,5 @@
 # Forge Desk: architecture and contracts
 
-> **Name.** The product is called **Forge Desk**; it was called execution-view until 3.0.0, when the repository and the image moved to `forge-desk` ([the name](../README.md#the-name)).
-
 > **Status.** This document was the **implementation contract** for the first
 > version. The code follows it, with the deviations listed below; where they
 > differ, the code and the user documentation win for behaviour that users

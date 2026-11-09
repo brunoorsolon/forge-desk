@@ -1,14 +1,10 @@
 # Forge Desk
 
-Forge Desk is a small self-hosted app that reads the **open issues** of your GitHub, GitHub Enterprise Server or Gitea repositories, builds a **dependency graph** from the relations you already declare (native issue dependencies and simple `Depends on #12` lines in issue bodies), and turns it into an **execution order**: what can start now, what can run in parallel, and what blocks everything else. The output is fully deterministic: the same issues always give the same order, the same layout and the same content hash. It has a web UI, a REST API, exports (JSON, Markdown, Mermaid, DOT) and a CLI that checks your setup. Planning keeps the planner, relation format, configuration, URLs and export formats it had before the rename to Forge Desk.
+Forge Desk is a small self-hosted app that reads the **open issues** of your GitHub, GitHub Enterprise Server or Gitea repositories, builds a **dependency graph** from the relations you already declare (native issue dependencies and simple `Depends on #12` lines in issue bodies), and turns it into an **execution order**: what can start now, what can run in parallel, and what blocks everything else. The output is fully deterministic: the same issues always give the same order, the same layout and the same content hash. It has a web UI, a REST API, exports (JSON, Markdown, Mermaid, DOT) and a CLI that checks your setup.
 
 ![Dependency graph of the demo roadmap](docs/screenshots/graph.png)
 
-## The name
-
-The product is **Forge Desk**; it was called execution-view until 3.0.0, when the repository and the image moved to `forge-desk`. The CLI, the Compose service and container, the tracker `User-Agent`, the DOT export graph id, the server log line and the browser preference keys all use `forge-desk`.
-
-The repository is `github.com/brunoorsolon/forge-desk`; old `execution-view` repository URLs redirect to it. Images are published to `ghcr.io/brunoorsolon/forge-desk`, which carries 2.0.5 and every release from 3.0.0 on. The old path, `ghcr.io/brunoorsolon/execution-view`, keeps its tags up to 2.0.5 and gets no new ones ([The repository and image move](#the-repository-and-image-move)). Upgrading an existing deployment: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#upgrading).
+The repository is [github.com/brunoorsolon/forge-desk](https://github.com/brunoorsolon/forge-desk), and images are published to `ghcr.io/brunoorsolon/forge-desk`. For an existing deployment, see [Upgrading](docs/DEPLOYMENT.md#upgrading).
 
 ## Features
 
@@ -317,10 +313,6 @@ npm run typecheck && npm test && npm run format:check
    - or push a tag: `git tag v1.2.3 && git push origin v1.2.3`.
 
 The [Release workflow](.github/workflows/release.yml) runs the checks and the Docker smoke test, verifies that the version matches `package.json`, publishes the multi-arch image to `ghcr.io/brunoorsolon/forge-desk` (`1.2.3`, `1.2`, `1` and `latest`; prereleases such as `1.3.0-rc.1` never move `latest`) and creates the GitHub Release. Publishing a release from the GitHub UI works too: the tag it creates starts the workflow, which publishes the image and leaves the existing release alone. Run workflow with an empty version is a dry run that builds the image without pushing anything.
-
-### The repository and image move
-
-The repository was renamed from `execution-view` to `forge-desk` in October 2026. The Release workflow publishes to `ghcr.io/${{ github.repository }}`, so releases now go to `ghcr.io/brunoorsolon/forge-desk`; 2.0.5 was published there first so that the package was public before any doc pointed at it, and 3.0.0 is the first release built there. Two things keep the move working: never create a new repository named `brunoorsolon/execution-view`, because reusing the name ends GitHub's redirects from the old URLs, and never delete the `execution-view` package, because pinned deployments and the release notes up to 2.0.5 pull from it.
 
 ## License
 
