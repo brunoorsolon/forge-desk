@@ -16,6 +16,7 @@ class Element {
   readonly childNodes: (Element | Text)[] = [];
   private readonly listeners = new Map<string, (() => void)[]>();
   hidden = false;
+  disabled = false;
   title = '';
   readonly classList = {
     toggle: (name: string, on: boolean): void => {
@@ -456,7 +457,7 @@ describe('scope sweep progress', () => {
         },
       ],
     };
-    view.update(state(), preferences(), sweep);
+    view.update(state(), preferences(), { sweep, launching: false, error: null });
     const progress = cls(root, 'scope-progress')[0]!;
     expect(progress.hidden).toBe(false);
     expect(cls(progress, 'scope-sweep-summary')[0]!.textContent).toContain('Started: 2 h ago');
@@ -477,10 +478,132 @@ describe('scope sweep progress', () => {
     expect(progress.textContent).toContain('Differing settings: dependencies.native');
     expect(progress.textContent).toContain('Views: old, new');
     expect(progress.textContent).toContain(`Expected to resume: ${absoluteTime(delayed)}`);
-    view.update(state(), preferences(), { ...sweep, state: 'partial', finishedAt: computed });
+    view.update(state(), preferences(), {
+      sweep: { ...sweep, state: 'partial', finishedAt: computed },
+      launching: false,
+      error: null,
+    });
     expect(dates(cls(progress, 'scope-sweep-summary')[0]!)).toEqual([checked, computed]);
     view.update(state(), preferences());
     expect(progress.hidden).toBe(true);
     expect(progress.textContent).toBe('');
+  });
+});
+
+describe('refresh control busy states', () => {
+  function controls() {
+    const callbacks = [vi.fn(), vi.fn(), vi.fn()];
+    const view = createScopeHeading({
+      toggleFavorite() {},
+      refreshProject: callbacks[0],
+      refreshSource: callbacks[1],
+      refreshAllSources: callbacks[2],
+    });
+    const buttons = cls(view.el as unknown as Element, 'scope-refresh-controls')[0]!
+      .childNodes as Element[];
+    return { view, buttons, callbacks };
+  }
+  const idle = ['Refresh this project', 'Refresh this source', 'Refresh all sources'];
+  const busy = ['Refreshing project…', 'Refreshing source…', 'Refreshing all sources…'];
+  const sweep: SweepStatus = {
+    id: 'sweep',
+    trigger: 'interactive',
+    state: 'running',
+    startedAt: checked,
+    finishedAt: null,
+    sources: [],
+  };
+
+  it.each(['project', 'source'] as const)(
+    'disables only the %s button immediately, then keeps it busy for queued/running jobs',
+    (kind) => {
+      const { view, buttons, callbacks } = controls();
+      const index = kind === 'project' ? 0 : 1;
+      const scope =
+        kind === 'project' ? { kind, source: 'gh', repo: 'o/r' } : { kind, source: 'gh' };
+      const job = {
+        id: 'job',
+        scope,
+        trigger: 'interactive' as const,
+        state: 'queued' as const,
+        queuedAt: checked,
+        startedAt: null,
+        finishedAt: null,
+        delayedUntil: null,
+        error: null,
+      };
+      for (const app of [
+        state({ refreshingScope: kind }),
+        state({ job }),
+        state({ job: { ...job, state: 'running' } }),
+      ]) {
+        view.update(app, preferences());
+        expect(buttons.map((button) => button.disabled)).toEqual([index === 0, index === 1, false]);
+        expect(buttons.map((button, i) => button.textContent)).toEqual(
+          idle.map((label, i) => (i === index ? busy[i] : label)),
+        );
+        buttons[index]!.click();
+        expect(callbacks[index]).not.toHaveBeenCalled();
+        expect((buttons[index]!.childNodes[0] as Element).tagName).toBe('svg');
+      }
+      for (const result of ['completed', 'partial', 'failed'] as const) {
+        view.update(state({ job: { ...job, state: result } }), preferences());
+        expect(buttons.map((button) => button.disabled)).toEqual([false, false, false]);
+        expect(buttons.map((button) => button.textContent)).toEqual(idle);
+      }
+      view.update(state(), preferences());
+      buttons[index]!.click();
+      expect(callbacks[index]).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('keeps a covering source job busy on All projects and across another project request', () => {
+    const { view, buttons } = controls();
+    const job = {
+      id: 'source',
+      scope: { kind: 'source' as const, source: 'gh' },
+      trigger: 'interactive' as const,
+      state: 'running' as const,
+      queuedAt: checked,
+      startedAt: checked,
+      finishedAt: null,
+      delayedUntil: null,
+      error: null,
+    };
+    view.update(state({ job, refreshingScope: 'project' }), preferences());
+    expect(buttons.map((button) => button.disabled)).toEqual([true, true, false]);
+    view.update(state({ job, route: { ...INITIAL_STATE.route, scope: job.scope } }), preferences());
+    expect(buttons[0]!.hidden).toBe(true);
+    expect(buttons[1]!.textContent).toBe(busy[1]);
+    expect(buttons[1]!.disabled).toBe(true);
+  });
+
+  it('keeps all sources busy during launch and active sweep states and releases every terminal state', () => {
+    const { view, buttons, callbacks } = controls();
+    for (const sweepState of [
+      { sweep: null, launching: true, error: null },
+      { sweep: { ...sweep, state: 'completed' as const }, launching: true, error: null },
+      { sweep: { ...sweep, state: 'queued' as const }, launching: false, error: null },
+      { sweep, launching: false, error: 'Status read failed' },
+    ]) {
+      view.update(state(), preferences(), sweepState);
+      expect(buttons.map((button) => button.disabled)).toEqual([false, false, true]);
+      expect(buttons.map((button) => button.textContent)).toEqual([idle[0], idle[1], busy[2]]);
+      buttons[2]!.click();
+      expect(callbacks[2]).not.toHaveBeenCalled();
+    }
+    for (const result of ['completed', 'partial', 'failed', 'skipped'] as const) {
+      view.update(state(), preferences(), {
+        sweep: { ...sweep, state: result },
+        launching: false,
+        error: null,
+      });
+      expect(buttons.map((button) => button.disabled)).toEqual([false, false, false]);
+      expect(buttons.map((button) => button.textContent)).toEqual(idle);
+    }
+    view.update(state(), preferences(), { sweep: null, launching: false, error: 'Launch failed' });
+    expect(buttons[2]!.disabled).toBe(false);
+    buttons[2]!.click();
+    expect(callbacks[2]).toHaveBeenCalledOnce();
   });
 });

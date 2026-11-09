@@ -4,6 +4,7 @@ import { ACTIVE_POLL_MS } from './polling.js';
 
 export interface SweepRefreshState {
   sweep: SweepStatus | null;
+  launching: boolean;
   error: string | null;
 }
 
@@ -15,6 +16,7 @@ export function createSweepRefresh(
   read: () => Promise<SweepStatus | null> = fetchSweep,
 ) {
   let sweep: SweepStatus | null = null;
+  let launching = false;
   let launchError: string | null = null;
   let readError: string | null = null;
   let visible = true;
@@ -23,7 +25,7 @@ export function createSweepRefresh(
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const running = () => sweep?.state === 'running' || sweep?.state === 'queued';
-  const publish = () => changed({ sweep, error: launchError ?? readError });
+  const publish = () => changed({ sweep, launching, error: launchError ?? readError });
   function cancelTimer(): void {
     clearTimeout(timer);
     timer = undefined;
@@ -62,6 +64,7 @@ export function createSweepRefresh(
       cancelTimer();
       const token = ++generation;
       pending = true;
+      launching = true;
       launchError = null;
       readError = null;
       publish();
@@ -82,6 +85,8 @@ export function createSweepRefresh(
       } finally {
         if (token === generation) {
           pending = false;
+          launching = false;
+          publish();
           // Always read after a successful launch, even if a fast fixture finished.
           if (succeeded && visible) void check();
           else schedule();

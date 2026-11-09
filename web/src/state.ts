@@ -124,6 +124,8 @@ export interface AppState {
   snapshots: Record<string, Snapshot>;
   error: string | null;
   refreshing: boolean;
+  /** Explicit scope request target; active jobs are tracked separately in `job`. */
+  refreshingScope: Scope['kind'] | null;
   refreshError: string | null;
   selected: IssueKey | null;
 }
@@ -141,6 +143,7 @@ export const INITIAL_STATE: AppState = {
   snapshots: {},
   error: null,
   refreshing: false,
+  refreshingScope: null,
   refreshError: null,
   selected: null,
 };
@@ -149,7 +152,7 @@ export type Action =
   | { type: 'views-loaded'; views: ViewSummary[] }
   | { type: 'views-failed'; error: string }
   | { type: 'route'; route: Route }
-  | { type: 'scope-load-start'; scope: Scope }
+  | { type: 'scope-load-start'; scope: Scope; refreshingScope?: Scope['kind'] | null }
   | { type: 'scope-response'; response: ScopeResponse }
   | { type: 'scope-failed'; scope: Scope; status: number; error: string }
   | { type: 'load-start'; viewId: string }
@@ -243,6 +246,7 @@ export function reducer(state: AppState, action: Action): AppState {
           status: nextScope === null ? 'idle' : 'loading',
           error: null,
           refreshing: false,
+          refreshingScope: null,
           refreshError: null,
         };
       }
@@ -257,6 +261,7 @@ export function reducer(state: AppState, action: Action): AppState {
         loadedScopeId: scopeId(action.scope),
         loadedViewId: null,
         status: state.snapshot === null ? 'loading' : 'ready',
+        refreshingScope: action.refreshingScope ?? null,
         error: null,
       };
     case 'scope-response': {
@@ -273,6 +278,7 @@ export function reducer(state: AppState, action: Action): AppState {
         job: response.job,
         refreshError: null,
         refreshing: false,
+        refreshingScope: null,
         status: response.snapshot !== null ? 'ready' : active ? 'loading' : 'unavailable',
         error:
           response.snapshot !== null || active
@@ -293,6 +299,7 @@ export function reducer(state: AppState, action: Action): AppState {
           ...state,
           status: 'ready',
           refreshing: false,
+          refreshingScope: null,
           refreshError: action.error,
           freshness:
             state.freshness === null
@@ -324,6 +331,7 @@ export function reducer(state: AppState, action: Action): AppState {
         error: action.error,
         refreshError: null,
         refreshing: false,
+        refreshingScope: null,
       };
     case 'load-start': {
       if (state.route.scope !== undefined) return state;
@@ -339,6 +347,7 @@ export function reducer(state: AppState, action: Action): AppState {
         snapshot: cached,
         error: null,
         refreshing: false,
+        refreshingScope: null,
         refreshError: null,
         selected: state.loadedViewId === action.viewId ? state.selected : null,
       };
@@ -364,6 +373,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         refreshing: false,
+        refreshingScope: null,
         refreshError: null,
         status: 'ready',
         snapshot: action.snapshot,
