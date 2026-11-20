@@ -348,7 +348,7 @@ describe('header export destination and named-view controls', () => {
     }
   });
 
-  it('integrates config source titles across sidebar, scope heading, unified tabs, and release routes', () => {
+  it('integrates config titles across sidebar views, scope heading, unified tabs, and release routes', () => {
     const cfg = parseConfig(
       JSON.stringify({
         sources: [
@@ -363,10 +363,19 @@ describe('header export destination and named-view controls', () => {
       {},
     );
     const scope: RouteScope = { kind: 'project', source: 'tea', owner: 'acme', repo: 'api' };
-    const h = headerWith({ route: { ...DEFAULT_ROUTE, scope } });
+    const h = headerWith({
+      route: { ...DEFAULT_ROUTE, scope },
+      views: cfg.views.map((v) => ({
+        id: v.id,
+        title: v.title,
+        source: v.source,
+        kind: 'github' as const,
+        repos: v.repos.map((r) => `${r.owner}/${r.repo}`),
+      })),
+    });
     const sidebar = createProjectSidebar({
       selectScope: vi.fn(),
-      openViews: vi.fn(),
+      openView: vi.fn(),
       toggleFavorite: vi.fn(),
     });
     const heading = createScopeHeading({ toggleFavorite: vi.fn() });
@@ -396,7 +405,7 @@ describe('header export destination and named-view controls', () => {
         .textContent;
     expect(descendants(sidebarEl, (e) => e.tagName === 'h2').map(headingText)).toEqual([
       'Favorites',
-      'GitHub',
+      'v-gh',
       'PugLab (Gitea)',
     ]);
     const scopeSource = descendants(headingEl, (e) => e.classList.contains('scope-source'))[0];

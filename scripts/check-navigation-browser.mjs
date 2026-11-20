@@ -176,8 +176,8 @@ try {
     'Bare startup selects first nonempty source',
   );
   await expect(
-    `document.querySelectorAll('.project-sidebar-section[aria-label^="Source"]').length === 2`,
-    'Two source catalog mounted',
+    `document.querySelectorAll('.project-sidebar-section[aria-label^="View "]').length === 2`,
+    'Two view groups mounted',
   );
   assert.ok(fixture.requests.some((r) => r.url === '/api/projects'));
   assert.ok(snapshotRequests(fixture).every((r) => r.url === '/api/sources/alpha/snapshot'));
@@ -204,22 +204,22 @@ try {
     'Issue detail opens',
   );
   const beforeCurrent = snapshotRequests(fixture).length;
-  await evaluate(`document.querySelector('[aria-label="Open alpha / demo/one"]').click()`);
+  await evaluate(`document.querySelector('[aria-label="Open alpha-view / demo/one"]').click()`);
   await sleep(200);
   assert.equal(snapshotRequests(fixture).length, beforeCurrent, 'Current scope must not reload');
   await expect(
     `location.hash.includes('q=Browser') && Boolean(document.querySelector('.panel.open')?.textContent.includes('demo/one#1'))`,
     'Current scope preserves filter and details',
   );
-  // Sources start collapsed; open beta's group before keyboard-selecting its project.
+  // Views start collapsed; open beta's group before keyboard-selecting its project.
   await evaluate(
-    `document.querySelector('[aria-label="Source beta"] .project-sidebar-group[aria-expanded="false"]')?.click()`,
+    `document.querySelector('[aria-label="View beta-view"] .project-sidebar-group[aria-expanded="false"]')?.click()`,
   );
   await expect(
-    `document.querySelector('[aria-label="Open beta / demo/three"]').getClientRects().length > 0`,
-    'Collapsed source group expands on click',
+    `document.querySelector('[aria-label="Open beta-view / demo/three"]').getClientRects().length > 0`,
+    'Collapsed view group expands on click',
   );
-  await evaluate(`document.querySelector('[aria-label="Open beta / demo/three"]').focus()`);
+  await evaluate(`document.querySelector('[aria-label="Open beta-view / demo/three"]').focus()`);
   await key('Enter', 'Enter', 13);
   await until(
     () => evaluate(`location.hash === '#/project/beta/demo/three/order?sort=updated'`),
@@ -250,7 +250,7 @@ try {
   );
   await shot('narrow-project');
   await key('Enter', 'Enter', 13);
-  await evaluate(`document.querySelector('[aria-label="Open alpha / demo/two"]').focus()`);
+  await evaluate(`document.querySelector('[aria-label="Open alpha-view / demo/two"]').focus()`);
   await key('Enter', 'Enter', 13);
   await until(
     () => evaluate(`location.hash.includes('/project/alpha/demo/two/order')`),

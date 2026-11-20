@@ -179,8 +179,10 @@ async function favorites(page, names) {
       ) === JSON.stringify(names),
     'durable favorite list',
   );
+  // The sidebar labels each favorite by its view; every fixture view id is `<source>-view`.
+  const labels = names.map((name) => `Open ${name.replace(' / ', '-view / ')}`);
   await page.wait(
-    `JSON.stringify(${favoriteNames}) === ${JSON.stringify(JSON.stringify(names.map((name) => `Open ${name}`)))} && ${writable}`,
+    `JSON.stringify(${favoriteNames}) === ${JSON.stringify(JSON.stringify(labels))} && ${writable}`,
     'authoritative favorite list',
   );
   await settle(page);
@@ -247,13 +249,13 @@ try {
   const b = await profile();
   await login(a, shared);
   await settle(a);
-  await a.click('Add alpha / demo/one to favorites');
+  await a.click('Add alpha-view / demo/one to favorites');
   await favorites(a, ['alpha / demo/one']);
-  await a.click('Add alpha / demo/two to favorites');
+  await a.click('Add alpha-view / demo/two to favorites');
   await favorites(a, ['alpha / demo/one', 'alpha / demo/two']);
-  await a.click('Remove alpha / demo/one from favorites');
+  await a.click('Remove alpha-view / demo/one from favorites');
   await favorites(a, ['alpha / demo/two']);
-  await a.click('Add alpha / demo/one to favorites');
+  await a.click('Add alpha-view / demo/one to favorites');
   await favorites(a, ['alpha / demo/two', 'alpha / demo/one']);
   checks.push(
     'Add/remove/re-add persists insertion order through real session and CSRF HTTP mutations',
@@ -270,7 +272,7 @@ try {
 
   await b.hide();
   await a.show();
-  await a.click('Add beta / demo/three to favorites');
+  await a.click('Add beta-view / demo/three to favorites');
   await favorites(a, ['alpha / demo/two', 'alpha / demo/one', 'beta / demo/three']);
   const beforeReturn = reads(shared);
   await b.show();
@@ -280,7 +282,7 @@ try {
   const openDestination = await a.evaluate('location.hash');
   await a.hide();
   await b.show();
-  await b.click('Open beta / demo/three');
+  await b.click('Open beta-view / demo/three');
   await until(
     () => shared.preferences.read().profile.rememberedProject?.repo === 'demo/three',
     'explicit project remembered',
@@ -306,9 +308,9 @@ try {
   let before = rememberWrites(shared);
   await a.evaluate(`location.hash='#/project/beta/demo/three/order?q=Browser&sort=updated'`);
   await a.wait(`Boolean(document.querySelector('.order .row'))`, 'tab and query change');
-  await a.click('All projects from alpha');
+  await a.evaluate(`location.hash='#/source/alpha/graph'`);
   await a.wait(`location.hash.startsWith('#/source/alpha/')`, 'source navigation');
-  await a.click('Views');
+  await a.click('All projects in alpha-view');
   await a.wait(`location.hash.startsWith('#/view/')`, 'view navigation');
   await settle(a);
   assert.equal(
@@ -326,7 +328,7 @@ try {
   checks.push('An explicit project deep link is remembered');
 
   shared.failNext('reject');
-  await a.click('Remove alpha / demo/one from favorites');
+  await a.click('Remove alpha-view / demo/one from favorites');
   await a.wait(
     `Boolean(document.querySelector('.preference-error')?.textContent.includes('saved'))`,
     'save failure feedback',
@@ -336,7 +338,7 @@ try {
   await a.shot('favorite-save-failure');
   const beforeTruncatedRead = reads(shared);
   shared.failNext('truncated');
-  await a.click('Remove alpha / demo/one from favorites');
+  await a.click('Remove alpha-view / demo/one from favorites');
   await until(() => reads(shared) > beforeTruncatedRead, 'truncated-response reconciliation GET');
   await favorites(a, ['alpha / demo/two', 'beta / demo/three']);
   await a.expect(
@@ -350,7 +352,7 @@ try {
   checks.push('Truncated save response reconciles the committed disk state by a fresh GET');
   await a.shot('truncated-response-recovered');
   shared.failNext('reject');
-  await a.click('Open alpha / demo/two');
+  await a.click('Open alpha-view / demo/two');
   await a.wait(
     `location.hash === '#/project/alpha/demo/two/graph' && Boolean(document.querySelector('.preference-notice')?.textContent.includes('saved'))`,
     'nonblocking remember error',
