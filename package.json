@@ -1,6 +1,6 @@
 {
   "name": "forge-desk",
-  "version": "4.1.1",
+  "version": "4.2.0",
   "description": "Deterministic dependency graph and execution order for open issues",
   "private": true,
   "type": "module",
