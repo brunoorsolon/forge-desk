@@ -270,10 +270,7 @@ const problems = createProblemsView(ctx);
 const panel = createSidePanel(ctx);
 const sidebar = createProjectSidebar({
   selectScope: (scope) => navigate(routeForScope(scope, currentRoute())),
-  openViews: () => {
-    const viewId = store.get().views?.[0]?.id;
-    if (viewId !== undefined) actions.setView(viewId);
-  },
+  openView: (viewId) => actions.setView(viewId),
   toggleFavorite: preferences.toggleFavorite,
 });
 const heading = createScopeHeading({

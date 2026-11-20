@@ -3,6 +3,7 @@ import type { AvailablePreferences } from '../../../src/core/preferences.js';
 import type { CatalogResponse } from '../../../src/core/scope.js';
 import { initialPreferenceState, type PreferenceState } from '../preferenceState.js';
 import { DEFAULT_ROUTE, type Route } from '../route.js';
+import type { ViewSummary } from '../api.js';
 import { INITIAL_STATE } from '../state.js';
 import { createProjectSidebar } from './project-sidebar.js';
 
@@ -117,6 +118,17 @@ const catalog: CatalogResponse = {
     },
   ],
 };
+// View titles match source ids so project labels read the same as before view grouping.
+const views: ViewSummary[] = [
+  {
+    id: 'github',
+    title: 'github',
+    source: 'github',
+    kind: 'github',
+    repos: ['acme/api', 'acme/empty'],
+  },
+  { id: 'gitea', title: 'gitea', source: 'gitea', kind: 'gitea', repos: ['acme/api'] },
+];
 function preferences(
   favorites: AvailablePreferences['favorites'] = [
     { source: 'gitea', repo: 'acme/api', inCatalog: true },
@@ -140,23 +152,24 @@ function setup(
   route: Route = DEFAULT_ROUTE,
   prefs = preferences(),
   projects: CatalogResponse | null = catalog,
+  viewList: ViewSummary[] | null = views,
 ) {
-  const actions = { selectScope: vi.fn(), openViews: vi.fn(), toggleFavorite: vi.fn() };
+  const actions = { selectScope: vi.fn(), openView: vi.fn(), toggleFavorite: vi.fn() };
   const view = createProjectSidebar(actions);
   const root = view.el as unknown as FakeElement;
-  const state = { ...INITIAL_STATE, route };
+  const state = { ...INITIAL_STATE, views: viewList, route };
   view.update(state, prefs, projects);
   return { view, root, actions, state, toggle: byClass(root, 'project-sidebar-toggle')[0]! };
 }
 
 describe('project sidebar', () => {
-  it('lists favorites in added order, then each source in catalog order, and Views separately', () => {
+  it('lists favorites in added order, then one group per view in configuration order', () => {
     const { root } = setup();
     const sections = byClass(root, 'project-sidebar-section');
     expect(sections.map((section) => section.getAttribute('aria-label'))).toEqual([
       'Favorites',
-      'Source github',
-      'Source gitea',
+      'View github',
+      'View gitea',
     ]);
     expect(
       byClass(sections[0]!, 'project-sidebar-entry').map((entry) =>
@@ -167,50 +180,65 @@ describe('project sidebar', () => {
       byClass(sections[1]!, 'project-sidebar-entry').map((entry) =>
         entry.getAttribute('aria-label'),
       ),
-    ).toEqual(['All projects from github', 'Open github / acme/api', 'Open github / acme/empty']);
+    ).toEqual(['All projects in github', 'Open github / acme/api', 'Open github / acme/empty']);
     expect(
       byClass(sections[2]!, 'project-sidebar-entry').map((entry) =>
         entry.getAttribute('aria-label'),
       ),
-    ).toEqual(['All projects from gitea', 'Open gitea / acme/api']);
-    const buttons = descendants(root, (el) => el.tagName === 'button');
-    expect(buttons.at(-1)?.getAttribute('aria-label')).toBe('Views');
+    ).toEqual(['All projects in gitea', 'Open gitea / acme/api']);
+    expect(named(root, 'Views')).toHaveLength(0);
     expect(byClass(root, 'brand-name')[0]?.textContent).toBe('Forge Desk');
     expect(named(root, 'Open gitea / acme/api')[0]?.textContent).toBe('acme/apigitea');
     expect(named(root, 'Open gitea / acme/api')[1]?.textContent).toBe('acme/api');
-    expect(named(root, 'All projects from github')[0]?.textContent).toBe('All projects');
+    expect(named(root, 'All projects in github')[0]?.textContent).toBe('All projects');
   });
 
-  it('displays friendly source titles and omits repeated source subtitles in source sections', () => {
-    const titledCatalog: CatalogResponse = {
+  it('groups by view title, so one source can back several groups and a repo can sit in two', () => {
+    const tea: CatalogResponse = {
       sources: [
         {
           id: 'tea',
-          title: 'PugLab (Gitea)',
           kind: 'gitea',
-          projects: [{ source: 'tea', repo: 'acme/api' }],
+          projects: [
+            { source: 'tea', repo: 'pughaus/b' },
+            { source: 'tea', repo: 'puglab/a' },
+          ],
           policy: { status: 'usable' },
         },
       ],
     };
+    const teaViews: ViewSummary[] = [
+      { id: 'puglab', title: 'Puglab (gitea)', source: 'tea', kind: 'gitea', repos: ['Puglab/A'] },
+      {
+        id: 'pughaus',
+        title: 'Pughaus (gitea)',
+        source: 'tea',
+        kind: 'gitea',
+        repos: ['pughaus/b', 'puglab/a'],
+      },
+    ];
     const { root } = setup(
-      DEFAULT_ROUTE,
-      preferences([{ source: 'tea', repo: 'acme/api', inCatalog: true }]),
-      titledCatalog,
+      { ...DEFAULT_ROUTE, scope: { kind: 'project', source: 'tea', owner: 'puglab', repo: 'a' } },
+      preferences([{ source: 'tea', repo: 'pughaus/b', inCatalog: true }]),
+      tea,
+      teaViews,
     );
     const sections = byClass(root, 'project-sidebar-section');
     expect(sections.map((section) => section.getAttribute('aria-label'))).toEqual([
       'Favorites',
-      'Source PugLab (Gitea)',
+      'View Puglab (gitea)',
+      'View Pughaus (gitea)',
     ]);
-    expect(byClass(sections[1]!, 'project-sidebar-group-title')[0]?.textContent).toBe(
-      'PugLab (Gitea)',
-    );
-    expect(byClass(sections[0]!, 'project-sidebar-source')[0]?.textContent).toBe('PugLab (Gitea)');
+    expect(byClass(sections[0]!, 'project-sidebar-source')[0]?.textContent).toBe('Pughaus (gitea)');
     expect(byClass(sections[1]!, 'project-sidebar-source')).toHaveLength(0);
+    // The shared repo is one project: listed in both groups, current only in its first view.
+    const shared = named(root, 'Open Puglab (gitea) / puglab/a');
+    expect(shared).toHaveLength(2);
+    expect(shared.map((entry) => entry.getAttribute('aria-current'))).toEqual(['page', null]);
+    expect(byClass(sections[2]!, 'project-sidebar-list')[0]!.getAttribute('hidden')).not.toBeNull();
   });
 
-  it('collapses sources except the current one, toggles each or all, and reveals an unstarred row', () => {
+  it('collapses views except the current one, toggles each or all, and reveals an unstarred row', () => {
     const expandedSources = (root: FakeElement): string[] =>
       byClass(root, 'project-sidebar-section')
         .filter((section) => section.getAttribute('aria-label') !== 'Favorites')
@@ -237,24 +265,30 @@ describe('project sidebar', () => {
       )[0]!.getAttribute('hidden'),
     ).toBeNull();
 
-    group(root, 'Source gitea').click();
-    expect(expandedSources(root)).toEqual(['Source gitea']);
-    expect(group(root, 'Source gitea').getAttribute('aria-expanded')).toBe('true');
+    group(root, 'View gitea').click();
+    expect(expandedSources(root)).toEqual(['View gitea']);
+    expect(group(root, 'View gitea').getAttribute('aria-expanded')).toBe('true');
     expect(expandAll(root).textContent).toBe('Expand all');
     expandAll(root).click();
-    expect(expandedSources(root)).toEqual(['Source github', 'Source gitea']);
+    expect(expandedSources(root)).toEqual(['View github', 'View gitea']);
     expect(expandAll(root).textContent).toBe('Collapse all');
     expandAll(root).click();
     expect(expandedSources(root)).toEqual([]);
 
-    // Expansion survives re-renders; a non-favorite route reveals its source.
-    group(root, 'Source gitea').click();
+    // Expansion survives re-renders; a non-favorite route reveals its view.
+    group(root, 'View gitea').click();
     view.update(
-      { route: { ...DEFAULT_ROUTE, scope: { kind: 'source', source: 'github' } } },
+      {
+        views,
+        route: {
+          ...DEFAULT_ROUTE,
+          scope: { kind: 'project', source: 'github', owner: 'acme', repo: 'empty' },
+        },
+      },
       preferences(),
       catalog,
     );
-    expect(expandedSources(root)).toEqual(['Source github', 'Source gitea']);
+    expect(expandedSources(root)).toEqual(['View github', 'View gitea']);
 
     const fresh = setup(favoriteRoute);
     named(fresh.root, 'Remove gitea / acme/api from favorites')[0]!.click();
@@ -263,19 +297,29 @@ describe('project sidebar', () => {
       preferences([{ source: 'github', repo: 'acme/api', inCatalog: true }]),
       catalog,
     );
-    expect(expandedSources(fresh.root)).toEqual(['Source gitea']);
+    expect(expandedSources(fresh.root)).toEqual(['View gitea']);
   });
 
-  it('reports project, source and named-view choices through separate callbacks', () => {
+  it('reveals the current project view when views load after the route', () => {
+    const route: Route = {
+      ...DEFAULT_ROUTE,
+      scope: { kind: 'project', source: 'gitea', owner: 'acme', repo: 'api' },
+    };
+    const prefs = preferences([]);
+    const { root, view } = setup(route, prefs, catalog, null);
+    view.update({ views, route }, prefs, catalog);
+    const list = byClass(named(root, 'View gitea')[0]!, 'project-sidebar-list')[0]!;
+    expect(list.getAttribute('hidden')).toBeNull();
+  });
+
+  it('reports project and view choices through separate callbacks', () => {
     const { root, actions } = setup();
     named(root, 'Open gitea / acme/api')[0]!.click();
-    named(root, 'All projects from github')[0]!.click();
-    named(root, 'Views')[0]!.click();
+    named(root, 'All projects in github')[0]!.click();
     expect(actions.selectScope.mock.calls).toEqual([
       [{ kind: 'project', source: 'gitea', repo: 'acme/api' }],
-      [{ kind: 'source', source: 'github' }],
     ]);
-    expect(actions.openViews).toHaveBeenCalledOnce();
+    expect(actions.openView.mock.calls).toEqual([['github']]);
     expect(actions.toggleFavorite).not.toHaveBeenCalled();
   });
 
@@ -291,7 +335,7 @@ describe('project sidebar', () => {
       [{ source: 'gitea', repo: 'acme/api' }, false],
     ]);
     expect(actions.selectScope).not.toHaveBeenCalled();
-    expect(actions.openViews).not.toHaveBeenCalled();
+    expect(actions.openView).not.toHaveBeenCalled();
     expect(state).toEqual(before);
     expect(prefs).toEqual(saved);
   });
@@ -382,18 +426,12 @@ describe('project sidebar', () => {
     view.update(state, prefs, catalog);
     named(root, 'Open gitea / acme/api')[0]!.click();
     expect(actions.selectScope).not.toHaveBeenCalled();
-    view.update(
-      { route: { ...state.route, scope: { kind: 'source', source: 'github' } } },
-      prefs,
-      catalog,
-    );
+    view.update({ views, route: { ...DEFAULT_ROUTE, viewId: 'gitea' } }, prefs, catalog);
     expect(
       descendants(root, (el) => el.getAttribute('aria-current') === 'page').map((entry) =>
         entry.getAttribute('aria-label'),
       ),
-    ).toEqual(['All projects from github']);
-    view.update({ route: { ...DEFAULT_ROUTE, viewId: 'roadmap' } }, prefs, catalog);
-    expect(named(root, 'Views')[0]!.getAttribute('aria-current')).toBe('page');
+    ).toEqual(['All projects in gitea']);
   });
 
   it('toggles Projects repeatedly, leaves it open for stars and closes after a choice or Escape', () => {
@@ -419,20 +457,17 @@ describe('project sidebar', () => {
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(event.stopPropagation).toHaveBeenCalledOnce();
     toggle.click();
-    named(root, 'Views')[0]!.click();
+    named(root, 'All projects in gitea')[0]!.click();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(actions.openViews).toHaveBeenCalledOnce();
+    expect(actions.openView.mock.calls).toEqual([['gitea']]);
   });
 
   it('closes the disclosure when choosing the current scope without navigating', () => {
-    const { root, toggle, actions } = setup({
-      ...DEFAULT_ROUTE,
-      scope: { kind: 'source', source: 'github' },
-    });
+    const { root, toggle, actions } = setup({ ...DEFAULT_ROUTE, viewId: 'github' });
     toggle.click();
-    named(root, 'All projects from github')[0]!.click();
+    named(root, 'All projects in github')[0]!.click();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(actions.selectScope).not.toHaveBeenCalled();
+    expect(actions.openView).not.toHaveBeenCalled();
   });
 
   it('keeps keyboard focus on a star across updates and falls back to the catalog after unstar', () => {
@@ -453,7 +488,11 @@ describe('project sidebar', () => {
     const { root, view, state } = setup(DEFAULT_ROUTE, prefs);
     const star = named(root, 'Remove gitea / acme/api from favorites')[0]!;
     star.focus();
-    view.update({ route: { ...state.route, tab: 'order', q: 'status:ready' } }, prefs, catalog);
+    view.update(
+      { views, route: { ...state.route, tab: 'order', q: 'status:ready' } },
+      prefs,
+      catalog,
+    );
     expect(named(root, 'Remove gitea / acme/api from favorites')[0]).toBe(star);
     expect(dom.activeElement).toBe(star);
   });
@@ -468,11 +507,10 @@ describe('project sidebar', () => {
     }
   });
 
-  it('handles a missing catalog and empty favorites without inventing projects', () => {
-    const { root } = setup(DEFAULT_ROUTE, preferences([]), null);
+  it('handles missing views and empty favorites without inventing projects', () => {
+    const { root } = setup(DEFAULT_ROUTE, preferences([]), null, null);
     expect(root.textContent).toContain('No favorites yet.');
     expect(root.textContent).toContain('Projects have not loaded.');
     expect(byClass(root, 'project-sidebar-star')).toHaveLength(0);
-    expect(named(root, 'Views')).toHaveLength(1);
   });
 });

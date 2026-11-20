@@ -1,18 +1,18 @@
 import type { CatalogResponse, ProjectRef, Scope } from '../../../src/core/scope.js';
 import { clear, h, icon } from '../dom.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
-import { routeScopeId, scopeId, type AppState } from '../state.js';
+import { effectiveViewId, routeScopeId, scopeId, type AppState } from '../state.js';
 
 export interface ProjectSidebarActions {
   selectScope(scope: Scope): void;
-  openViews(): void;
+  openView(viewId: string): void;
   toggleFavorite(project: ProjectRef, favorite: boolean): void;
 }
 
 export interface ProjectSidebar {
   el: HTMLElement;
   update(
-    state: Pick<AppState, 'route'>,
+    state: Pick<AppState, 'route' | 'views'>,
     preferences: PreferenceState,
     catalog: CatalogResponse | null,
   ): void;
@@ -55,29 +55,28 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
   let open = false;
   let previous: {
     current: string | null;
-    viewsCurrent: boolean;
+    viewCurrent: string | null;
+    views: AppState['views'];
     preferences: PreferenceState['view'];
     writable: boolean;
     catalog: CatalogResponse | null;
   } | null = null;
   let controls = new Map<string, { button: HTMLButtonElement; fallback?: string }>();
-  // Sources start collapsed; this session-only set survives re-renders.
+  // Views start collapsed; this session-only set of view ids survives re-renders.
   const expanded = new Set<string>();
-  let groups: { source: string; button: HTMLButtonElement; list: HTMLElement }[] = [];
+  let groups: { view: string; button: HTMLButtonElement; list: HTMLElement }[] = [];
   let expandAll: HTMLButtonElement | null = null;
 
   function showGroup(group: (typeof groups)[number], value: boolean): void {
-    if (value) expanded.add(group.source);
-    else expanded.delete(group.source);
+    if (value) expanded.add(group.view);
+    else expanded.delete(group.view);
     group.button.setAttribute('aria-expanded', String(value));
     if (value) group.list.removeAttribute('hidden');
     else group.list.setAttribute('hidden', '');
   }
 
   function syncExpandAll(): void {
-    const label = groups.every((group) => expanded.has(group.source))
-      ? 'Collapse all'
-      : 'Expand all';
+    const label = groups.every((group) => expanded.has(group.view)) ? 'Collapse all' : 'Expand all';
     if (!expandAll) return;
     clear(expandAll);
     expandAll.append(label);
@@ -114,18 +113,28 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
     el,
     update(state, preferences, catalog) {
       const current = routeScopeId(state.route);
-      const viewsCurrent = current === null && state.route.viewId !== null;
+      const viewCurrent =
+        current === null && state.route.viewId !== null ? effectiveViewId(state) : null;
       const writable = canChangeFavorites(preferences);
       if (
         previous?.current === current &&
-        previous.viewsCurrent === viewsCurrent &&
+        previous.viewCurrent === viewCurrent &&
+        previous.views === state.views &&
         previous.preferences === preferences.view &&
         previous.writable === writable &&
         previous.catalog === catalog
       )
         return;
-      const routeChanged = previous?.current !== current;
-      previous = { current, viewsCurrent, preferences: preferences.view, writable, catalog };
+      // Views can load after the route, so reveal again when they arrive.
+      const reveal = previous?.current !== current || previous.views !== state.views;
+      previous = {
+        current,
+        viewCurrent,
+        views: state.views,
+        preferences: preferences.view,
+        writable,
+        catalog,
+      };
 
       const focused = [...controls.entries()].find(
         ([, value]) => value.button === document.activeElement,
@@ -141,16 +150,34 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
         favorites.some(
           (favorite) => favorite.source === project.source && favorite.repo === project.repo,
         );
-      // Reveal the current page's source unless Favorites already shows it.
+      const views = state.views ?? [];
+      // Sources are connections, never shown: a project is labelled by the first view listing it.
+      const homeView = (project: ProjectRef) =>
+        views.find(
+          (v) =>
+            v.source === project.source &&
+            v.repos.some((repo) => repo.toLowerCase() === project.repo),
+        );
+      const projectTitle = (project: ProjectRef): string =>
+        homeView(project)?.title ??
+        catalog?.sources.find((source) => source.id === project.source)?.title ??
+        project.source;
+      // Reveal the current page's view unless Favorites already shows it.
       const route = state.route.scope;
+      if (reveal && viewCurrent !== null) expanded.add(viewCurrent);
+      if (reveal && route?.kind === 'source')
+        for (const v of views) if (v.source === route.source) expanded.add(v.id);
       if (
-        routeChanged &&
-        route !== undefined &&
+        reveal &&
+        route?.kind === 'project' &&
         !favorites.some((favorite) => scopeId({ kind: 'project', ...favorite }) === current)
-      )
-        expanded.add(route.source);
-      const sourceTitle = (sourceId: string): string =>
-        catalog?.sources.find((source) => source.id === sourceId)?.title ?? sourceId;
+      ) {
+        const home = homeView({
+          source: route.source,
+          repo: `${route.owner}/${route.repo}`.toLowerCase(),
+        });
+        if (home) expanded.add(home.id);
+      }
 
       function choose(scope: Scope): void {
         close();
@@ -161,13 +188,16 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
         project: ProjectRef,
         section: 'favorites' | 'catalog',
         available = true,
+        viewId = homeView(project)?.id ?? '',
       ): HTMLElement {
         const scope: Scope = { kind: 'project', ...project };
         const favorite = isFavorite(project);
-        const key = (area: string, action: string): string =>
-          JSON.stringify([area, action, project.source, project.repo]);
-        const displaySource = sourceTitle(project.source);
-        const name = `${displaySource} / ${project.repo}`;
+        // A repo listed by several views is the same project: only its home view row is current.
+        const home = section === 'favorites' || homeView(project)?.id === viewId;
+        const key = (area: string, action: string, group = viewId): string =>
+          JSON.stringify([area, action, group, project.source, project.repo]);
+        const displayTitle = projectTitle(project);
+        const name = `${displayTitle} / ${project.repo}`;
         return h(
           'li',
           { class: 'project-sidebar-row' },
@@ -181,7 +211,7 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
                 'aria-label': `${available ? 'Open' : 'Unavailable project:'} ${name}`,
                 // A starred project is marked once, in Favorites, not again under its source.
                 'aria-current':
-                  current === scopeId(scope) && (section === 'favorites' || !favorite)
+                  current === scopeId(scope) && home && (section === 'favorites' || !favorite)
                     ? 'page'
                     : null,
                 'aria-disabled': !available ? 'true' : null,
@@ -192,7 +222,7 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
               },
               h('span', { class: 'project-sidebar-repo' }, project.repo),
               section === 'favorites'
-                ? h('span', { class: 'project-sidebar-source' }, displaySource)
+                ? h('span', { class: 'project-sidebar-source' }, displayTitle)
                 : null,
               !available
                 ? h('span', { class: 'project-sidebar-unavailable' }, 'Unavailable')
@@ -217,7 +247,7 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
                 onclick: () => {
                   if (!writable) return;
                   // Unstarring moves focus to the catalog row, so keep that row visible.
-                  if (favorite) expanded.add(project.source);
+                  if (favorite) expanded.add(homeView(project)?.id ?? '');
                   actions.toggleFavorite({ ...project }, !favorite);
                 },
               },
@@ -280,36 +310,37 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
       }
       nav.append(favoriteSection);
 
-      if (catalog === null)
+      if (state.views === null)
         nav.append(h('p', { class: 'project-sidebar-note' }, 'Projects have not loaded.'));
       groups = [];
       expandAll = null;
-      if (catalog !== null && catalog.sources.length > 0) {
+      if (views.length > 0) {
         expandAll = control(
           'expand-all',
           h('button', {
             class: 'link-btn project-sidebar-expand-all',
             type: 'button',
             onclick: () => {
-              const value = !groups.every((group) => expanded.has(group.source));
+              const value = !groups.every((group) => expanded.has(group.view));
               for (const group of groups) showGroup(group, value);
               syncExpandAll();
             },
           }),
         );
         nav.append(
-          h('div', { class: 'project-sidebar-sources-bar' }, h('span', null, 'Sources'), expandAll),
+          h('div', { class: 'project-sidebar-sources-bar' }, h('span', null, 'Views'), expandAll),
         );
       }
-      for (const [index, source] of (catalog?.sources ?? []).entries()) {
-        const scope: Scope = { kind: 'source', source: source.id };
-        const displaySource = source.title ?? source.id;
-        const listId = `${id}-source-${index}`;
-        const isOpen = expanded.has(source.id);
+      for (const [index, v] of views.entries()) {
+        const listId = `${id}-view-${index}`;
+        const isOpen = expanded.has(v.id);
+        const projects = [...new Set(v.repos.map((repo) => repo.toLowerCase()))].map(
+          (repo): ProjectRef => ({ source: v.source, repo }),
+        );
         const group = {
-          source: source.id,
+          view: v.id,
           button: control(
-            JSON.stringify(['group', source.id]),
+            JSON.stringify(['group', v.id]),
             h(
               'button',
               {
@@ -318,13 +349,13 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
                 'aria-expanded': String(isOpen),
                 'aria-controls': listId,
                 onclick: () => {
-                  showGroup(group, !expanded.has(source.id));
+                  showGroup(group, !expanded.has(v.id));
                   syncExpandAll();
                 },
               },
               icon('chevron', 12),
-              h('span', { class: 'project-sidebar-group-title' }, displaySource),
-              h('span', { class: 'project-sidebar-count' }, String(source.projects.length)),
+              h('span', { class: 'project-sidebar-group-title' }, v.title),
+              h('span', { class: 'project-sidebar-count' }, String(projects.length)),
             ),
           ),
           list: h(
@@ -334,54 +365,37 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
               'li',
               { class: 'project-sidebar-row' },
               control(
-                JSON.stringify(['source', source.id]),
+                JSON.stringify(['view', v.id]),
                 h(
                   'button',
                   {
                     class: 'project-sidebar-entry',
                     type: 'button',
-                    'aria-label': `All projects from ${displaySource}`,
-                    'aria-current': current === scopeId(scope) ? 'page' : null,
-                    onclick: () => choose(scope),
+                    'aria-label': `All projects in ${v.title}`,
+                    'aria-current': viewCurrent === v.id ? 'page' : null,
+                    onclick: () => {
+                      close();
+                      if (viewCurrent !== v.id) actions.openView(v.id);
+                    },
                   },
                   h('span', { class: 'project-sidebar-repo' }, 'All projects'),
                 ),
               ),
             ),
-            ...source.projects.map((project) => projectRow(project, 'catalog')),
+            ...projects.map((project) => projectRow(project, 'catalog', true, v.id)),
           ),
         };
         groups.push(group);
         nav.append(
           h(
             'section',
-            { class: 'project-sidebar-section', 'aria-label': `Source ${displaySource}` },
+            { class: 'project-sidebar-section', 'aria-label': `View ${v.title}` },
             h('h2', { class: 'project-sidebar-heading' }, group.button),
             group.list,
           ),
         );
       }
       syncExpandAll();
-      nav.append(
-        control(
-          'views',
-          h(
-            'button',
-            {
-              class: 'project-sidebar-entry project-sidebar-views',
-              type: 'button',
-              'aria-label': 'Views',
-              'aria-current': viewsCurrent ? 'page' : null,
-              onclick: () => {
-                close();
-                actions.openViews();
-              },
-            },
-            icon('graph', 16),
-            'Views',
-          ),
-        ),
-      );
 
       if (focused) {
         const target =
