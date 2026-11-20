@@ -151,6 +151,12 @@ export function resolveStartup({
     return { ...status, kind: 'preference-error', error: preferences, rememberProject: false };
   }
 
+  // Sources are connections: a bare visit opens the first view, never a merged source.
+  const first = views[0];
+  if (first !== undefined) {
+    const viewRoute = { ...route, viewId: first.id };
+    return { ...status, kind: 'view', route: viewRoute, viewId: first.id, rememberProject: false };
+  }
   const source = catalog.sources.find((entry) => entry.projects.length > 0);
   return source === undefined
     ? { ...status, kind: 'empty-catalog', rememberProject: false }

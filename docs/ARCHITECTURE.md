@@ -1468,12 +1468,15 @@ named views, and bounded shutdown. Browser integration belongs to the navigation
 ## Project-first web navigation
 
 `web/src/main.ts` loads `/api/projects` and mounts the project sidebar, scope heading and scope
-state panels alongside the existing planning views. Bare visits use `resolveStartup`; until
-preference wiring supplies an authenticated read, an explicit unavailable preference result
-selects the configured source fallback and leaves stars read-only. Explicit named-view and
-release links keep their previous endpoints and behavior. Catalog failures do not prevent
-opening a named view. The sidebar draws one group per named view, so sources stay connection
-settings: a group's "All projects" row opens that named view and its rows open project scopes.
+state panels alongside the existing planning views. Bare visits use `resolveStartup` once
+views have loaded or failed. Without a remembered project or favorite, they open the first
+named view; only a configuration whose views failed to load falls back to the first nonempty
+source. An explicit unavailable preference result reaches the same fallback and leaves stars
+read-only. Explicit named-view and release links keep their previous endpoints and behavior.
+Catalog failures do not prevent opening a named view. The sidebar draws one group per named
+view, so sources stay connection settings: a group's "All projects" row opens that named view
+and its rows open project scopes. The scope heading and page title name a project by the first
+view listing it, and fall back to the source title only for source scopes or unlisted projects.
 
 Scope requests use the project/source snapshot endpoints. `scope-navigation.ts` owns one lane
 for the open scope, coalesces pending reads and rejects late responses after navigation, including

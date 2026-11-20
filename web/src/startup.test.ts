@@ -172,8 +172,18 @@ const cases: Case[] = [
     },
   },
   {
-    name: 'fallback uses configuration order and skips empty sources',
+    name: 'bare visit without favorites opens the first view, not a merged source',
     changes: {},
+    expected: {
+      kind: 'view',
+      viewId: 'legacy',
+      route: { viewId: 'legacy' },
+      rememberProject: false,
+    },
+  },
+  {
+    name: 'fallback without views uses configuration order and skips empty sources',
+    changes: { views: [] },
     expected: {
       kind: 'scope',
       scope: { kind: 'source', source: 'z-first' },
@@ -213,7 +223,7 @@ const cases: Case[] = [
   },
   {
     name: 'source fallback policy conflict does not skip to later source',
-    changes: { catalog: conflictCatalog },
+    changes: { catalog: conflictCatalog, views: [] },
     expected: {
       kind: 'policy-conflict',
       scope: { kind: 'source', source: 'z-first' },
@@ -259,8 +269,8 @@ const cases: Case[] = [
     name: reason,
     changes: { preferences: unavailable(reason) },
     expected: {
-      kind: 'scope',
-      scope: { kind: 'source', source: 'z-first' },
+      kind: 'view',
+      viewId: 'legacy',
       preferencesUnavailable: unavailable(reason),
       rememberProject: false,
     },
@@ -316,12 +326,12 @@ const cases: Case[] = [
   },
   {
     name: 'empty catalog',
-    changes: { catalog: { sources: [] } },
+    changes: { catalog: { sources: [] }, views: [] },
     expected: { kind: 'empty-catalog', rememberProject: false },
   },
   {
     name: 'only sources without projects',
-    changes: { catalog: { sources: [source('empty', [])] } },
+    changes: { catalog: { sources: [source('empty', [])] }, views: [] },
     expected: { kind: 'empty-catalog', rememberProject: false },
   },
 ];

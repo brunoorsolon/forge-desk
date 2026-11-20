@@ -7,7 +7,7 @@ import type {
 import { append, clear, h, icon, setText } from '../dom.js';
 import { absoluteTime, plural, relativeTime } from '../format.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
-import { isActiveScopeJob, type AppState } from '../state.js';
+import { homeView, isActiveScopeJob, type AppState } from '../state.js';
 import type { SweepRefreshState } from '../sweep-refresh.js';
 
 export interface ScopeHeadingCallbacks {
@@ -21,7 +21,14 @@ export interface ScopeHeadingCallbacks {
 
 type HeadingState = Pick<
   AppState,
-  'route' | 'status' | 'snapshot' | 'freshness' | 'refreshError' | 'refreshingScope' | 'job'
+  | 'route'
+  | 'views'
+  | 'status'
+  | 'snapshot'
+  | 'freshness'
+  | 'refreshError'
+  | 'refreshingScope'
+  | 'job'
 >;
 
 export interface ScopeHeading {
@@ -328,7 +335,9 @@ export function createScopeHeading(callbacks: ScopeHeadingCallbacks): ScopeHeadi
       if (scope === undefined) return;
       const sourceTitle =
         catalog?.sources.find((entry) => entry.id === scope.source)?.title ?? scope.source;
-      sourceName.textContent = `Source: ${sourceTitle}`;
+      // A project is labelled by its view; only a project no view lists falls back to its source.
+      const view = project !== null ? homeView(state.views, project) : undefined;
+      sourceName.textContent = view?.title ?? `Source: ${sourceTitle}`;
       title.textContent = project?.repo ?? 'All projects';
 
       const preferenceView = preferences.view;

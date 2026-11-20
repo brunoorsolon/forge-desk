@@ -170,11 +170,16 @@ try {
   const fixture = await navigationFixture();
   fixtures.push(fixture);
   await visit(fixture);
-  await ready();
-  await expect(
-    `location.hash === '#/source/alpha/graph'`,
-    'Bare startup selects first nonempty source',
+  await until(() => evaluate(`location.hash === '#/view/alpha-view/graph'`), 'bare startup view');
+  // The opened view reads its own repositories; scope polling is checked after that read.
+  await until(
+    () => ['demo/one', 'demo/two'].every((repo) => fixture.upstream.some((r) => r.repo === repo)),
+    'first view read',
   );
+  const viewUpstream = fixture.upstream.length;
+  checks.push('Bare startup opens the first view, not a merged source');
+  await visit(fixture, '#/source/alpha/graph');
+  await ready();
   await expect(
     `document.querySelectorAll('.project-sidebar-section[aria-label^="View "]').length === 2`,
     'Two view groups mounted',
@@ -343,7 +348,9 @@ try {
     'Return should check once and completed jobs stop polling',
   );
   assert.ok(
-    fixture.upstream.every((r) => r.source === 'alpha' && r.repo === 'demo/one'),
+    fixture.upstream
+      .slice(viewUpstream)
+      .every((r) => r.source === 'alpha' && r.repo === 'demo/one'),
     'Unopened projects must never be polled upstream',
   );
   checks.push('Hidden pause, one return check, completed job stop, unopened projects untouched');
@@ -395,13 +402,10 @@ try {
   fixtures.push(conflict);
   await visit(conflict);
   await until(
-    () => evaluate(`document.body.innerText.includes('Planning policy conflict')`),
-    'startup policy conflict',
+    () => evaluate(`location.hash === '#/view/alpha-view/graph'`),
+    'startup view despite source conflict',
   );
-  await expect(
-    `location.hash === '#/source/alpha/graph'`,
-    'Startup keeps first configured source and exposes its conflict',
-  );
+  checks.push('Bare startup opens the first view, which keeps its own planning settings');
   await visit(conflict, '#/source/alpha/graph');
   await until(
     () => evaluate(`document.body.innerText.includes('Planning policy conflict')`),
@@ -410,10 +414,10 @@ try {
   await shot('policy-conflict');
   const allConflict = await navigationFixture({ conflicts: ['alpha', 'beta'] });
   fixtures.push(allConflict);
-  await visit(allConflict);
+  await visit(allConflict, '#/source/beta/graph');
   await until(
     () => evaluate(`document.body.innerText.includes('Planning policy conflict')`),
-    'no usable source state',
+    'second source conflict',
   );
   checks.push('Startup and direct conflict branches remain explicit');
   const unavailable = await navigationFixture({ seed: false });
