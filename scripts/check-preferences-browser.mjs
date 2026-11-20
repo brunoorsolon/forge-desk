@@ -421,7 +421,7 @@ try {
   await a.shot('bare-read-failure');
   await a.evaluate(`document.querySelector('.preference-retry').click()`);
   await a.wait(
-    `location.hash === '#/source/alpha/graph' && ${writable}`,
+    `location.hash === '#/view/alpha-view/graph' && ${writable}`,
     'bare retry resolves after recovered preference read',
   );
   assert.equal(rememberWrites(transient), 0, 'Retry fallback does not remember');
@@ -443,11 +443,11 @@ try {
     await a.expect(`!(${writable})`, `${name} keeps personal controls unavailable`);
     if (name === 'unreadable')
       await a.expect(
-        `!location.hash.startsWith('#/source/') && !location.hash.startsWith('#/project/')`,
+        `!location.hash.startsWith('#/source/') && !location.hash.startsWith('#/project/') && !location.hash.startsWith('#/view/')`,
         'Configured unreadable storage blocks silent bare fallback',
       );
     else
-      await a.expect(`location.hash === '#/source/alpha/graph'`, `${name} permits source fallback`);
+      await a.wait(`location.hash === '#/view/alpha-view/graph'`, `${name} permits view fallback`);
     await a.shot(name);
   }
   await writeFile(

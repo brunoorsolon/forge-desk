@@ -409,7 +409,7 @@ describe('header export destination and named-view controls', () => {
       'PugLab (Gitea)',
     ]);
     const scopeSource = descendants(headingEl, (e) => e.classList.contains('scope-source'))[0];
-    expect(scopeSource?.textContent).toBe('Source: PugLab (Gitea)');
+    expect(scopeSource?.textContent).toBe('PugLab (Gitea)');
     expect(headingEl.hidden).toBe(false);
 
     const releaseRoute = parseReleaseHash('#/releases/repo-1?plan=plan-1');

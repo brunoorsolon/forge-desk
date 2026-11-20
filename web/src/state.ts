@@ -173,6 +173,17 @@ export function effectiveViewId(state: Pick<AppState, 'views' | 'route'>): strin
   return views[0]!.id;
 }
 
+/** Sources are connections, never shown: a project belongs to the first view listing it. */
+export function homeView(
+  views: readonly ViewSummary[] | null,
+  project: { source: string; repo: string },
+): ViewSummary | undefined {
+  const repo = project.repo.toLowerCase();
+  return views?.find(
+    (v) => v.source === project.source && v.repos.some((r) => r.toLowerCase() === repo),
+  );
+}
+
 /** Stable IDs shared with scope snapshots, not URL-encoded route strings. */
 export function scopeId(scope: Scope): ScopeId {
   return scope.kind === 'source'

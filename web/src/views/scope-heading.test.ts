@@ -206,6 +206,16 @@ describe('scope heading identity and controls', () => {
     expect(toggleFavorite).not.toHaveBeenCalled();
   });
 
+  it('labels a project with its first view, not its source, when views list it', () => {
+    const { view, root } = heading();
+    const views = [
+      { id: 'lab', title: 'Puglab', source: 'gh', kind: 'github' as const, repos: ['O/R'] },
+      { id: 'haus', title: 'Pughaus', source: 'gh', kind: 'github' as const, repos: ['o/r'] },
+    ];
+    view.update(state({ views }), preferences());
+    expect(cls(root, 'scope-source')[0]!.textContent).toBe('Puglab');
+  });
+
   it('displays the friendly source title from the catalog when available', () => {
     const { view, root } = heading();
     view.update(state(), preferences(), null, {

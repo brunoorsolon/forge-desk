@@ -28,6 +28,7 @@ import { createReleasesView } from './views/releases.js';
 import {
   effectiveViewId,
   getIndex,
+  homeView,
   INITIAL_STATE,
   isVisible,
   Store,
@@ -112,6 +113,15 @@ function resolveLocation(): void {
     return;
   }
   const startupPreferences = preferences.startup();
+  // A bare visit may fall back to the first view, so it waits for views unless they failed.
+  const viewsPending = store.get().views === null && store.get().viewsError === null;
+  if (route.scope === undefined && viewsPending) {
+    resolved = false;
+    navigationPanel = { kind: 'loading', message: 'Loading views.' };
+    scopeNavigation.open(null);
+    render();
+    return;
+  }
   if (route.scope === undefined && startupPreferences === null) {
     resolved = false;
     navigationPanel = { kind: 'loading', message: 'Loading personal preferences.' };
@@ -132,7 +142,7 @@ function resolveLocation(): void {
   resolved = true;
   navigationPanel = null;
   let next = route;
-  if (result.kind === 'scope') next = result.route;
+  if (result.kind === 'scope' || result.kind === 'view') next = result.route;
   else if (result.kind === 'policy-conflict') {
     next = routeForScope(result.scope, route);
     navigationPanel = { kind: 'policy-conflict', conflict: result.conflict };
@@ -452,7 +462,10 @@ function titleFor(state: ReturnType<Store['get']>): string {
   if (scope !== undefined) {
     const sourceTitle =
       catalog?.sources.find((entry) => entry.id === scope.source)?.title ?? scope.source;
-    return `${scope.kind === 'project' ? `${scope.owner}/${scope.repo}` : 'All projects'} · ${sourceTitle} · Forge Desk`;
+    if (scope.kind === 'source') return `All projects · ${sourceTitle} · Forge Desk`;
+    const repo = `${scope.owner}/${scope.repo}`;
+    const group = homeView(state.views, { source: scope.source, repo })?.title ?? sourceTitle;
+    return `${repo} · ${group} · Forge Desk`;
   }
   const view = state.views?.find((v) => v.id === effectiveViewId(state));
   return view ? `${view.title} · Forge Desk` : 'Forge Desk';
@@ -516,7 +529,10 @@ fetchViews().then(
     store.dispatch({ type: 'views-loaded', views: list });
     resolveLocation();
   },
-  (e: unknown) => store.dispatch({ type: 'views-failed', error: errorMessage(e) }),
+  (e: unknown) => {
+    store.dispatch({ type: 'views-failed', error: errorMessage(e) });
+    resolveLocation();
+  },
 );
 
 document.addEventListener('visibilitychange', () => {

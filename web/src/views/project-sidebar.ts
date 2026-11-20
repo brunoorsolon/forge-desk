@@ -1,7 +1,13 @@
 import type { CatalogResponse, ProjectRef, Scope } from '../../../src/core/scope.js';
 import { clear, h, icon } from '../dom.js';
 import { canChangeFavorites, type PreferenceState } from '../preferenceState.js';
-import { effectiveViewId, routeScopeId, scopeId, type AppState } from '../state.js';
+import {
+  effectiveViewId,
+  homeView as findHomeView,
+  routeScopeId,
+  scopeId,
+  type AppState,
+} from '../state.js';
 
 export interface ProjectSidebarActions {
   selectScope(scope: Scope): void;
@@ -151,13 +157,7 @@ export function createProjectSidebar(actions: ProjectSidebarActions): ProjectSid
           (favorite) => favorite.source === project.source && favorite.repo === project.repo,
         );
       const views = state.views ?? [];
-      // Sources are connections, never shown: a project is labelled by the first view listing it.
-      const homeView = (project: ProjectRef) =>
-        views.find(
-          (v) =>
-            v.source === project.source &&
-            v.repos.some((repo) => repo.toLowerCase() === project.repo),
-        );
+      const homeView = (project: ProjectRef) => findHomeView(views, project);
       const projectTitle = (project: ProjectRef): string =>
         homeView(project)?.title ??
         catalog?.sources.find((source) => source.id === project.source)?.title ??

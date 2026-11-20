@@ -591,7 +591,6 @@ try {
     () => evaluate(`Boolean(document.querySelector('.project-sidebar-entry'))`),
     'authenticated app',
   );
-  await ready();
   await evaluate(`location.hash = '#/project/alpha/demo/one/graph'`);
   await ready();
   await click('Refresh this project');
